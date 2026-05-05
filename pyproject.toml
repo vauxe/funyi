@@ -1,0 +1,22 @@
+[project]
+name = "qwen3-asr-runtime"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "torch",
+  "transformers==4.57.6",
+  "accelerate==1.12.0",
+  "librosa",
+  "soundfile",
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
+  "websockets>=13.0",
+  "silero-vad==5.1.2",
+  "torchaudio==2.9.1",
+  "flashinfer-python>=0.6.9",
+  "ninja>=1.13",
+]
+
+[tool.uv]
+package = false
