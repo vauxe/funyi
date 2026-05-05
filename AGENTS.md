@@ -42,8 +42,9 @@ validated single-user profile by default.
   spec_decode + cuda_graph + all fused`. See @docs/streaming_runtime.md
   "Low-Latency Single-User Preset" for the full recipe.
 - Local realtime service default: live20 + `spec_decode + cuda_graph +
-  flashinfer + fused_rmsnorm + fused_linears + W8A16`, with VAD-ended committed
-  segments and no server caption export. W8A16 currently means qkv/gate_up.
+  flashinfer + fused_rmsnorm + fused_linears + W8A16`, with VAD-ended stable
+  transcript updates and no server caption export. W8A16 currently means
+  qkv/gate_up.
 
 ## Important Paths
 

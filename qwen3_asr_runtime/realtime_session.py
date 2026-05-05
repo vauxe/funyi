@@ -1,12 +1,12 @@
 # coding=utf-8
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import numpy as np
 
-from .transcript_store import TranscriptStore
+from .transcript_store import PartialSegment, StableSegment, TranscriptStore
 from .utils import SAMPLE_RATE
 from .vad import (
     EnergyVadAdapter,
@@ -41,7 +41,7 @@ class RealtimeASRConfig:
     language: Optional[str] = None
     pre_roll_ms: int = 240
     input_chunk_ms: int = 200
-    max_display_segment_ms: int = 0
+    live_stability_delay_ms: int = 12_000
     vad: VadConfig = field(default_factory=SileroVadConfig)
 
 
@@ -97,9 +97,11 @@ class _SampleBuffer:
 
 @dataclass
 class _ActiveSpeech:
-    display_block_start_sample: int
+    tail_start_sample: int
     last_speech_end_sample: Optional[int] = None
-    text_anchor: str = ""
+    stable_text_anchor: str = ""
+    previous_tail_text: str = ""
+    previous_tail_end_sample: Optional[int] = None
     asr_state: Any = None
     confirmed: _SampleBuffer = field(default_factory=_SampleBuffer)
     undecided: _SampleBuffer = field(default_factory=_SampleBuffer)
@@ -110,7 +112,7 @@ class RealtimeASRSession:
 
     The state machine has two external states:
     - idle: no active speech segment;
-    - speaking: one _ActiveSpeech owns ASR/VAD-facing audio and display blocks.
+    - speaking: one _ActiveSpeech owns ASR/VAD audio and transcript cursor state.
     """
 
     def __init__(
@@ -137,13 +139,12 @@ class RealtimeASRSession:
         self._pre_roll_samples = max(0, int(round(self.config.sample_rate * self.config.pre_roll_ms / 1000)))
         self._streaming_kwargs = self._low_latency_streaming_kwargs()
         self._asr_cadence_samples = self._streaming_chunk_samples(self._streaming_kwargs)
-        self._max_display_segment_samples = max(
+        self._live_stability_delay_samples = max(
             0,
-            int(round(self.config.sample_rate * self.config.max_display_segment_ms / 1000)),
+            int(round(self.config.sample_rate * self.config.live_stability_delay_ms / 1000)),
         )
 
         self._last_asr_end_sample = 0
-        self._last_partial_text = ""
 
     def ingest_audio(self, pcm16k: np.ndarray) -> list[dict[str, Any]]:
         audio = normalize_pcm(pcm16k)
@@ -162,14 +163,8 @@ class RealtimeASRSession:
 
     def finish(self) -> list[dict[str, Any]]:
         events = self.flush()
-        self.revision += 1
-        events.append(
-            {
-                "type": "final",
-                "revision": self.revision,
-                "segments": [asdict(segment) for segment in self.store.segments],
-            }
-        )
+        events.append(self.store.final_event())
+        self.revision = self.store.revision
         return events
 
     def _ingest_audio_chunk(self, audio: np.ndarray) -> list[dict[str, Any]]:
@@ -203,7 +198,6 @@ class RealtimeASRSession:
             self._promote_undecided(active, until_sample=active.last_speech_end_sample)
 
         events: list[dict[str, Any]] = []
-        events.extend(self._rotate_display_blocks_if_needed())
 
         active = self._active
         if active is not None:
@@ -223,7 +217,7 @@ class RealtimeASRSession:
 
     def _open_speech(self, speech_start_sample: int, *, chunk_start_sample: int, audio: np.ndarray) -> _ActiveSpeech:
         active = _ActiveSpeech(
-            display_block_start_sample=int(speech_start_sample),
+            tail_start_sample=int(speech_start_sample),
         )
 
         context_start = max(0, int(speech_start_sample) - self._pre_roll_samples)
@@ -258,47 +252,18 @@ class RealtimeASRSession:
 
         self._promote_undecided(active, until_sample=close_sample)
         self._drop_undecided(active, remember_pre_roll=False)
-        events = self._commit_until(active, close_sample=int(close_sample), finish_asr=True)
-        self._active = None
-        return events
-
-    def _rotate_display_blocks_if_needed(self) -> list[dict[str, Any]]:
-        active = self._active
-        if active is None or self._max_display_segment_samples <= 0:
-            return []
-
-        events: list[dict[str, Any]] = []
-        while (
-            active.last_speech_end_sample is not None
-            and active.last_speech_end_sample - active.display_block_start_sample >= self._max_display_segment_samples
-        ):
-            cut_sample = int(active.display_block_start_sample) + self._max_display_segment_samples
-            events.extend(self._commit_until(active, close_sample=cut_sample, finish_asr=False))
-        return events
-
-    def _commit_until(
-        self,
-        active: _ActiveSpeech,
-        *,
-        close_sample: int,
-        finish_asr: bool,
-    ) -> list[dict[str, Any]]:
         close_sample = int(close_sample)
         events = self._drain_confirmed(active, force=True, emit_live=False, until_sample=close_sample)
         if active.asr_state is None:
-            if not finish_asr:
-                active.display_block_start_sample = close_sample
-            events.extend(self._emit_partial(""))
+            if self.store.clear_partial():
+                events.extend(self._emit_transcript_update(stable_base=self.store.stable_count, stable_appends=[]))
+            self._active = None
             return events
 
-        if finish_asr:
-            active.asr_state = self.model.finish_streaming_transcribe(active.asr_state)
-
+        active.asr_state = self.model.finish_streaming_transcribe(active.asr_state)
         self._last_asr_end_sample = close_sample
-        events.extend(self._handle_decoded_text(active, force_commit=True))
-        if not finish_asr:
-            active.display_block_start_sample = close_sample
-        events.extend(self._emit_partial(""))
+        events.extend(self._handle_decoded_text(active, finalize=True))
+        self._active = None
         return events
 
     def _run_asr(
@@ -314,7 +279,7 @@ class RealtimeASRSession:
         self._last_asr_end_sample = int(chunk_end_sample)
         if not emit_live:
             return []
-        return self._handle_decoded_text(active, force_commit=False)
+        return self._handle_decoded_text(active, finalize=False)
 
     def _ensure_asr_state(self, active: _ActiveSpeech) -> Any:
         if active.asr_state is not None:
@@ -327,89 +292,193 @@ class RealtimeASRSession:
         self.asr_epoch += 1
         return active.asr_state
 
-    def _handle_decoded_text(self, active: _ActiveSpeech, *, force_commit: bool) -> list[dict[str, Any]]:
+    def _handle_decoded_text(self, active: _ActiveSpeech, *, finalize: bool) -> list[dict[str, Any]]:
         if active.asr_state is None:
             return []
 
         asr_text = str(getattr(active.asr_state, "text", "") or "").strip()
-        text = self._text_delta(active.text_anchor, asr_text)
-        if not text:
-            return self._emit_partial("")
-
-        if force_commit:
-            return self._commit_segment(active, text, full_asr_text=asr_text)
-
-        return self._emit_partial(text)
-
-    def _commit_segment(
-        self,
-        active: _ActiveSpeech,
-        text: str,
-        *,
-        full_asr_text: str,
-    ) -> list[dict[str, Any]]:
-        normalized = str(text or "").strip()
-        if not normalized:
+        tail_text = self._tail_after_stable_anchor(active.stable_text_anchor, asr_text)
+        if tail_text is None:
+            if finalize:
+                return self._replace_partial(None)
             return []
 
-        start_ms = self._sample_to_ms(active.display_block_start_sample)
-        end_ms = max(start_ms, self._sample_to_ms(self._last_asr_end_sample))
+        if finalize:
+            return self._append_stable_text(
+                active,
+                stable_text=tail_text,
+                tail_text=tail_text,
+                full_asr_text=asr_text,
+                end_sample=self._last_asr_end_sample,
+            )
+
+        stable_prefix = ""
+        stable_end_sample: int | None = None
+        if self._live_stability_delay_elapsed(active):
+            stable_prefix = self._repeated_tail_prefix(active.previous_tail_text, tail_text)
+            stable_end_sample = active.previous_tail_end_sample
+
+        if stable_prefix and stable_end_sample is not None:
+            return self._append_stable_text(
+                active,
+                stable_text=stable_prefix,
+                tail_text=tail_text,
+                full_asr_text=asr_text,
+                end_sample=stable_end_sample,
+            )
+
+        active.previous_tail_text = tail_text
+        active.previous_tail_end_sample = self._last_asr_end_sample if tail_text else None
+        return self._replace_partial_text(active, tail_text)
+
+    def _live_stability_delay_elapsed(self, active: _ActiveSpeech) -> bool:
+        return self._last_asr_end_sample - active.tail_start_sample >= self._live_stability_delay_samples
+
+    def _append_stable_text(
+        self,
+        active: _ActiveSpeech,
+        *,
+        stable_text: str,
+        tail_text: str,
+        full_asr_text: str,
+        end_sample: int,
+    ) -> list[dict[str, Any]]:
+        normalized = str(stable_text or "").strip()
+        if not normalized:
+            active.previous_tail_text = str(tail_text or "").strip()
+            active.previous_tail_end_sample = self._last_asr_end_sample if active.previous_tail_text else None
+            return self._replace_partial_text(active, active.previous_tail_text)
+
+        stable_base = self.store.stable_count
+        end_sample = max(int(active.tail_start_sample), int(end_sample))
+        start_ms = self._sample_to_ms(active.tail_start_sample)
+        end_ms = max(start_ms, self._sample_to_ms(end_sample))
         language = str(getattr(active.asr_state, "language", "") or self.config.language or "")
 
-        segment = self.store.append_segment(
+        segment = self.store.append_stable_segment(
             text=normalized,
             start_ms=start_ms,
             end_ms=end_ms,
             language=language,
         )
-        active.text_anchor = str(full_asr_text or "").strip()
+        active.stable_text_anchor = self._advance_stable_anchor(active.stable_text_anchor, full_asr_text, normalized)
+        active.tail_start_sample = end_sample
 
-        self.revision += 1
-        return [
-            {
-                "type": "committed",
-                "revision": self.revision,
-                "asr_epoch": self.asr_epoch,
-                "segment": asdict(segment),
-            }
-        ]
+        remaining_text = self._remove_text_prefix(tail_text, normalized)
+        active.previous_tail_text = remaining_text
+        active.previous_tail_end_sample = self._last_asr_end_sample if remaining_text else None
+        self.store.replace_partial(self._partial_segment(active, remaining_text))
+        return self._emit_transcript_update(stable_base=stable_base, stable_appends=[segment])
 
     @staticmethod
-    def _text_delta(anchor: str, text: str) -> str:
+    def _tail_after_stable_anchor(anchor: str, text: str) -> str | None:
         full_text = str(text or "").strip()
-        committed = str(anchor or "").strip()
-        if not full_text or not committed:
+        stable_prefix = str(anchor or "").strip()
+        if not full_text or not stable_prefix:
             return full_text
-        if full_text.startswith(committed):
-            return full_text[len(committed) :].strip()
+        if full_text.startswith(stable_prefix):
+            return full_text[len(stable_prefix) :].strip()
 
-        max_overlap = min(len(committed), len(full_text))
+        max_overlap = min(len(stable_prefix), len(full_text))
         for overlap in range(max_overlap, 0, -1):
-            if committed[-overlap:] == full_text[:overlap]:
+            if stable_prefix[-overlap:] == full_text[:overlap]:
                 return full_text[overlap:].strip()
+        return None
+
+    @staticmethod
+    def _repeated_tail_prefix(previous: str, current: str) -> str:
+        previous_text = str(previous or "").strip()
+        current_text = str(current or "").strip()
+        max_len = min(len(previous_text), len(current_text))
+        index = 0
+        while index < max_len and previous_text[index] == current_text[index]:
+            index += 1
+        next_char = current_text[index : index + 1]
+        return RealtimeASRSession._trim_stable_prefix_to_boundary(current_text[:index], next_char)
+
+    @staticmethod
+    def _trim_stable_prefix_to_boundary(prefix: str, next_char: str) -> str:
+        raw_prefix = str(prefix or "")
+        next_text = str(next_char or "")
+        right_stripped = raw_prefix.rstrip()
+        stable_prefix = right_stripped.strip()
+        if not stable_prefix or not next_text:
+            return stable_prefix
+        if len(right_stripped) < len(raw_prefix):
+            return stable_prefix
+        last_char = stable_prefix[-1]
+        if not (
+            last_char.isascii()
+            and next_text[0].isascii()
+            and last_char.isalnum()
+            and next_text[0].isalnum()
+        ):
+            return stable_prefix
+        for index in range(len(stable_prefix) - 1, -1, -1):
+            if not stable_prefix[index].isalnum():
+                return stable_prefix[: index + 1].strip()
         return ""
 
-    def _emit_partial(self, text: str) -> list[dict[str, Any]]:
+    @staticmethod
+    def _remove_text_prefix(text: str, prefix: str) -> str:
+        full_text = str(text or "").strip()
+        prefix_text = str(prefix or "").strip()
+        if not prefix_text:
+            return full_text
+        if full_text.startswith(prefix_text):
+            return full_text[len(prefix_text) :].strip()
+        return full_text
+
+    @staticmethod
+    def _advance_stable_anchor(anchor: str, full_asr_text: str, stable_text: str) -> str:
+        current_anchor = str(anchor or "").strip()
+        full_text = str(full_asr_text or "").strip()
+        stable_prefix = str(stable_text or "").strip()
+        if not stable_prefix:
+            return current_anchor
+        if current_anchor and full_text.startswith(current_anchor):
+            suffix = full_text[len(current_anchor) :]
+            leading = len(suffix) - len(suffix.lstrip())
+            suffix_text = suffix.lstrip()
+            if suffix_text.startswith(stable_prefix):
+                return full_text[: len(current_anchor) + leading + len(stable_prefix)].strip()
+        if not current_anchor and full_text.startswith(stable_prefix):
+            return full_text[: len(stable_prefix)].strip()
+        return f"{current_anchor}{stable_prefix}".strip()
+
+    def _replace_partial_text(self, active: _ActiveSpeech, text: str) -> list[dict[str, Any]]:
+        return self._replace_partial(self._partial_segment(active, text))
+
+    def _partial_segment(self, active: _ActiveSpeech, text: str) -> PartialSegment | None:
         normalized = str(text or "").strip()
-        if normalized == self._last_partial_text:
+        if not normalized:
+            return None
+
+        language = str(getattr(active.asr_state, "language", "") or self.config.language or "")
+        start_ms = self._sample_to_ms(active.tail_start_sample)
+        end_ms = max(start_ms, self._sample_to_ms(self._last_asr_end_sample))
+        return PartialSegment(
+            start_ms=start_ms,
+            end_ms=end_ms,
+            text=normalized,
+            language=language,
+        )
+
+    def _replace_partial(self, partial: PartialSegment | None) -> list[dict[str, Any]]:
+        changed = self.store.replace_partial(partial)
+        if not changed:
             return []
-        self._last_partial_text = normalized
-        self.revision += 1
-        active = self._active
-        return [
-            {
-                "type": "partial",
-                "revision": self.revision,
-                "asr_epoch": self.asr_epoch,
-                "text": normalized,
-                "start_ms": (
-                    self._sample_to_ms(active.display_block_start_sample)
-                    if active is not None and normalized
-                    else None
-                ),
-                "end_ms": self._sample_to_ms(self._last_asr_end_sample) if normalized else None,
-            }
-        ]
+        return self._emit_transcript_update(stable_base=self.store.stable_count, stable_appends=[])
+
+    def _emit_transcript_update(
+        self,
+        *,
+        stable_base: int,
+        stable_appends: list[StableSegment],
+    ) -> list[dict[str, Any]]:
+        event = self.store.update_event(stable_base=stable_base, stable_appends=stable_appends)
+        self.revision = self.store.revision
+        return [event]
 
     def _drain_input_audio(self, *, force: bool) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []

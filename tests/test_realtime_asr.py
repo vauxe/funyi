@@ -59,12 +59,12 @@ class FakeStreamingModel:
         return state
 
 
-def make_session(model: FakeStreamingModel, *, max_display_segment_ms: int = 0) -> RealtimeASRSession:
+def make_session(model: FakeStreamingModel, *, live_stability_delay_ms: int = 12_000) -> RealtimeASRSession:
     return RealtimeASRSession(
         model,
         config=RealtimeASRConfig(
             language="Chinese",
-            max_display_segment_ms=max_display_segment_ms,
+            live_stability_delay_ms=live_stability_delay_ms,
             vad=EnergyVadConfig(
                 speech_threshold=0.01,
                 min_speech_ms=60,
@@ -74,14 +74,71 @@ def make_session(model: FakeStreamingModel, *, max_display_segment_ms: int = 0) 
     )
 
 
+def transcript_updates(events: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [event for event in events if event.get("type") == "transcript_update"]
+
+
+def partial_texts(events: list[dict[str, object]]) -> list[str]:
+    texts: list[str] = []
+    for event in transcript_updates(events):
+        partial = event.get("partial")
+        if isinstance(partial, dict):
+            texts.append(str(partial.get("text") or ""))
+    return texts
+
+
+def stable_appends(events: list[dict[str, object]]) -> list[dict[str, object]]:
+    segments: list[dict[str, object]] = []
+    for event in transcript_updates(events):
+        appends = event.get("stable_appends")
+        if isinstance(appends, list):
+            segments.extend(segment for segment in appends if isinstance(segment, dict))
+    return segments
+
+
+def assert_transcript_update_invariants(test: unittest.TestCase, events: list[dict[str, object]]) -> None:
+    revision = 0
+    stable_count = 0
+    for event in transcript_updates(events):
+        test.assertGreater(int(event["revision"]), revision)
+        revision = int(event["revision"])
+        test.assertEqual(event["stable_base"], stable_count)
+        appends = event.get("stable_appends")
+        test.assertIsInstance(appends, list)
+        stable_count += len(appends)
+        test.assertEqual(event["stable_count"], stable_count)
+        test.assertIn("partial", event)
+        partial = event.get("partial")
+        test.assertTrue(partial is None or isinstance(partial, dict))
+
+
 class TranscriptStoreTest(unittest.TestCase):
     def test_segments_are_appended_with_monotonic_timestamps(self) -> None:
         store = TranscriptStore(transcript_id="t1")
-        first = store.append_segment(text="第一句。", start_ms=0, end_ms=1200, language="Chinese")
-        store.append_segment(text="Second.", start_ms=1000, end_ms=2300, language="English")
+        first = store.append_stable_segment(text="第一句。", start_ms=0, end_ms=1200, language="Chinese")
+        store.append_stable_segment(text="Second.", start_ms=1000, end_ms=2300, language="English")
 
-        self.assertEqual([segment.text for segment in store.segments], ["第一句。", "Second."])
-        self.assertEqual(store.segments[1].start_ms, first.end_ms)
+        self.assertEqual([segment.text for segment in store.stable_segments], ["第一句。", "Second."])
+        self.assertEqual(store.stable_segments[1].start_ms, first.end_ms)
+        self.assertEqual(store.stable_count, 2)
+
+    def test_update_event_uses_stable_cursor_and_replaceable_partial(self) -> None:
+        store = TranscriptStore(transcript_id="t1")
+        segment = store.append_stable_segment(text="稳定", start_ms=0, end_ms=1000, language="Chinese")
+        event = store.update_event(stable_base=0, stable_appends=[segment])
+
+        self.assertEqual(event["type"], "transcript_update")
+        self.assertEqual(event["stable_base"], 0)
+        self.assertEqual(event["stable_count"], 1)
+        self.assertEqual(event["stable_appends"][0]["text"], "稳定")
+        self.assertIsNone(event["partial"])
+
+    def test_update_event_rejects_stale_stable_base(self) -> None:
+        store = TranscriptStore(transcript_id="t1")
+        segment = store.append_stable_segment(text="稳定", start_ms=0, end_ms=1000, language="Chinese")
+
+        with self.assertRaises(ValueError):
+            store.update_event(stable_base=1, stable_appends=[segment])
 
 
 class RealtimeServerCliTest(unittest.TestCase):
@@ -125,7 +182,7 @@ class RealtimeASRSessionTest(unittest.TestCase):
         self.assertEqual(model.init_count, 0)
         self.assertEqual(model.stream_calls, 0)
 
-    def test_punctuation_does_not_commit_while_speech_continues(self) -> None:
+    def test_punctuation_does_not_stabilize_while_speech_continues(self) -> None:
         model = FakeStreamingModel(outputs=["第一句。第二", "第一句。第二句。第三", "第一句。第二句。第三句"])
         session = make_session(model)
         speech = np.ones(16_000, dtype=np.float32) * 0.2
@@ -135,12 +192,11 @@ class RealtimeASRSessionTest(unittest.TestCase):
         events3 = session.ingest_audio(speech)
 
         events = events1 + events2 + events3
-        committed = [event["segment"]["text"] for event in events if event["type"] == "committed"]
-        partials = [event["text"] for event in events if event["type"] == "partial"]
-        self.assertEqual(committed, [])
-        self.assertEqual(partials[-1], "第一句。第二句。第三句")
+        self.assertEqual(stable_appends(events), [])
+        self.assertEqual(partial_texts(events)[-1], "第一句。第二句。第三句")
         self.assertEqual(model.init_count, 1)
         self.assertEqual(session.asr_epoch, 1)
+        assert_transcript_update_invariants(self, events)
 
     def test_asr_runs_on_server_side_one_second_cadence(self) -> None:
         model = FakeStreamingModel(outputs=["一秒"])
@@ -153,8 +209,7 @@ class RealtimeASRSessionTest(unittest.TestCase):
 
         events = session.ingest_audio(speech)
 
-        partials = [event["text"] for event in events if event["type"] == "partial"]
-        self.assertEqual(partials, ["一秒"])
+        self.assertEqual(partial_texts(events), ["一秒"])
         self.assertEqual(model.stream_calls, 1)
         self.assertEqual(model.stream_audio_lengths, [16_000])
         self.assertEqual(model.init_kwargs[0]["chunk_size_sec"], 1.0)
@@ -174,11 +229,10 @@ class RealtimeASRSessionTest(unittest.TestCase):
 
         events = session.ingest_audio(speech)
 
-        partials = [event["text"] for event in events if event["type"] == "partial"]
-        self.assertEqual(partials, ["一秒"])
+        self.assertEqual(partial_texts(events), ["一秒"])
         self.assertEqual(model.stream_audio_lengths, [16_000])
 
-    def test_rewritten_partial_text_is_not_committed_by_punctuation(self) -> None:
+    def test_rewritten_partial_text_is_not_stabilized_by_punctuation(self) -> None:
         model = FakeStreamingModel(
             outputs=[
                 "第一句。",
@@ -194,16 +248,15 @@ class RealtimeASRSessionTest(unittest.TestCase):
         for _ in range(4):
             events.extend(session.ingest_audio(speech))
 
-        committed = [event["segment"]["text"] for event in events if event["type"] == "committed"]
-        partials = [event["text"] for event in events if event["type"] == "partial"]
-        self.assertEqual(committed, [])
-        self.assertEqual(partials[-1], "第一句话，有补充。下一段，")
+        self.assertEqual(stable_appends(events), [])
+        self.assertEqual(partial_texts(events)[-1], "第一句话，有补充。下一段，")
+        assert_transcript_update_invariants(self, events)
 
-    def test_continuous_speech_rotates_display_block_without_resetting_asr_or_vad(self) -> None:
+    def test_continuous_speech_advances_stable_cursor_without_resetting_asr_or_vad(self) -> None:
         model = FakeStreamingModel(
             outputs=["第一秒", "前两秒", "前两秒第三秒"],
         )
-        session = make_session(model, max_display_segment_ms=2_000)
+        session = make_session(model, live_stability_delay_ms=2_000)
         speech = np.ones(16_000, dtype=np.float32) * 0.2
 
         events: list[dict[str, object]] = []
@@ -211,25 +264,72 @@ class RealtimeASRSessionTest(unittest.TestCase):
         events.extend(session.ingest_audio(speech))
         events.extend(session.ingest_audio(speech))
 
-        committed = [event["segment"] for event in events if event["type"] == "committed"]
-        partials = [event for event in events if event["type"] == "partial" and event["text"]]
-        self.assertEqual(len(committed), 1)
-        self.assertEqual(committed[0]["text"], "前两秒")
-        self.assertEqual(committed[0]["start_ms"], 0)
-        self.assertEqual(committed[0]["end_ms"], 2_000)
-        self.assertEqual(partials[-1]["text"], "第三秒")
-        self.assertEqual(partials[-1]["start_ms"], 2_000)
-        self.assertEqual(partials[-1]["end_ms"], 3_000)
+        stable = stable_appends(events)
+        updates = transcript_updates(events)
+        non_empty_partials = [
+            event["partial"]
+            for event in updates
+            if isinstance(event.get("partial"), dict)
+        ]
+        self.assertEqual(len(stable), 1)
+        self.assertEqual(stable[0]["text"], "前两秒")
+        self.assertEqual(stable[0]["start_ms"], 0)
+        self.assertEqual(stable[0]["end_ms"], 2_000)
+        self.assertEqual(non_empty_partials[-1]["text"], "第三秒")
+        self.assertEqual(non_empty_partials[-1]["start_ms"], 2_000)
+        self.assertEqual(non_empty_partials[-1]["end_ms"], 3_000)
         self.assertEqual(model.init_count, 1)
         self.assertEqual(model.finish_calls, 0)
         self.assertEqual(model.stream_audio_lengths, [16_000, 16_000, 16_000])
+        assert_transcript_update_invariants(self, events)
 
-    def test_vad_endpoint_after_display_rollover_commits_only_tail_and_resets_asr(self) -> None:
+    def test_live_stability_delay_waits_for_repeated_prefix_before_stabilizing(self) -> None:
+        model = FakeStreamingModel(outputs=["第一秒", "前两秒"])
+        session = make_session(model, live_stability_delay_ms=2_000)
+        speech = np.ones(16_000, dtype=np.float32) * 0.2
+
+        events: list[dict[str, object]] = []
+        events.extend(session.ingest_audio(speech))
+        events.extend(session.ingest_audio(speech))
+
+        self.assertEqual(stable_appends(events), [])
+        self.assertEqual(partial_texts(events)[-1], "前两秒")
+        assert_transcript_update_invariants(self, events)
+
+    def test_zero_live_stability_delay_still_requires_repeated_prefix(self) -> None:
+        model = FakeStreamingModel(outputs=["第一秒", "第一秒第二秒"])
+        session = make_session(model, live_stability_delay_ms=0)
+        speech = np.ones(16_000, dtype=np.float32) * 0.2
+
+        events: list[dict[str, object]] = []
+        events.extend(session.ingest_audio(speech))
+        events.extend(session.ingest_audio(speech))
+
+        stable = stable_appends(events)
+        self.assertEqual([segment["text"] for segment in stable], ["第一秒"])
+        self.assertEqual(partial_texts(events)[-1], "第二秒")
+        assert_transcript_update_invariants(self, events)
+
+    def test_stable_prefix_does_not_split_ascii_word(self) -> None:
+        model = FakeStreamingModel(outputs=["hello wor", "hello world today"])
+        session = make_session(model, live_stability_delay_ms=2_000)
+        speech = np.ones(16_000, dtype=np.float32) * 0.2
+
+        events: list[dict[str, object]] = []
+        events.extend(session.ingest_audio(speech))
+        events.extend(session.ingest_audio(speech))
+
+        stable = stable_appends(events)
+        self.assertEqual([segment["text"] for segment in stable], ["hello"])
+        self.assertEqual(partial_texts(events)[-1], "world today")
+        assert_transcript_update_invariants(self, events)
+
+    def test_vad_endpoint_after_stable_cursor_advance_stabilizes_only_tail_and_resets_asr(self) -> None:
         model = FakeStreamingModel(
             outputs=["第一秒", "前两秒", "前两秒第三秒"],
             finish_text="前两秒第三秒",
         )
-        session = make_session(model, max_display_segment_ms=2_000)
+        session = make_session(model, live_stability_delay_ms=2_000)
         speech = np.ones(16_000, dtype=np.float32) * 0.2
         silence = np.zeros(8_000, dtype=np.float32)
 
@@ -239,16 +339,60 @@ class RealtimeASRSessionTest(unittest.TestCase):
         events.extend(session.ingest_audio(speech))
         events.extend(session.ingest_audio(silence))
 
-        committed = [event["segment"] for event in events if event["type"] == "committed"]
-        self.assertEqual([segment["text"] for segment in committed], ["前两秒", "第三秒"])
+        stable = stable_appends(events)
+        self.assertEqual([segment["text"] for segment in stable], ["前两秒", "第三秒"])
         self.assertEqual(
-            [(segment["start_ms"], segment["end_ms"]) for segment in committed],
+            [(segment["start_ms"], segment["end_ms"]) for segment in stable],
             [(0, 2_000), (2_000, 3_000)],
         )
         self.assertEqual(model.init_count, 1)
         self.assertEqual(model.finish_calls, 1)
+        assert_transcript_update_invariants(self, events)
 
-    def test_flush_commits_tail_and_next_speech_starts_new_epoch(self) -> None:
+    def test_asr_rewrite_of_stable_prefix_preserves_existing_partial(self) -> None:
+        model = FakeStreamingModel(
+            outputs=[
+                "第一秒",
+                "第一秒第二秒",
+                "第一秒第二秒第三秒",
+                "第一秒二秒第三秒第四秒",
+            ],
+        )
+        session = make_session(model, live_stability_delay_ms=2_000)
+        speech = np.ones(16_000, dtype=np.float32) * 0.2
+
+        events: list[dict[str, object]] = []
+        for _ in range(4):
+            events.extend(session.ingest_audio(speech))
+
+        stable = stable_appends(events)
+        self.assertEqual([segment["text"] for segment in stable], ["第一秒", "第二秒"])
+        self.assertEqual(partial_texts(events)[-1], "第三秒")
+        assert_transcript_update_invariants(self, events)
+
+    def test_finish_with_unaligned_asr_does_not_stabilize_stale_partial(self) -> None:
+        model = FakeStreamingModel(
+            outputs=["第一秒", "第一秒第二秒", "第一秒第二秒第三秒"],
+            finish_text="完全不同的最终结果",
+        )
+        session = make_session(model, live_stability_delay_ms=2_000)
+        speech = np.ones(16_000, dtype=np.float32) * 0.2
+
+        events: list[dict[str, object]] = []
+        for _ in range(3):
+            events.extend(session.ingest_audio(speech))
+        events.extend(session.finish())
+
+        updates = transcript_updates(events)
+        final_events = [event for event in events if event.get("type") == "transcript_final"]
+        self.assertEqual([segment["text"] for segment in stable_appends(events)], ["第一秒", "第二秒"])
+        self.assertEqual(updates[-1]["stable_appends"], [])
+        self.assertIsNone(updates[-1]["partial"])
+        self.assertEqual(final_events[-1]["stable_count"], 2)
+        self.assertEqual([segment["text"] for segment in final_events[-1]["segments"]], ["第一秒", "第二秒"])
+        assert_transcript_update_invariants(self, events)
+
+    def test_flush_stabilizes_tail_and_next_speech_starts_new_epoch(self) -> None:
         model = FakeStreamingModel(outputs=["尾句"], finish_text="尾句")
         session = make_session(model)
         speech = np.ones(16_000, dtype=np.float32) * 0.2
@@ -257,13 +401,12 @@ class RealtimeASRSessionTest(unittest.TestCase):
         flush_events = session.flush()
         session.ingest_audio(speech)
 
-        committed = [event["segment"]["text"] for event in flush_events if event["type"] == "committed"]
-        self.assertEqual(committed, ["尾句"])
+        self.assertEqual([segment["text"] for segment in stable_appends(flush_events)], ["尾句"])
         self.assertEqual(model.finish_calls, 1)
         self.assertEqual(model.init_count, 2)
         self.assertEqual(session.asr_epoch, 2)
 
-    def test_forced_flush_commits_one_speech_segment_without_punctuation_split(self) -> None:
+    def test_forced_flush_stabilizes_one_speech_segment_without_punctuation_split(self) -> None:
         model = FakeStreamingModel(outputs=[""], finish_text="第一句。第二句。尾巴")
         session = make_session(model)
         speech = np.ones(16_000, dtype=np.float32) * 0.2
@@ -271,8 +414,7 @@ class RealtimeASRSessionTest(unittest.TestCase):
         session.ingest_audio(speech)
         events = session.flush()
 
-        committed = [event["segment"]["text"] for event in events if event["type"] == "committed"]
-        self.assertEqual(committed, ["第一句。第二句。尾巴"])
+        self.assertEqual([segment["text"] for segment in stable_appends(events)], ["第一句。第二句。尾巴"])
 
     def test_vad_endpoint_timestamp_excludes_trailing_silence(self) -> None:
         model = FakeStreamingModel(outputs=["语音段"], finish_text="语音段")
@@ -283,11 +425,11 @@ class RealtimeASRSessionTest(unittest.TestCase):
         session.ingest_audio(speech)
         events = session.ingest_audio(silence)
 
-        committed = [event["segment"] for event in events if event["type"] == "committed"]
-        self.assertEqual(len(committed), 1)
-        self.assertEqual(committed[0]["text"], "语音段")
-        self.assertEqual(committed[0]["start_ms"], 0)
-        self.assertEqual(committed[0]["end_ms"], 1_000)
+        stable = stable_appends(events)
+        self.assertEqual(len(stable), 1)
+        self.assertEqual(stable[0]["text"], "语音段")
+        self.assertEqual(stable[0]["start_ms"], 0)
+        self.assertEqual(stable[0]["end_ms"], 1_000)
         self.assertEqual(model.stream_audio_lengths, [16_000])
 
     def test_short_pause_is_promoted_when_speech_resumes(self) -> None:
@@ -301,8 +443,7 @@ class RealtimeASRSessionTest(unittest.TestCase):
         pause_events = session.ingest_audio(short_pause)
         resume_events = session.ingest_audio(speech_two)
 
-        partials = [event["text"] for event in pause_events + resume_events if event["type"] == "partial"]
-        self.assertEqual(partials, ["前半后半"])
+        self.assertEqual(partial_texts(pause_events + resume_events), ["前半后半"])
         self.assertEqual(model.stream_audio_lengths, [16_000, 16_000])
 
     def test_large_transport_frame_is_split_before_vad(self) -> None:
@@ -320,14 +461,25 @@ class RealtimeASRSessionTest(unittest.TestCase):
         events = session.ingest_audio(payload)
         flush_events = session.flush()
 
-        committed = [
-            event["segment"]["text"]
-            for event in events + flush_events
-            if event["type"] == "committed"
-        ]
-        self.assertEqual(committed, ["第一段", "第二段"])
+        self.assertEqual([segment["text"] for segment in stable_appends(events + flush_events)], ["第一段", "第二段"])
         self.assertEqual(model.init_count, 2)
         self.assertEqual(model.stream_audio_lengths, [16_000, 16_000, 4_000])
+
+    def test_finish_emits_transcript_final_snapshot(self) -> None:
+        model = FakeStreamingModel(outputs=["尾句"], finish_text="尾句")
+        session = make_session(model)
+        speech = np.ones(16_000, dtype=np.float32) * 0.2
+
+        session.ingest_audio(speech)
+        events = session.finish()
+
+        final_events = [event for event in events if event["type"] == "transcript_final"]
+        self.assertEqual(len(final_events), 1)
+        self.assertEqual(final_events[0]["stable_count"], 1)
+        self.assertEqual(final_events[0]["segments"][0]["text"], "尾句")
+        self.assertNotIn("final", {event["type"] for event in events})
+        self.assertFalse({"partial", "committed"} & {str(event["type"]) for event in events})
+        assert_transcript_update_invariants(self, events)
 
 
 class FakeVadModel:

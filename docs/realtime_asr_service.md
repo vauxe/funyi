@@ -10,8 +10,8 @@ The service does transcription only:
 
 - accept one active WebSocket session;
 - receive mono `pcm_s16le` audio at 16 kHz;
-- emit live replacement captions and committed ASR segments;
-- return final structured segments when the session finishes.
+- emit realtime transcript updates;
+- return a final structured source transcript when the session finishes.
 
 Keep translation, polishing, summarization, persistence, diarization, and
 multi-session scheduling out of the ASR WebSocket path until they are needed by
@@ -38,14 +38,44 @@ Server events:
 
 ```json
 {"type":"ready","session_id":"local","sample_rate":16000,"audio_format":"pcm_s16le"}
-{"type":"partial","revision":1,"asr_epoch":1,"text":"...","start_ms":0,"end_ms":1000}
-{"type":"committed","revision":2,"asr_epoch":1,"segment":{...}}
-{"type":"final","revision":3,"segments":[...]}
+{"type":"transcript_update","revision":1,"stable_base":0,"stable_count":0,"stable_appends":[],"partial":{...}}
+{"type":"transcript_final","revision":2,"stable_count":1,"segments":[...]}
 {"type":"error","error":"..."}
 ```
 
-`partial` is replace-style UI state. The frontend should replace the current
-live caption with the latest partial text. `committed` is append-only history.
+`transcript_update` is the only normal caption update. The frontend appends
+`stable_appends` to stable history and replaces the current `partial` snapshot.
+`transcript_final` closes the source transcript.
+
+## Transcript Model
+
+The service owns one source transcript state:
+
+```text
+stable_segments[0:stable_count]   stable prefix, append-only, never changes
+partial                          replace-only snapshot, or null
+```
+
+Wire updates use a compact delta:
+
+```text
+stable_appends      newly stable source segments
+partial             current mutable text snapshot, or null
+```
+
+Frontend application rule:
+
+```text
+require local.revision < event.revision
+require local.stable_count == event.stable_base
+append event.stable_appends
+replace current partial with event.partial
+set local.stable_count = event.stable_count
+set local.revision = event.revision
+```
+
+If the base check fails, reconnect or request a fresh snapshot. Do not merge
+divergent transcript states.
 
 ## Runtime Boundaries
 
@@ -62,11 +92,11 @@ live caption with the latest partial text. `committed` is append-only history.
 - VAD, pre-roll, short-pause handling;
 - confirmed vs undecided audio;
 - ASR cadence using the low-latency preset;
-- live partials;
-- committed VAD-ended speech segments;
+- stable cursor movement;
+- partial replacement;
 - final flush.
 
-`TranscriptStore` owns committed segments. It is intentionally in-memory for now.
+`TranscriptStore` owns the in-memory source transcript state.
 
 ## State Rules
 
@@ -74,21 +104,37 @@ The session is either idle or has one active speech segment.
 
 An active speech segment keeps:
 
-- `display_block_start_sample`
+- `tail_start_sample`
 - `last_speech_end_sample`
-- `text_anchor`
+- `stable_text_anchor`
+- `previous_tail_text`
+- `previous_tail_end_sample`
 - ASR streaming state
 - confirmed audio
 - undecided endpoint-silence audio
 
 Rules:
 
-- binary transport chunks are not VAD frames, ASR chunks, or ASR segments;
-- VAD endpoint, `flush`, and `finish` close the acoustic segment;
-- display-duration rollover is disabled by default; if explicitly enabled, it
-  commits only the current caption block and keeps ASR/VAD state active;
+- binary transport chunks are not VAD frames, ASR chunks, or transcript
+  segments;
+- VAD endpoint, `flush`, and `finish` close the acoustic turn and move safe text
+  to the stable prefix;
+- long continuous speech may advance the stable prefix after
+  `live_stability_delay_ms`
+  only when the latest ASR hypothesis repeats a prefix from the previous
+  partial tail;
+- ASCII word fragments are kept partial rather than stabilized mid-word;
+- the newest ASR tail remains in `partial` until a later hypothesis or
+  turn close makes it stable;
+- if ASR contradicts text that has already become stable, the stable prefix is
+  not rewritten;
+- if a live ASR hypothesis no longer aligns with the stable prefix, the existing
+  partial is preserved until alignment resumes or the turn closes;
+- if turn close, `flush`, or `finish` still cannot align the final ASR text with
+  the stable prefix, `partial` is cleared and not promoted to stable;
+- VAD decides acoustic activity, not transcript finality;
 - undecided endpoint silence is not fed to ASR unless speech resumes;
-- caption file export, if needed later, belongs in the frontend over committed
+- caption file export, if needed later, belongs in the frontend over stable
   segments.
 
 ## Defaults
@@ -103,6 +149,14 @@ The service entrypoint defaults to the validated local low-latency profile:
 - `fused_rmsnorm=True`
 - `fused_linears=True`
 - `w8a16=True`
+
+The transcript projection uses `live_stability_delay_ms=12000` by default as
+the long-speech escape hatch. This is not a blind display timer and not a model
+LocalAgreement contract: it only moves text when a later ASR hypothesis repeats
+a prefix from the previous partial tail. Setting the delay to `0` removes only
+the wait; repeated-prefix evidence is still required. During VAD endpoint,
+`flush`, or `finish`, the session runs ASR finish for the active turn and
+stabilizes the remaining aligned text.
 
 Disable flags only for debugging, environment fallback, or quality comparison.
 

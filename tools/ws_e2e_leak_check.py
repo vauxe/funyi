@@ -30,9 +30,8 @@ class ResourceSample:
     gpu_total_mb: int | None
     gpu_util_pct: int | None
     gpu_temp_c: int | None
-    partial_count: int
-    committed_count: int
-    final_count: int
+    transcript_update_count: int
+    transcript_final_count: int
 
 
 def _percentile(values: list[float], q: float) -> float | None:
@@ -53,16 +52,13 @@ def _summarize_event_timings(
     def times_for(event_type: str) -> list[float]:
         return [float(item["wall_sec"]) for item in event_times if item.get("type") == event_type]
 
-    partial_times = times_for("partial")
-    committed_times = times_for("committed")
-    final_times = times_for("final")
-    update_times = sorted(partial_times + committed_times)
+    update_times = times_for("transcript_update")
+    final_times = times_for("transcript_final")
     update_gaps = [right - left for left, right in zip(update_times, update_times[1:])]
 
     final_wall = final_times[0] if final_times else None
     return {
-        "first_partial_wall_sec": round(partial_times[0], 3) if partial_times else None,
-        "first_committed_wall_sec": round(committed_times[0], 3) if committed_times else None,
+        "first_transcript_update_wall_sec": round(update_times[0], 3) if update_times else None,
         "final_wall_sec": round(final_wall, 3) if final_wall is not None else None,
         "finish_to_final_sec": (
             round(final_wall - finish_sent_wall_sec, 3)
@@ -148,9 +144,8 @@ def _make_sample(
         gpu_total_mb=gpu_total,
         gpu_util_pct=gpu_util,
         gpu_temp_c=gpu_temp,
-        partial_count=counters.get("partial", 0),
-        committed_count=counters.get("committed", 0),
-        final_count=counters.get("final", 0),
+        transcript_update_count=counters.get("transcript_update", 0),
+        transcript_final_count=counters.get("transcript_final", 0),
     )
 
 
@@ -181,7 +176,7 @@ async def _recv_events(
         counters[event_type] = counters.get(event_type, 0) + 1
         if len(event_log) < max_logged_events:
             event_log.append({**timing, "event": event})
-        if event_type == "final":
+        if event_type == "transcript_final":
             final_event[0] = event
             return
 
