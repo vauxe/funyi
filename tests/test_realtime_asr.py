@@ -346,6 +346,9 @@ class FakeVadModel:
 
 
 class SileroVadAdapterTest(unittest.TestCase):
+    def test_default_config_uses_onnx_runtime(self) -> None:
+        self.assertTrue(SileroVadConfig().use_onnx)
+
     def test_buffers_until_silero_chunk_is_complete(self) -> None:
         model = FakeVadModel([0.8])
         vad = SileroVadAdapter(

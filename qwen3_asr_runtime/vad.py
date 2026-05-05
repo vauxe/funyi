@@ -141,7 +141,7 @@ class SileroVadConfig:
     negative_threshold: Optional[float] = None
     min_speech_ms: int = 160
     min_silence_ms: int = 700
-    use_onnx: bool = False
+    use_onnx: bool = True
 
 
 class SileroVadAdapter:
