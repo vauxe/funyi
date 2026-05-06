@@ -1,173 +1,51 @@
 # Qwen3-ASR 1.7B Architecture
 
-## Purpose
+Runtime-shape facts only.
 
-This note records only the model facts that matter for standalone runtime work.
+## Flow
 
-## High-level structure
+Qwen3-ASR is not classic encoder-decoder ASR:
 
-`Qwen/Qwen3-ASR-1.7B` is not a classic seq2seq ASR model.
+```text
+processor -> audio tower -> multimodal merge -> decoder prefill -> decode
+```
 
-Practical structure:
+Steps:
 
-1. processor builds `input_features` and expands the `<audio>` placeholder
-2. audio tower converts `input_features` to `audio_features`
-3. decoder-only text model builds text embeddings
-4. multimodal merge replaces audio placeholder embeddings with `audio_features`
-5. autoregressive generation runs on the merged sequence
-
-So the right mental model is:
-
-- `speech`
-- `merge`
-- `decoder prefill`
-- `decoder decode`
-
-not “encoder + decoder cross-attention”.
-
-## Real 1.7B config
-
-### Text
-
-- `hidden_size = 2048`
-- `intermediate_size = 6144`
-- `num_hidden_layers = 28`
-- `num_attention_heads = 16`
-- `num_key_value_heads = 8`
-- `head_dim = 128`
-- `vocab_size = 151936`
-- `max_position_embeddings = 65536`
-
-### Audio
-
-- `num_mel_bins = 128`
-- `d_model = 1024`
-- `encoder_layers = 24`
-- `encoder_attention_heads = 16`
-- `encoder_ffn_dim = 4096`
-- `output_dim = 2048`
-- `n_window_infer = 800`
-
-Important point:
-
-- audio tower output is `2048`, which matches the text hidden size
-
-That is why audio features can be inserted directly into the text embedding stream.
-
-## Processor contract
-
-The processor is part of the model contract, not a thin helper.
-
-It:
-
-- runs the Whisper-style feature extractor
-- derives audio-feature lengths
-- expands the `<audio>` placeholder so placeholder count matches audio feature length
-
-Implication:
-
-- the safest component boundary starts from `input_features`, not raw waveform
-
-## Audio tower
-
-The audio tower is `Qwen3ASRAudioEncoder`.
-
-Structure:
-
-1. three `Conv2d` downsampling layers
-2. projection into audio hidden size
-3. positional embedding
-4. 24-layer Transformer encoder
-5. projection from `1024` to `2048`
-
-Important runtime facts:
-
-- it chunks long mel features internally
-- it uses ragged attention-style sequence handling
-- `get_audio_features()` avoids batch inference for precision reasons
-
-Implication:
-
-- this is not a good candidate for a first monolithic runtime boundary
-
-## Text model
-
-The text backbone is `Qwen3ASRThinkerTextModel`.
-
-It is a decoder-only Transformer with:
-
-- 28 blocks
-- RMSNorm
-- GQA (`16` attention heads, `8` KV heads)
-- gated SiLU MLP
-- RoPE and KV cache for generation
-
-## Multimodal merge
+1. processor builds `input_features` and expands `<audio>`;
+2. audio tower emits `audio_features`;
+3. decoder-only text model builds token embeddings;
+4. audio placeholder embeddings are replaced with `audio_features`;
+5. autoregressive generation continues.
 
 There is no text-to-audio cross-attention block.
 
-Instead:
+## Key Sizes
 
-1. text embeddings are built from `input_ids`
-2. `audio_features` are computed
-3. positions where `input_ids == audio_token_id` are found
-4. those embedding slots are replaced with `audio_features`
+Text: hidden `2048`, intermediate `6144`, layers `28`, heads `16`, KV heads `8`,
+head dim `128`, vocab `151936`, max positions `65536`.
 
-This is the key runtime decomposition fact.
+Audio: mel bins `128`, hidden `1024`, layers `24`, heads `16`, FFN `4096`,
+output `2048`, `n_window_infer=800`.
 
-## Prefill vs decode
+Audio output dim matches text hidden size, so features can be inserted directly
+into the text embedding stream.
 
-Generation has two different phases.
+## Runtime Boundaries
 
-### Prefill
+- The processor is part of the model contract; it computes feature lengths and
+  expands the audio placeholder.
+- `input_features` is a safer first runtime boundary than raw waveform.
+- `Qwen3ASRAudioEncoder` uses Conv2d downsampling, positional embeddings, a
+  24-layer encoder, and projection `1024 -> 2048`.
+- audio tower sequence handling is ragged/windowed; do not replace with dense
+  attention unless parity is proved.
+- prefill sees audio, performs multimodal merge, and initializes `rope_deltas`.
+- decode sees only new tokens, KV cache, and reused `rope_deltas`.
+- ignoring `rope_deltas` will drift.
 
-- audio is still present
-- multimodal merge happens
-- RoPE-related state is initialized
+## Long Audio
 
-### Decode
-
-- no new audio enters
-- generation continues with new token input and KV cache only
-
-Implication:
-
-- split `prefill` and `decode`
-
-## RoPE state
-
-The model tracks `rope_deltas` during multimodal prefill and reuses them during decode.
-
-Implication:
-
-- any runtime path that ignores `rope_deltas` will drift from the reference implementation
-
-## Long-audio behavior in this repo
-
-Long-audio support is wrapper-level, not a single giant core-model forward.
-
-The runtime wrapper:
-
-1. splits input audio into chunks up to `MAX_ASR_INPUT_SECONDS`
-2. transcribes each chunk
-3. concatenates text
-4. merges language results
-
-Implication:
-
-- current long-audio parity is wrapper-level offline parity
-
-## Runtime Decomposition Takeaway
-
-The right component decomposition is:
-
-1. `speech`
-2. `merge`
-3. `prefill`
-4. `decode`
-
-And the right first input boundary is:
-
-- `input_features`
-
-not raw waveform.
+Long-audio support is wrapper-level: split to `MAX_ASR_INPUT_SECONDS`,
+transcribe chunks, concatenate text, merge language. Current parity is not one
+giant core-model forward.

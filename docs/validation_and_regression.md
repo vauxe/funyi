@@ -1,20 +1,22 @@
 # Validation And Regression
 
-Use this when changing correctness-sensitive code, tool metrics, or regression
-generation. Public releases do not include audio-derived goldens. Keep local
-validation assets under `local_data/` and generated outputs under
-`local_goldens/`; both directories are ignored by git.
+Use this when changing correctness-sensitive runtime code, tools, service
+behavior, or documented metrics. Public releases do not include private audio,
+transcripts, or audio-derived outputs.
 
-The examples below use:
+Local assets:
 
 ```bash
 ASR_AUDIO=local_data/sample.wav
 ASR_SRT=local_data/sample.srt
 ```
 
+Keep validation audio in `local_data/` and generated outputs in
+`local_goldens/`; both are ignored by git.
+
 ## Public Smoke
 
-These checks do not require private audio or generated goldens:
+No private audio required:
 
 ```bash
 uv run python -m compileall -q qwen3_asr_runtime realtime_server.py tools tests
@@ -22,9 +24,9 @@ uv run python -m unittest tests.test_streaming_spec_decode tests.test_realtime_a
 git diff --check
 ```
 
-## Generate Local Goldens
+## Exact Regression
 
-Generate exact-regression goldens from audio you are allowed to use:
+Generate local goldens from audio you are allowed to use:
 
 ```bash
 TRANSFORMERS_VERBOSITY=error uv run python tools/generate_offline_regression_golden.py \
@@ -40,77 +42,26 @@ TRANSFORMERS_VERBOSITY=error uv run python tools/generate_streaming_regression_g
   --output local_goldens/streaming_regression.json
 ```
 
-## Offline Exact Regression
-
-The default runtime transformers path should stay byte-identical to a local
-runtime-default golden on the same stack.
+Run default-path checks:
 
 ```bash
 TRANSFORMERS_VERBOSITY=error uv run python tools/run_regression.py \
   --golden local_goldens/offline_regression.json
 
-TRANSFORMERS_VERBOSITY=error uv run python tools/run_regression.py \
-  --golden local_goldens/offline_regression.json \
-  --cases short_default_15s,short_context_15s,short_forced_language_15s
-```
-
-Do not pass optimization flags here. CUDA graph / FlashInfer / fused kernels can
-drift byte output; validate optimized paths with CER sweeps.
-
-## Streaming Exact Regression
-
-The streaming golden locks the default full-audio re-feed state machine: chunk
-buffering, rollback prefix, snapshots, and final text.
-
-```bash
 TRANSFORMERS_VERBOSITY=error uv run python tools/run_streaming_regression.py \
   --golden local_goldens/streaming_regression.json
-
-TRANSFORMERS_VERBOSITY=error uv run python tools/run_streaming_regression.py \
-  --golden local_goldens/streaming_regression.json \
-  --cases short_default_15s --step-ms 2000
 
 TRANSFORMERS_VERBOSITY=error uv run python tools/benchmark_streaming.py \
   --golden local_goldens/streaming_regression.json \
   --cases short_default_15s --step-ms 2000 --repeats 15 --check-final
 ```
 
-## Realtime Service E2E
+Do not pass optimization flags to exact regression. CUDA graph, FlashInfer,
+fused kernels, W8A16, and spec decode are CER-gated instead.
 
-Use this when changing `realtime_server.py`, session/VAD behavior, WebSocket
-contracts, or service dependencies. This is a service-level gate, separate from
-model regression goldens.
+## CER Gates
 
-Start the service:
-
-```bash
-uv run python realtime_server.py \
-  --model Qwen/Qwen3-ASR-1.7B \
-  --host 127.0.0.1 \
-  --port 8000
-```
-
-Then run a bounded real-audio WebSocket check:
-
-```bash
-uv run python tools/ws_e2e_leak_check.py \
-  --url ws://127.0.0.1:8000/ws/asr \
-  --audio "$ASR_AUDIO" \
-  --reference-srt "$ASR_SRT" \
-  --start-sec 0 \
-  --max-audio-sec 600 \
-  --language Chinese \
-  --finish-timeout-sec 300 \
-  --max-wall-sec 900 \
-  --output-json /tmp/realtime-e2e-0000.json
-```
-
-For a longer local gate, repeat with additional `--start-sec` values that are
-valid for your validation audio.
-
-## CER Sweeps
-
-Generate local CER sweeps against an SRT reference:
+Offline all-fused candidate:
 
 ```bash
 TRANSFORMERS_VERBOSITY=error uv run python tools/sweep_cer_vs_srt.py \
@@ -130,7 +81,7 @@ uv run python tools/merge_cer_sweeps.py \
   --output local_goldens/cer/cer_compare.json
 ```
 
-For streaming CER:
+Generic live30 streaming candidate:
 
 ```bash
 TRANSFORMERS_VERBOSITY=error uv run python tools/sweep_streaming_cer_vs_srt.py \
@@ -141,5 +92,42 @@ TRANSFORMERS_VERBOSITY=error uv run python tools/sweep_streaming_cer_vs_srt.py \
   --output local_goldens/cer/streaming_cer_candidate.json
 ```
 
-Use `--strip-ruby` for SRT files that contain Japanese-style furigana
-annotations.
+Local realtime service profile:
+
+```bash
+TRANSFORMERS_VERBOSITY=error uv run python tools/sweep_streaming_cer_vs_srt.py \
+  --audio "$ASR_AUDIO" --srt "$ASR_SRT" \
+  --paths graph --window-sec 60 --num-windows 167 --step-ms 1000 \
+  --chunk-size-sec 1.0 --max-window-sec 20 --max-prefix-tokens 64 \
+  --timed --spec-decode --cuda-graph-len-bucket 64 \
+  --flashinfer --fused-rmsnorm --fused-linears --quantized-linears \
+  --output local_goldens/cer/streaming_cer_service_profile.json
+```
+
+Use `--strip-ruby` for SRT files with furigana annotations.
+
+## WebSocket E2E
+
+Use this when changing `realtime_server.py`, session/VAD behavior, WebSocket
+contracts, or service dependencies.
+
+```bash
+uv run python realtime_server.py \
+  --model Qwen/Qwen3-ASR-1.7B \
+  --host 127.0.0.1 \
+  --port 8000
+
+uv run python tools/ws_e2e_leak_check.py \
+  --url ws://127.0.0.1:8000/ws/asr \
+  --audio "$ASR_AUDIO" \
+  --reference-srt "$ASR_SRT" \
+  --start-sec 0 \
+  --max-audio-sec 600 \
+  --language Chinese \
+  --finish-timeout-sec 300 \
+  --max-wall-sec 900 \
+  --output-json /tmp/realtime-e2e-0000.json
+```
+
+For a longer gate, repeat with additional valid `--start-sec` offsets. Keep
+service timing, RSS, and whole-GPU telemetry out of committed goldens.
