@@ -17,9 +17,9 @@ the source segment schema.
 
 v1 has two paths:
 
-- stable: `stable_appends -> stable queue -> HYMTTranslator ->
+- stable: `stable_appends -> stable queue -> TranslationModelActor ->
   translation_stable`;
-- preview: `partial -> latest-only debounce -> HYMTTranslator ->
+- preview: `partial -> latest-only debounce -> TranslationModelActor ->
   translation_preview`.
 
 Stable translations are durable. Preview translations are temporary, replaceable,
@@ -38,11 +38,11 @@ Out of scope:
 audio frames
   -> RealtimeASRSession
   -> transcript_update / transcript_final
+  -> update TranslationRuntime scheduler state without waiting for the model
   -> send source events immediately
-  -> enqueue stable_appends
-  -> update or cancel latest partial preview
 
 TranslationRuntime
+  -> TranslationModelActor
   -> HYMTTranslator.translate(...)
   -> event_queue
 
@@ -64,8 +64,8 @@ HY-MT.
 
 When translation is enabled, the service also prewarms HY-MT after the ASR
 prewarm and before accepting WebSocket sessions. HY-MT warmup covers short,
-medium, and long subtitle-shaped texts on the same stable and preview executor
-threads used at runtime. HY-MT warmup failure is a startup failure.
+medium, and long subtitle-shaped texts on the same single model actor executor
+thread used at runtime. HY-MT warmup failure is a startup failure.
 
 ## Protocol
 
@@ -156,17 +156,17 @@ For every `transcript_update`:
 
 ```text
 update translation scheduler state
-send source event first
 if partial exists: update_preview(revision, partial)
 else: cancel_preview(revision)
 enqueue each stable_appends item
+send source event
 ```
 
 Stable:
 
 - stable history is reliable: every source stable segment gets exactly one
   `translation_stable` before `transcript_final`, unless the translator fails;
-- stable generation runs one job at a time on the stable lane;
+- stable generation runs one job at a time through the model actor;
 - stable jobs are not dropped for backlog pressure and are not timed out by the
   service;
 - translator failures emit `translation_status` for the affected segment.
@@ -175,12 +175,12 @@ Preview:
 
 - debounce defaults to 700 ms;
 - latest-only slot, no queue;
-- preview generation runs on a separate best-effort lane;
+- preview generation is best-effort and goes through the same model actor;
 - a newer `source_revision` makes older preview work stale;
 - `transcript_update` without `partial` cancels older preview work;
 - stale preview results are dropped silently;
 - timed-out or finish-canceled preview model calls may keep running in the
-  preview executor thread, but their results are ignored.
+  model actor thread, but their results are ignored.
 
 Client replay:
 
@@ -204,15 +204,21 @@ Scheduling:
   fall back to non-graph decode;
 - preview has priority over normal stable backlog because it is the lowest
   latency translation path;
-- slow or stuck preview work must not block stable history or `finish`;
+- preview work that has not entered the model can be superseded by newer state;
+- a preview model call that already entered HY-MT cannot be preempted and may
+  delay later stable history or `finish`;
 - stable backlog runs when no preview is ready and is drained during `finish`;
 - finish-created stable jobs have priority during `finish`;
 - if a stable job is already running when preview arrives, do not cancel the
-  worker thread; drop the preview if it is stale by completion time;
+  model actor call; drop the preview if it is stale by completion time;
+- stable and preview share one `TranslationModelActor`, so the same translator
+  instance is never entered concurrently;
+- preview timeouts only discard the result; they do not interrupt the model
+  call already running on the actor;
 - if `--no-cuda-graph-prewarm` is used with translation, HY-MT calls share the
   CUDA graph capture lock to avoid runtime capture races; the validated default
-  path is the prewarmed graph path, where translation calls do not need that
-  lock.
+  path is the prewarmed graph path, where actor serialization is enough for
+  HY-MT model ownership.
 
 ## Finish
 
@@ -230,18 +236,20 @@ send transcript_final
 close WebSocket
 ```
 
-Do not try to cancel a worker thread already inside `HYMTTranslator.translate`.
+Do not try to cancel the model actor thread already inside
+`HYMTTranslator.translate`.
 Running stable jobs are not retranslated; they publish once before
 `transcript_final`. Already-running preview model calls may continue on the
-preview lane, but preview results after finish are ignored. ASR-only mode keeps
-the current `session.finish()` behavior.
+model actor, and stable finish work waits for the actor before publishing.
+Preview results after finish are ignored. ASR-only mode keeps the current
+`session.finish()` behavior.
 
 ## Translator
 
 `HYMTTranslator.translate(text, *, target_language, source_language="",
-max_new_tokens=512) -> str` remains synchronous. Runtime calls it from a worker
-thread. Load the model once at startup and never download weights from request
-handling.
+max_new_tokens=512) -> str` remains synchronous. Runtime calls it through the
+single `TranslationModelActor` thread. Load the model once at startup and never
+download weights from request handling.
 
 Default runtime path:
 

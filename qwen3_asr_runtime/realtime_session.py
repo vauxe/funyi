@@ -251,12 +251,7 @@ class RealtimeASRSession:
         self._active = active
         return active
 
-    def _close_speech_segment(
-        self,
-        *,
-        end_sample: int | None = None,
-        remember_trailing: bool = False,
-    ) -> list[dict[str, Any]]:
+    def _close_speech_segment(self, *, end_sample: int | None = None) -> list[dict[str, Any]]:
         active = self._active
         if active is None:
             return []
@@ -266,16 +261,12 @@ class RealtimeASRSession:
         if active.asr_state is None:
             if self.store.clear_partial():
                 events.extend(self._emit_transcript_update(stable_base=self.store.stable_count, stable_appends=[]))
-            if remember_trailing and active.confirmed.samples > 0:
-                self._remember_pre_roll(active.confirmed.audio)
             self._active = None
             return events
 
         active.asr_state = self.model.finish_streaming_transcribe(active.asr_state)
         self._last_asr_end_sample = close_sample
         events.extend(self._handle_decoded_text(active, finalize=True))
-        if remember_trailing and active.confirmed.samples > 0:
-            self._remember_pre_roll(active.confirmed.audio)
         self._active = None
         return events
 

@@ -19,9 +19,10 @@ from realtime_server import (
     _publish_finish_events,
     _publish_session_events,
     _session_translation_config,
+    _translation_capture_lock,
 )
 from qwen3_asr_runtime.realtime_session import EnergyVadConfig, RealtimeASRConfig, RealtimeASRSession
-from qwen3_asr_runtime.realtime_translation import RealtimeTranslationConfig
+from qwen3_asr_runtime.realtime_translation import RealtimeTranslationConfig, TranslationModelActor
 from qwen3_asr_runtime.transcript_store import TranscriptStore
 from qwen3_asr_runtime.vad import SileroVadAdapter, SileroVadConfig
 
@@ -211,9 +212,8 @@ class RealtimeServerCliTest(unittest.TestCase):
             args = _parse_args()
         model = FakeModel()
 
-        lock = _prepare_cuda_graph_runtime(model, args, translation_enabled=False)
+        _prepare_cuda_graph_runtime(model, args)
 
-        self.assertIsNone(lock)
         self.assertEqual(
             model.calls,
             [{"language": "Chinese", "max_window_sec": 20.0, "max_prefix_tokens": 64}],
@@ -229,7 +229,7 @@ class RealtimeServerCliTest(unittest.TestCase):
             args = _parse_args()
 
         with self.assertRaises(RuntimeError):
-            _prepare_cuda_graph_runtime(FakeModel(), args, translation_enabled=False)
+            _prepare_cuda_graph_runtime(FakeModel(), args)
 
     def test_translation_uses_capture_lock_when_prewarm_is_disabled(self) -> None:
         class FakeModel:
@@ -243,9 +243,29 @@ class RealtimeServerCliTest(unittest.TestCase):
         ):
             args = _parse_args()
 
-        lock = _prepare_cuda_graph_runtime(FakeModel(), args, translation_enabled=True)
+        lock = _translation_capture_lock(args, translation_enabled=True)
 
         self.assertIs(lock, CUDA_GRAPH_CAPTURE_LOCK)
+
+    def test_translation_actor_needs_no_capture_lock_after_default_cuda_graph_prewarm(self) -> None:
+        class FakeModel:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def prewarm_realtime_cuda_graph(self, **kwargs: object) -> bool:
+                del kwargs
+                self.calls += 1
+                return True
+
+        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model"]):
+            args = _parse_args()
+
+        model = FakeModel()
+        _prepare_cuda_graph_runtime(model, args)
+        lock = _translation_capture_lock(args, translation_enabled=True)
+
+        self.assertEqual(model.calls, 1)
+        self.assertIsNone(lock)
 
     def test_translation_prewarm_runs_before_serving(self) -> None:
         class FakeTranslator:
@@ -258,9 +278,13 @@ class RealtimeServerCliTest(unittest.TestCase):
                 return [object() for _ in text_list]
 
         translator = FakeTranslator()
+        actor = TranslationModelActor(translator)
         config = RealtimeTranslationConfig(target_language="English", max_new_tokens=16)
 
-        _prewarm_translation(translator, config)
+        try:
+            _prewarm_translation(actor, config)
+        finally:
+            actor.close(wait=True)
 
         self.assertEqual(len(translator.calls), 1)
         self.assertEqual(translator.calls[0]["target_language"], "English")
@@ -278,7 +302,11 @@ class RealtimeServerCliTest(unittest.TestCase):
                 return []
 
         with self.assertRaises(RuntimeError):
-            _prewarm_translation(FakeTranslator(), RealtimeTranslationConfig(target_language="English"))
+            actor = TranslationModelActor(FakeTranslator())
+            try:
+                _prewarm_translation(actor, RealtimeTranslationConfig(target_language="English"))
+            finally:
+                actor.close(wait=True)
 
     def test_start_payload_can_disable_configured_translation(self) -> None:
         config = RealtimeTranslationConfig(target_language="English")

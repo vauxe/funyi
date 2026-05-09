@@ -49,25 +49,134 @@ class _PreviewJob:
     source_language: str
 
 
-class RealtimeTranslationRuntime:
-    """Async service-layer translation runtime for realtime transcript events."""
+class TranslationModelActor:
+    """Owns all calls into one translation model instance."""
 
     def __init__(
         self,
         translator: Any,
         *,
-        config: RealtimeTranslationConfig,
-        event_queue: asyncio.Queue[dict[str, Any] | None],
-        translate_lock: threading.Lock | None = None,
+        capture_lock: threading.Lock | None = None,
         executor: ThreadPoolExecutor | None = None,
-        preview_executor: ThreadPoolExecutor | None = None,
     ) -> None:
         self.translator = translator
+        self._capture_lock = capture_lock
+        self._owns_executor = executor is None
+        self._executor = executor or ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="hymt-translation",
+        )
+
+    @property
+    def model_path(self) -> str:
+        return str(getattr(self.translator, "model_path", ""))
+
+    def warmup(
+        self,
+        texts: list[str] | tuple[str, ...],
+        *,
+        target_language: str,
+        source_language: str,
+        max_new_tokens: int | None,
+        sync_cuda: bool,
+    ) -> list[Any]:
+        warmup = getattr(self.translator, "warmup", None)
+        if warmup is None:
+            raise RuntimeError("translation prewarm was requested but this translator does not support warmup")
+        future = self._executor.submit(
+            self._call_with_capture_lock,
+            partial(
+                warmup,
+                texts,
+                target_language=target_language,
+                source_language=source_language,
+                max_new_tokens=max_new_tokens,
+                sync_cuda=sync_cuda,
+            ),
+        )
+        return list(future.result())
+
+    async def translate(
+        self,
+        text: str,
+        *,
+        target_language: str,
+        source_language: str,
+        max_new_tokens: int | None,
+        timeout_sec: float | None,
+    ) -> tuple[str | None, str | None]:
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(
+            self._executor,
+            partial(
+                self._call_translate,
+                text,
+                target_language=target_language,
+                source_language=source_language,
+                max_new_tokens=max_new_tokens,
+            ),
+        )
+        future.add_done_callback(_consume_future)
+        try:
+            translated = str(
+                await _wait_future_result(
+                    future,
+                    timeout_sec=None if timeout_sec is None else max(0.001, float(timeout_sec)),
+                )
+            ).strip()
+            if not translated:
+                return None, "failed"
+            return translated, None
+        except asyncio.TimeoutError:
+            return None, "timeout"
+        except Exception:
+            _LOGGER.debug("Realtime translation failed.", exc_info=True)
+            return None, "failed"
+
+    def close(self, *, wait: bool = False) -> None:
+        if self._owns_executor:
+            self._executor.shutdown(wait=wait, cancel_futures=True)
+
+    def _call_translate(
+        self,
+        text: str,
+        *,
+        target_language: str,
+        source_language: str,
+        max_new_tokens: int | None,
+    ) -> str:
+        return str(
+            self._call_with_capture_lock(
+                partial(
+                    self.translator.translate,
+                    text,
+                    target_language=target_language,
+                    source_language=source_language,
+                    max_new_tokens=max_new_tokens,
+                )
+            )
+        )
+
+    def _call_with_capture_lock(self, call: Any) -> Any:
+        if self._capture_lock is None:
+            return call()
+        with self._capture_lock:
+            return call()
+
+
+class RealtimeTranslationRuntime:
+    """Async service-layer translation runtime for realtime transcript events."""
+
+    def __init__(
+        self,
+        model_actor: TranslationModelActor,
+        *,
+        config: RealtimeTranslationConfig,
+        event_queue: asyncio.Queue[dict[str, Any] | None],
+    ) -> None:
+        self.model_actor = model_actor
         self.config = config
         self.event_queue = event_queue
-        self._translate_lock = translate_lock
-        self._owns_stable_executor = executor is None
-        self._owns_preview_executor = preview_executor is None
 
         self._stable_queue: Deque[_StableJob] = deque()
         self._preview_slot: _PreviewJob | None = None
@@ -80,22 +189,12 @@ class RealtimeTranslationRuntime:
         self._lock = asyncio.Lock()
         self._wake = asyncio.Event()
         self._worker_task: asyncio.Task[None] | None = None
-        self._pending_stable_translate_futures: set[asyncio.Future[Any]] = set()
-        self._pending_preview_translate_futures: set[asyncio.Future[Any]] = set()
-        self._stable_executor = executor or ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="hymt-stable-translation",
-        )
-        self._preview_executor = preview_executor or ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="hymt-preview-translation",
-        )
 
     def ready_payload(self) -> dict[str, Any]:
         return {
             "enabled": True,
             "target_language": self.config.target_language,
-            "model": str(getattr(self.translator, "model_path", "")),
+            "model": self.model_actor.model_path,
             "stable": {
                 "enabled": bool(self.config.stable_enabled),
                 "reliable": True,
@@ -120,11 +219,6 @@ class RealtimeTranslationRuntime:
             self._preview_slot = None
             self._wake.set()
         await self._stop_worker(cancel_running_preview=True)
-        await self._drain_stable_translate_futures()
-        if self._owns_stable_executor:
-            self._stable_executor.shutdown(wait=True, cancel_futures=True)
-        if self._owns_preview_executor:
-            self._preview_executor.shutdown(wait=False, cancel_futures=True)
 
     async def accept_source_event(self, event: dict[str, Any]) -> None:
         if event.get("type") != "transcript_update":
@@ -155,7 +249,6 @@ class RealtimeTranslationRuntime:
             self._stable_queue.clear()
             self._wake.set()
         await self._stop_worker(cancel_running_preview=True)
-        await self._drain_stable_translate_futures()
 
         events: list[dict[str, Any]] = []
 
@@ -255,8 +348,6 @@ class RealtimeTranslationRuntime:
             job.source_text,
             source_language=job.source_language,
             timeout_sec=self._preview_timeout_sec(),
-            executor=self._preview_executor,
-            pending_futures=self._pending_preview_translate_futures,
         )
         async with self._lock:
             is_current = (
@@ -282,8 +373,6 @@ class RealtimeTranslationRuntime:
             job.source_text,
             source_language=job.source_language,
             timeout_sec=None,
-            executor=self._stable_executor,
-            pending_futures=self._pending_stable_translate_futures,
         )
         if translated is None:
             code = error_code or "failed"
@@ -314,44 +403,14 @@ class RealtimeTranslationRuntime:
         *,
         source_language: str,
         timeout_sec: float | None,
-        executor: ThreadPoolExecutor,
-        pending_futures: set[asyncio.Future[Any]],
     ) -> tuple[str | None, str | None]:
-        loop = asyncio.get_running_loop()
-        fn = partial(
-            self._call_translator,
+        return await self.model_actor.translate(
             text,
             target_language=self.config.target_language,
             source_language=source_language,
             max_new_tokens=self.config.max_new_tokens,
+            timeout_sec=timeout_sec,
         )
-        future = loop.run_in_executor(executor, fn)
-        pending_futures.add(future)
-        future.add_done_callback(lambda item: self._on_translate_future_done(item, pending_futures))
-        try:
-            translated = str(
-                await _wait_future_result(
-                    future,
-                    timeout_sec=None if timeout_sec is None else max(0.001, float(timeout_sec)),
-                )
-            ).strip()
-            if not translated:
-                return None, "failed"
-            return translated, None
-        except asyncio.TimeoutError:
-            future.add_done_callback(_consume_future)
-            return None, "timeout"
-        except Exception:
-            _LOGGER.debug("Realtime translation failed.", exc_info=True)
-            return None, "failed"
-
-    def _on_translate_future_done(
-        self,
-        future: asyncio.Future[Any],
-        pending_futures: set[asyncio.Future[Any]],
-    ) -> None:
-        pending_futures.discard(future)
-        _consume_future(future)
 
     async def _stop_worker(self, *, cancel_running_preview: bool = False) -> None:
         task = self._worker_task
@@ -374,44 +433,10 @@ class RealtimeTranslationRuntime:
         await task
         self._worker_task = None
 
-    async def _drain_stable_translate_futures(self) -> None:
-        while True:
-            pending = [future for future in self._pending_stable_translate_futures if not future.done()]
-            if not pending:
-                return
-            await asyncio.sleep(0.01)
-
     async def _clear_running_job(self, kind: str) -> None:
         async with self._lock:
             if self._running_job_kind == kind:
                 self._running_job_kind = None
-
-    def _call_translator(
-        self,
-        text: str,
-        *,
-        target_language: str,
-        source_language: str,
-        max_new_tokens: int | None,
-    ) -> str:
-        try:
-            if self._translate_lock is None:
-                return self.translator.translate(
-                    text,
-                    target_language=target_language,
-                    source_language=source_language,
-                    max_new_tokens=max_new_tokens,
-                )
-            with self._translate_lock:
-                return self.translator.translate(
-                    text,
-                    target_language=target_language,
-                    source_language=source_language,
-                    max_new_tokens=max_new_tokens,
-                )
-        except Exception:
-            _LOGGER.debug("Translator call failed.", exc_info=True)
-            raise
 
     def _make_stable_job(self, revision: int, segment: dict[str, Any]) -> _StableJob | None:
         source_text = str(segment.get("text") or "").strip()
@@ -444,6 +469,8 @@ class RealtimeTranslationRuntime:
 def _consume_future(future: Any) -> None:
     try:
         future.result()
+    except asyncio.CancelledError:
+        pass
     except Exception:
         pass
 
@@ -463,4 +490,4 @@ async def _wait_future_result(future: asyncio.Future[Any], *, timeout_sec: float
     return future.result()
 
 
-__all__ = ["RealtimeTranslationConfig", "RealtimeTranslationRuntime"]
+__all__ = ["RealtimeTranslationConfig", "RealtimeTranslationRuntime", "TranslationModelActor"]

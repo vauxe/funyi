@@ -2,7 +2,6 @@
 
 import argparse
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 import json
 import logging
@@ -11,7 +10,11 @@ from typing import Any
 import numpy as np
 
 from qwen3_asr_runtime.cuda_serialization import CUDA_GRAPH_CAPTURE_LOCK
-from qwen3_asr_runtime.realtime_translation import RealtimeTranslationConfig, RealtimeTranslationRuntime
+from qwen3_asr_runtime.realtime_translation import (
+    RealtimeTranslationConfig,
+    RealtimeTranslationRuntime,
+    TranslationModelActor,
+)
 from qwen3_asr_runtime.translation import (
     DEFAULT_HYMT_ATTN_IMPLEMENTATION,
     DEFAULT_HYMT_DECODE_BACKEND,
@@ -42,11 +45,8 @@ _LOGGER = logging.getLogger(__name__)
 def build_app(
     *,
     model: Any,
-    translator: Any | None = None,
+    translation_actor: TranslationModelActor | None = None,
     translation_config: RealtimeTranslationConfig | None = None,
-    translation_capture_lock: Any | None = None,
-    translation_executor: ThreadPoolExecutor | None = None,
-    translation_preview_executor: ThreadPoolExecutor | None = None,
 ) -> Any:
     try:
         from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -54,7 +54,7 @@ def build_app(
         raise RuntimeError("Install service dependencies with: uv sync --python 3.12") from exc
 
     lifespan = None
-    if translation_executor is not None or translation_preview_executor is not None:
+    if translation_actor is not None:
 
         @asynccontextmanager
         async def translation_lifespan(app: Any) -> Any:
@@ -62,10 +62,7 @@ def build_app(
             try:
                 yield
             finally:
-                if translation_executor is not None:
-                    translation_executor.shutdown(wait=True, cancel_futures=True)
-                if translation_preview_executor is not None:
-                    translation_preview_executor.shutdown(wait=False, cancel_futures=True)
+                translation_actor.close(wait=False)
 
         lifespan = translation_lifespan
 
@@ -110,14 +107,11 @@ def build_app(
             event_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
             sender_task = asyncio.create_task(_send_queued_events(websocket, event_queue))
             translation: RealtimeTranslationRuntime | None = None
-            if translator is not None and session_translation_config is not None:
+            if translation_actor is not None and session_translation_config is not None:
                 translation = RealtimeTranslationRuntime(
-                    translator,
+                    translation_actor,
                     config=session_translation_config,
                     event_queue=event_queue,
-                    translate_lock=translation_capture_lock,
-                    executor=translation_executor,
-                    preview_executor=translation_preview_executor,
                 )
                 await translation.start()
 
@@ -129,7 +123,7 @@ def build_app(
             }
             if translation is not None:
                 ready["translation"] = translation.ready_payload()
-            elif translator is not None and translation_config is not None:
+            elif translation_actor is not None and translation_config is not None:
                 ready["translation"] = _disabled_translation_ready_payload(translation_config)
             await event_queue.put(ready)
 
@@ -459,31 +453,21 @@ def _build_translation(args: argparse.Namespace) -> tuple[Any | None, RealtimeTr
 
 
 def _prewarm_translation(
-    translator: Any,
+    translation_actor: TranslationModelActor,
     config: RealtimeTranslationConfig,
-    *,
-    executor: ThreadPoolExecutor | None = None,
 ) -> None:
-    warmup = getattr(translator, "warmup", None)
-    if warmup is None:
-        raise RuntimeError("translation prewarm was requested but this translator does not support warmup")
-    call = lambda: warmup(
-        _TRANSLATION_PREWARM_TEXTS,
-        target_language=config.target_language,
-        source_language=config.source_language,
-        max_new_tokens=config.max_new_tokens,
-        sync_cuda=True,
-    )
     try:
-        results = executor.submit(call).result() if executor is not None else call()
+        results = translation_actor.warmup(
+            _TRANSLATION_PREWARM_TEXTS,
+            target_language=config.target_language,
+            source_language=config.source_language,
+            max_new_tokens=config.max_new_tokens,
+            sync_cuda=True,
+        )
     except Exception as exc:
         raise RuntimeError("translation prewarm failed") from exc
     if len(results) != len(_TRANSLATION_PREWARM_TEXTS):
         raise RuntimeError("translation prewarm did not run all warmup cases")
-
-
-def _build_translation_executor(thread_name_prefix: str) -> ThreadPoolExecutor:
-    return ThreadPoolExecutor(max_workers=1, thread_name_prefix=thread_name_prefix)
 
 
 def _cuda_graph_enabled(args: argparse.Namespace) -> bool:
@@ -503,14 +487,19 @@ def _prewarm_realtime_cuda_graph(model: Any, args: argparse.Namespace) -> bool:
     )
 
 
-def _prepare_cuda_graph_runtime(model: Any, args: argparse.Namespace, *, translation_enabled: bool) -> Any | None:
+def _prepare_cuda_graph_runtime(model: Any, args: argparse.Namespace) -> None:
     if not _cuda_graph_enabled(args):
-        return None
+        return
     if args.cuda_graph_prewarm:
         if not _prewarm_realtime_cuda_graph(model, args):
             raise RuntimeError("cuda graph prewarm was requested but this backend does not support it")
+        return
+
+
+def _translation_capture_lock(args: argparse.Namespace, *, translation_enabled: bool) -> Any | None:
+    if not translation_enabled:
         return None
-    if translation_enabled:
+    if _cuda_graph_enabled(args) and not args.cuda_graph_prewarm:
         return CUDA_GRAPH_CAPTURE_LOCK
     return None
 
@@ -527,33 +516,23 @@ def main() -> None:
         **load_kwargs,
     )
     translation_enabled = bool(str(args.translation_target_language or "").strip())
-    translation_capture_lock = _prepare_cuda_graph_runtime(
-        model,
-        args,
-        translation_enabled=translation_enabled,
-    )
+    _prepare_cuda_graph_runtime(model, args)
+    translation_capture_lock = _translation_capture_lock(args, translation_enabled=translation_enabled)
     translator, translation_config = _build_translation(args)
-    translation_executor = _build_translation_executor("hymt-stable-translation") if translator is not None else None
-    translation_preview_executor = (
-        _build_translation_executor("hymt-preview-translation") if translator is not None else None
+    translation_actor = (
+        TranslationModelActor(translator, capture_lock=translation_capture_lock) if translator is not None else None
     )
     try:
-        if translator is not None and translation_config is not None and args.translation_prewarm:
-            _prewarm_translation(translator, translation_config, executor=translation_executor)
-            _prewarm_translation(translator, translation_config, executor=translation_preview_executor)
+        if translation_actor is not None and translation_config is not None and args.translation_prewarm:
+            _prewarm_translation(translation_actor, translation_config)
     except Exception:
-        if translation_executor is not None:
-            translation_executor.shutdown(wait=True, cancel_futures=True)
-        if translation_preview_executor is not None:
-            translation_preview_executor.shutdown(wait=True, cancel_futures=True)
+        if translation_actor is not None:
+            translation_actor.close(wait=True)
         raise
     app = build_app(
         model=model,
-        translator=translator,
+        translation_actor=translation_actor,
         translation_config=translation_config,
-        translation_capture_lock=translation_capture_lock,
-        translation_executor=translation_executor,
-        translation_preview_executor=translation_preview_executor,
     )
 
     try:

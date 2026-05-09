@@ -80,8 +80,8 @@ Service entrypoint defaults:
 - `live_stability_delay_ms=12000`
 
 Disable flags only for debugging, fallback, or comparison.
-When translation is enabled, HY-MT stable and preview lanes are both prewarmed
-before serving; failure is a startup failure.
+When translation is enabled, HY-MT is prewarmed on the same single model actor
+thread used at runtime before serving; failure is a startup failure.
 
 ## Validation
 
