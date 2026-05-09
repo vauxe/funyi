@@ -2,6 +2,8 @@
 from .backends import ASRRuntimeBackend, TransformersASRBackend
 from .model import ASRStreamingState, ASRTranscription, Qwen3ASRModel
 from .realtime_session import RealtimeASRConfig, RealtimeASRSession
+from .realtime_translation import RealtimeTranslationConfig, RealtimeTranslationRuntime
+from .subtitle_document import SubtitleDocument, SubtitleLine, SubtitleWindow
 from .transcript_store import PartialSegment, StableSegment, TranscriptState, TranscriptStore
 from .translation import (
     DEFAULT_HYMT_ATTN_IMPLEMENTATION,
@@ -28,8 +30,13 @@ __all__ = [
     "HYMTTranslator",
     "SileroVadAdapter",
     "SileroVadConfig",
+    "SubtitleDocument",
+    "SubtitleLine",
+    "SubtitleWindow",
     "RealtimeASRConfig",
     "RealtimeASRSession",
+    "RealtimeTranslationConfig",
+    "RealtimeTranslationRuntime",
     "PartialSegment",
     "StableSegment",
     "ASRStreamingState",

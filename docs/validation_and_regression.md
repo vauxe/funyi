@@ -97,8 +97,9 @@ Local realtime service profile:
 ```bash
 TRANSFORMERS_VERBOSITY=error uv run python tools/sweep_streaming_cer_vs_srt.py \
   --audio "$ASR_AUDIO" --srt "$ASR_SRT" \
-  --paths graph --window-sec 60 --num-windows 167 --step-ms 1000 \
-  --chunk-size-sec 1.0 --max-window-sec 20 --max-prefix-tokens 64 \
+  --paths graph --window-sec 60 --num-windows 167 --step-ms 500 \
+  --chunk-size-sec 0.5 --unfixed-chunk-num 4 \
+  --max-window-sec 20 --max-prefix-tokens 64 \
   --timed --spec-decode --cuda-graph-len-bucket 64 \
   --flashinfer --fused-rmsnorm --fused-linears --quantized-linears \
   --output local_goldens/cer/streaming_cer_service_profile.json
@@ -123,6 +124,8 @@ uv run python tools/ws_e2e_leak_check.py \
   --reference-srt "$ASR_SRT" \
   --start-sec 0 \
   --max-audio-sec 600 \
+  --chunk-sec 0.1 \
+  --send-delay-sec 0.1 \
   --language Chinese \
   --finish-timeout-sec 300 \
   --max-wall-sec 900 \

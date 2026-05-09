@@ -72,6 +72,121 @@ def _summarize_event_timings(
     }
 
 
+def _translation_validation_issues(
+    *,
+    ready_event: dict[str, Any] | None,
+    counters: dict[str, int],
+    expect_translation: bool,
+    min_translation_stable: int,
+    min_translation_preview: int,
+    max_translation_status: int | None,
+) -> list[str]:
+    issues: list[str] = []
+    if expect_translation:
+        translation_ready = (ready_event or {}).get("translation")
+        if not isinstance(translation_ready, dict) or not translation_ready.get("enabled"):
+            issues.append("ready.translation is missing or disabled")
+    stable_count = counters.get("translation_stable", 0)
+    if stable_count < min_translation_stable:
+        issues.append(f"translation_stable count {stable_count} < {min_translation_stable}")
+    preview_count = counters.get("translation_preview", 0)
+    if preview_count < min_translation_preview:
+        issues.append(f"translation_preview count {preview_count} < {min_translation_preview}")
+    status_count = counters.get("translation_status", 0)
+    if max_translation_status is not None and status_count > max_translation_status:
+        issues.append(f"translation_status count {status_count} > {max_translation_status}")
+    return issues
+
+
+def _record_event_contract(state: dict[str, Any], event: dict[str, Any]) -> list[str]:
+    event_type = str(event.get("type") or "")
+    issues: list[str] = []
+    if event_type == "transcript_update":
+        revision = int(event.get("revision") or 0)
+        latest_revision = int(state.get("latest_transcript_revision") or 0)
+        if revision <= latest_revision:
+            issues.append(
+                f"transcript_update revision {revision} is not greater than previous revision {latest_revision}"
+            )
+        state["latest_transcript_revision"] = max(latest_revision, revision)
+        source_ids = state.setdefault("source_stable_segment_ids", [])
+        seen_source_ids = state.setdefault("seen_source_stable_segment_ids", set())
+        for segment in event.get("stable_appends") or []:
+            if not isinstance(segment, dict):
+                continue
+            segment_id = str(segment.get("id") or "")
+            if not segment_id:
+                issues.append("transcript_update stable_appends contains a segment without id")
+                continue
+            if segment_id in seen_source_ids:
+                issues.append(f"duplicate source stable segment id: {segment_id}")
+                continue
+            source_ids.append(segment_id)
+            seen_source_ids.add(segment_id)
+    elif event_type == "translation_preview":
+        source_revision = int(event.get("source_revision") or 0)
+        latest_revision = int(state.get("latest_transcript_revision") or 0)
+        if source_revision < latest_revision:
+            issues.append(
+                "translation_preview source_revision "
+                f"{source_revision} is older than latest transcript_update revision {latest_revision}"
+            )
+    elif event_type == "translation_stable":
+        segment_id = str(event.get("source_segment_id") or "")
+        translated_ids = state.setdefault("translation_stable_segment_ids", [])
+        seen_translated_ids = state.setdefault("seen_translation_stable_segment_ids", set())
+        if not segment_id:
+            issues.append("translation_stable is missing source_segment_id")
+        elif segment_id in seen_translated_ids:
+            issues.append(f"duplicate translation_stable for source segment: {segment_id}")
+        else:
+            translated_ids.append(segment_id)
+            seen_translated_ids.add(segment_id)
+    elif event_type == "translation_status" and str(event.get("scope") or "") == "stable":
+        status_ids = state.setdefault("translation_status_segment_ids", [])
+        segment_id = str(event.get("source_segment_id") or "")
+        if segment_id:
+            status_ids.append(segment_id)
+    return issues
+
+
+def _final_event_contract_issues(
+    state: dict[str, Any],
+    final_event: dict[str, Any] | None,
+    *,
+    expect_translation: bool,
+) -> list[str]:
+    issues: list[str] = []
+    if final_event is None:
+        return issues
+
+    final_ids = [
+        str(segment.get("id") or "")
+        for segment in final_event.get("segments", [])
+        if isinstance(segment, dict) and str(segment.get("id") or "")
+    ]
+    source_ids = list(state.get("source_stable_segment_ids") or [])
+    if source_ids and source_ids != final_ids:
+        issues.append("transcript_update stable history does not match transcript_final segments")
+
+    if not expect_translation:
+        return issues
+
+    translated_ids = set(state.get("translation_stable_segment_ids") or [])
+    missing = [segment_id for segment_id in final_ids if segment_id not in translated_ids]
+    if missing:
+        issues.append(f"missing translation_stable for source segments: {', '.join(missing)}")
+
+    final_id_set = set(final_ids)
+    unknown = [segment_id for segment_id in state.get("translation_stable_segment_ids") or [] if segment_id not in final_id_set]
+    if unknown:
+        issues.append(f"translation_stable references unknown source segments: {', '.join(unknown)}")
+    status_ids = [segment_id for segment_id in state.get("translation_status_segment_ids") or [] if segment_id in final_id_set]
+    if status_ids:
+        issues.append(f"translation_status emitted for stable source segments: {', '.join(status_ids)}")
+    return issues
+
+
 def _compute_reference_cer(
     *,
     reference_srt: str | None,
@@ -159,6 +274,8 @@ async def _recv_events(
     final_event: list[dict[str, Any] | None],
     event_log: list[dict[str, Any]],
     event_times: list[dict[str, Any]],
+    contract_state: dict[str, Any],
+    contract_issues: list[str],
     max_logged_events: int,
 ) -> None:
     while True:
@@ -174,6 +291,7 @@ async def _recv_events(
         }
         event_times.append(timing)
         counters[event_type] = counters.get(event_type, 0) + 1
+        contract_issues.extend(_record_event_contract(contract_state, event))
         if len(event_log) < max_logged_events:
             event_log.append({**timing, "event": event})
         if event_type == "transcript_final":
@@ -234,8 +352,11 @@ async def run_check(args: argparse.Namespace) -> dict[str, Any]:
     counters: dict[str, int] = {}
     event_log: list[dict[str, Any]] = []
     event_times: list[dict[str, Any]] = []
+    contract_state: dict[str, Any] = {}
+    contract_issues: list[str] = []
     samples: list[ResourceSample] = []
     final_event: list[dict[str, Any] | None] = [None]
+    ready_event: dict[str, Any] | None = None
     abort_reason: list[str | None] = [None]
     last_event_time = [start_time]
     audio_sent = [0.0]
@@ -267,6 +388,7 @@ async def run_check(args: argparse.Namespace) -> dict[str, Any]:
                 ready = json.loads(await ws.recv())
                 if ready.get("type") != "ready":
                     raise RuntimeError(f"unexpected ready event: {ready}")
+                ready_event = ready
                 counters["ready"] = 1
                 last_event_time[0] = time.monotonic()
 
@@ -280,6 +402,8 @@ async def run_check(args: argparse.Namespace) -> dict[str, Any]:
                         final_event=final_event,
                         event_log=event_log,
                         event_times=event_times,
+                        contract_state=contract_state,
+                        contract_issues=contract_issues,
                         max_logged_events=args.max_logged_events,
                     )
                 )
@@ -352,6 +476,22 @@ async def run_check(args: argparse.Namespace) -> dict[str, Any]:
     max_gpu_delta_from_check_start_mb_seen = (
         None if check_start_gpu_used is None or not gpu_values else max(0, max_gpu_used_mb_seen - check_start_gpu_used)
     )
+    translation_issues = _translation_validation_issues(
+        ready_event=ready_event,
+        counters=counters,
+        expect_translation=args.expect_translation,
+        min_translation_stable=args.min_translation_stable,
+        min_translation_preview=args.min_translation_preview,
+        max_translation_status=args.max_translation_status,
+    )
+    event_stream_issues = contract_issues + _final_event_contract_issues(
+        contract_state,
+        final_event[0],
+        expect_translation=args.expect_translation,
+    )
+    if abort_reason[0] is None and (translation_issues or event_stream_issues):
+        abort_reason[0] = "; ".join(translation_issues + event_stream_issues)
+
     summary = {
         "ok": abort_reason[0] is None and final_event[0] is not None,
         "abort_reason": abort_reason[0],
@@ -363,6 +503,9 @@ async def run_check(args: argparse.Namespace) -> dict[str, Any]:
         "elapsed_sec": elapsed_sec,
         "audio_sent_sec": audio_sent_sec,
         "counters": counters,
+        "ready_event": ready_event,
+        "translation_validation_issues": translation_issues,
+        "event_stream_validation_issues": event_stream_issues,
         "segment_count": len((final_event[0] or {}).get("segments", [])),
         "timing": _summarize_event_timings(
             event_times,
@@ -420,6 +563,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-gpu-used-mb", type=int, default=23000, help="Whole-GPU memory.used guard in MiB.")
     parser.add_argument("--max-gpu-temp-c", type=int, default=86)
     parser.add_argument("--max-logged-events", type=int, default=20)
+    parser.add_argument("--expect-translation", action="store_true")
+    parser.add_argument("--min-translation-stable", type=int, default=0)
+    parser.add_argument("--min-translation-preview", type=int, default=0)
+    parser.add_argument("--max-translation-status", type=int, default=None)
     parser.add_argument("--output-json", default=None)
     return parser.parse_args()
 

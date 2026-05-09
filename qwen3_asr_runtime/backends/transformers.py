@@ -13,7 +13,7 @@ from ..hf_qwen3_asr import (
     Qwen3ASRForConditionalGeneration,
     Qwen3ASRProcessor,
 )
-from ..decode_runtime import CudaGraphDecoder
+from ..decode_runtime import CudaGraphCaptureRequired, CudaGraphDecoder
 from ..flashinfer_attention import register_flashinfer
 from ..fused_linears import patch_model_fused_linears
 from ..fused_rmsnorm import patch_model_rmsnorms
@@ -117,6 +117,22 @@ class TransformersASRBackend(ASRRuntimeBackend):
         if self._cuda_graph_decoder is None:
             self._cuda_graph_decoder = CudaGraphDecoder(self.model.thinker, graph_len_bucket=graph_len_bucket)
 
+    def freeze_cuda_graph_capture(self) -> None:
+        if self._cuda_graph_decoder is not None:
+            self._cuda_graph_decoder.freeze_runtime_capture()
+
+    def prewarm_cuda_graph(self, *, prompt: str, wav: np.ndarray, max_new_tokens: int) -> bool:
+        if self._cuda_graph_decoder is None:
+            return False
+        self.infer_with_prompts(
+            [prompt],
+            [wav],
+            max_inference_batch_size=1,
+            max_new_tokens=int(max_new_tokens),
+        )
+        self._cuda_graph_decoder.freeze_runtime_capture()
+        return True
+
     def reset_decode_runtime(self) -> None:
         if self._cuda_graph_decoder is not None:
             self._cuda_graph_decoder.reset_runtime()
@@ -169,15 +185,27 @@ class TransformersASRBackend(ASRRuntimeBackend):
         prompt_len = int(inputs["input_ids"].shape[1])
         draft = list(draft_ids)
         if self._cuda_graph_decoder is not None:
-            sequences = self._cuda_graph_decoder.generate_with_draft(
-                input_ids=inputs["input_ids"],
-                input_features=inputs.get("input_features"),
-                attention_mask=inputs["attention_mask"],
-                feature_attention_mask=inputs.get("feature_attention_mask"),
-                draft_ids=draft,
-                max_new_tokens=int(max_new_tokens),
-                stats=stats,
-            )
+            try:
+                sequences = self._cuda_graph_decoder.generate_with_draft(
+                    input_ids=inputs["input_ids"],
+                    input_features=inputs.get("input_features"),
+                    attention_mask=inputs["attention_mask"],
+                    feature_attention_mask=inputs.get("feature_attention_mask"),
+                    draft_ids=draft,
+                    max_new_tokens=int(max_new_tokens),
+                    stats=stats,
+                )
+            except CudaGraphCaptureRequired:
+                sequences = spec_decode_generate(
+                    self.model.thinker,
+                    input_ids=inputs["input_ids"],
+                    input_features=inputs.get("input_features"),
+                    attention_mask=inputs["attention_mask"],
+                    feature_attention_mask=inputs.get("feature_attention_mask"),
+                    draft_ids=draft,
+                    max_new_tokens=int(max_new_tokens),
+                    stats=stats,
+                )
         else:
             sequences = spec_decode_generate(
                 self.model.thinker,
@@ -216,13 +244,17 @@ class TransformersASRBackend(ASRRuntimeBackend):
             inputs = self._move_inputs(inputs)
             prompt_len = int(inputs["input_ids"].shape[1])
             if self._cuda_graph_decoder is not None and prompt_batch and len(prompt_batch) == 1:
-                sequences = self._cuda_graph_decoder.generate(
-                    input_ids=inputs["input_ids"],
-                    input_features=inputs.get("input_features"),
-                    attention_mask=inputs["attention_mask"],
-                    feature_attention_mask=inputs.get("feature_attention_mask"),
-                    max_new_tokens=max_new_tokens,
-                )
+                try:
+                    sequences = self._cuda_graph_decoder.generate(
+                        input_ids=inputs["input_ids"],
+                        input_features=inputs.get("input_features"),
+                        attention_mask=inputs["attention_mask"],
+                        feature_attention_mask=inputs.get("feature_attention_mask"),
+                        max_new_tokens=max_new_tokens,
+                    )
+                except CudaGraphCaptureRequired:
+                    outputs = self.model.generate(**inputs, max_new_tokens=max_new_tokens, logits_to_keep=1)
+                    sequences = outputs.sequences if hasattr(outputs, "sequences") else outputs
             else:
                 outputs = self.model.generate(**inputs, max_new_tokens=max_new_tokens, logits_to_keep=1)
                 sequences = outputs.sequences if hasattr(outputs, "sequences") else outputs

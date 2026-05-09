@@ -1,41 +1,114 @@
-# Realtime Translation Design
+# Realtime Translation Pipeline
 
-Status: source transcript events and a synchronous HY-MT adapter exist;
-WebSocket translation runtime is not wired yet.
+Status: source transcript events, a synchronous HY-MT adapter, the optional
+WebSocket translation runtime, and the subtitle replay model are wired.
+Model, prompt, or decode-path changes still need the translation quality gate.
 
-Goal: add optional subtitle translation above `/ws/asr` without changing source
-ASR semantics. ASR-only mode must keep its current behavior.
+Goal: add optional bilingual subtitles above `/ws/asr` without changing ASR
+behavior. ASR-only mode keeps the current `ready`, `transcript_update`, and
+`transcript_final` contract. Source transcript semantics stay in
+`@docs/realtime_asr_service.md`.
 
-Source transcript semantics live in `@docs/realtime_asr_service.md`.
+## Boundary
 
-## Scope
+Translation is a service-layer side track. It consumes emitted transcript events
+and does not modify `Qwen3ASRModel`, `RealtimeASRSession`, `TranscriptStore`, or
+the source segment schema.
 
-v1 translates stable source segments only. It does not translate source
-`partial`; preview translation can be added later after stable translation is
-validated.
+v1 has two paths:
 
-Do not change `Qwen3ASRModel`, `RealtimeASRSession`, `TranscriptStore`, or the
-source transcript segment schema.
+- stable: `stable_appends -> stable queue -> HYMTTranslator ->
+  translation_stable`;
+- preview: `partial -> latest-only debounce -> HYMTTranslator ->
+  translation_preview`.
 
-## Components
+Stable translations are durable. Preview translations are temporary, replaceable,
+and never enter history or export.
 
-| Component | Owns |
-|---|---|
-| `TranslationRuntime` | stable queue, overflow, timeout, stale-drop |
-| `HYMTTranslator` | model load, prompt, generation |
-| `realtime_server.py` | transport, event order, serialized sends |
+Out of scope:
 
-## Protocol Additions
+- token-level HY-MT streaming;
+- cross-request prefix cache;
+- translation batching;
+- ASR backend or stabilization changes.
+
+## Flow
+
+```text
+audio frames
+  -> RealtimeASRSession
+  -> transcript_update / transcript_final
+  -> send source events immediately
+  -> enqueue stable_appends
+  -> update or cancel latest partial preview
+
+TranslationRuntime
+  -> HYMTTranslator.translate(...)
+  -> event_queue
+
+sender task
+  -> websocket.send_text(...)
+
+client SubtitleDocument
+  -> previous stable line / current draft line / SRT history
+```
+
+Only the sender task writes to the WebSocket.
+
+When `cuda_graph` is enabled, the service prewarms the ASR CUDA graph for the
+fixed live20 profile before accepting WebSocket sessions. Prewarm failure is a
+startup failure. Runtime ASR then replays the captured graph while HY-MT can
+generate concurrently. If a request exceeds the prewarmed graph shape, ASR falls
+back to non-graph decode for that call instead of capturing a new graph next to
+HY-MT.
+
+When translation is enabled, the service also prewarms HY-MT after the ASR
+prewarm and before accepting WebSocket sessions. HY-MT warmup covers short,
+medium, and long subtitle-shaped texts on the same stable and preview executor
+threads used at runtime. HY-MT warmup failure is a startup failure.
+
+## Protocol
+
+Session start uses service defaults. If the service has translation configured,
+the client can disable translation for one session:
+
+```json
+{"type":"start","session_id":"local","translation":false}
+```
+
+Equivalent object form:
+
+```json
+{"type":"start","session_id":"local","translation":{"enabled":false}}
+```
+
+If `translation.target_language` is provided, it must match the service target
+language for this single-model service.
 
 `ready.translation` when enabled:
 
-- `enabled`
-- `target_language`
-- `model`
-- `stable`: `{ "enabled": true, "queue_size": 4, "timeout_ms": 5000 }`
-- `preview`: `{ "enabled": false }`
+```json
+{
+  "enabled": true,
+  "target_language": "English",
+  "model": "tencent/HY-MT1.5-1.8B",
+  "stable": { "enabled": true, "reliable": true, "queue_size": null, "timeout_ms": null },
+  "preview": { "enabled": true, "debounce_ms": 700, "timeout_ms": 30000 }
+}
+```
 
-Events:
+`ready.translation` when the service has translation capability but the session
+disabled it:
+
+```json
+{
+  "enabled": false,
+  "available": true,
+  "target_language": "English"
+}
+```
+
+Stable result:
 
 ```json
 {
@@ -48,131 +121,159 @@ Events:
 }
 ```
 
+Preview result:
+
+```json
+{
+  "type": "translation_preview",
+  "source_revision": 13,
+  "target_language": "English",
+  "text": "..."
+}
+```
+
+Stable failure:
+
 ```json
 {
   "type": "translation_status",
   "scope": "stable",
-  "code": "timeout",
+  "code": "failed",
   "source_revision": 12,
   "source_segment_id": "seg_000001",
   "source_segment_index": 1,
   "target_language": "English",
-  "message": "translation timed out"
+  "message": "translation failed"
 }
 ```
 
-`translation_status.code` is one of:
+`translation_status.code`: `failed`.
+Never expose stack traces or model internals.
 
-- `timeout`
-- `failed`
-- `skipped_backlog`
+## Runtime Rules
 
-Rules:
+For every `transcript_update`:
 
-- send source `transcript_update` before translating its stable appends;
-- `translation_stable` is keyed by the source `segment_id`;
-- clients must tolerate translation events arriving after later source updates;
-- every dropped stable segment gets `translation_status`;
-- never expose stack traces or model internals.
+```text
+update translation scheduler state
+send source event first
+if partial exists: update_preview(revision, partial)
+else: cancel_preview(revision)
+enqueue each stable_appends item
+```
 
-## Scheduler
+Stable:
 
-- HY-MT is bounded text-to-text generation, not streaming decode.
-- Run at most one generation at a time in v1.
-- Stable queue size defaults to 4.
-- If the queue is full, drop the oldest queued segment, emit
-  `skipped_backlog` for it, then enqueue the newest segment.
-- Each stable translation has an end-to-end timeout, including time spent waiting
-  for the generation slot.
-- Timeout or translator failure emits `translation_status` and the worker moves
-  to the next queued segment.
-- `max_new_tokens` defaults to 512, matching `Qwen3ASRModel`.
-- HY-MT loads with `attn_implementation="sdpa"` by default; generation length
-  and sampling parameters stay unchanged.
-- The default decode backend uses a fixed-shape static-cache loop to avoid
-  per-token input and mask concatenation; `generate` remains available for
-  fallback comparisons.
+- stable history is reliable: every source stable segment gets exactly one
+  `translation_stable` before `transcript_final`, unless the translator fails;
+- stable generation runs one job at a time on the stable lane;
+- stable jobs are not dropped for backlog pressure and are not timed out by the
+  service;
+- translator failures emit `translation_status` for the affected segment.
+
+Preview:
+
+- debounce defaults to 700 ms;
+- latest-only slot, no queue;
+- preview generation runs on a separate best-effort lane;
+- a newer `source_revision` makes older preview work stale;
+- `transcript_update` without `partial` cancels older preview work;
+- stale preview results are dropped silently;
+- timed-out or finish-canceled preview model calls may keep running in the
+  preview executor thread, but their results are ignored.
+
+Client replay:
+
+- `SubtitleDocument` replays server events into one local document;
+- `stable_appends` append immutable history;
+- `partial` replaces the current draft line;
+- `translation_stable` annotates a stable line by source segment id/index;
+- `translation_preview` annotates the current draft only when `source_revision`
+  matches;
+- the compact subtitle window is `stable_lines[-1]` above `current` below;
+- SRT/detail output uses stable history only, with translation as a second line
+  in the same cue when translation display is enabled.
+
+Scheduling:
+
+- audio ingest and source event sending never wait for translation;
+- service startup prewarms ASR graph capture before accepting sessions;
+- translation startup prewarms HY-MT before accepting sessions;
+- runtime ASR graph replay can overlap HY-MT generation;
+- runtime ASR does not capture a new graph next to HY-MT; oversize requests
+  fall back to non-graph decode;
+- preview has priority over normal stable backlog because it is the lowest
+  latency translation path;
+- slow or stuck preview work must not block stable history or `finish`;
+- stable backlog runs when no preview is ready and is drained during `finish`;
+- finish-created stable jobs have priority during `finish`;
+- if a stable job is already running when preview arrives, do not cancel the
+  worker thread; drop the preview if it is stale by completion time;
+- if `--no-cuda-graph-prewarm` is used with translation, HY-MT calls share the
+  CUDA graph capture lock to avoid runtime capture races; the validated default
+  path is the prewarmed graph path, where translation calls do not need that
+  lock.
 
 ## Finish
 
-Translation-enabled `finish` order:
+Translation-enabled `finish`:
 
 ```text
 run session.finish()
-split returned events into transcript_update events and transcript_final
-send finish-created transcript_update events first
-mark old queued stable translations skipped_backlog
-translate only finish-created stable_appends, each with timeout
-send translation_stable or translation_status for those finish-created segments
+send finish-created transcript_update events
+enter translation finish mode
+cancel pending or logically running preview work
+wait for any already running stable translation to publish once
+translate finish-created stable_appends before queued stable jobs
+send translation_stable or translation_status for those stable jobs
 send transcript_final
 close WebSocket
 ```
 
-Do not wait for old stable-translation backlog. If a previous generation is
-already running, finish-created translations still use their timeout budget; if
-the generation slot does not become available in time, emit `timeout` for those
-finish-created segments. ASR-only mode keeps current `session.finish()` behavior.
-
-## Sending
-
-Use one sender task:
-
-```text
-ASR/session task -> event_queue
-translation worker -> event_queue
-sender task -> websocket.send_text
-```
-
-Never call `websocket.send_text` outside the sender task.
+Do not try to cancel a worker thread already inside `HYMTTranslator.translate`.
+Running stable jobs are not retranslated; they publish once before
+`transcript_final`. Already-running preview model calls may continue on the
+preview lane, but preview results after finish are ignored. ASR-only mode keeps
+the current `session.finish()` behavior.
 
 ## Translator
 
 `HYMTTranslator.translate(text, *, target_language, source_language="",
-max_new_tokens=512) -> str` should be synchronous and small. Load once at
-startup, fail fast if the local model is unavailable, and never download weights
-from request handling.
+max_new_tokens=512) -> str` remains synchronous. Runtime calls it from a worker
+thread. Load the model once at startup and never download weights from request
+handling.
 
-Startup config should include target language, model path, device, queue size,
-timeout, and a stable-translation enable flag. Do not enable translation unless
-the model has loaded successfully.
+Default runtime path:
 
-Do not document exact prompt text as a contract until validated with the chosen
-checkpoint.
+- model: `tencent/HY-MT1.5-1.8B`;
+- attention: `sdpa`;
+- decode backend: `fixed_mask`;
+- generation parameters unchanged from the accepted baseline.
 
-## Quality Gate
+Prompt, sampling, tokenizer/model, or decode-path changes require the
+translation quality gate. Protocol/runtime-only changes do not.
 
-Translation changes must be validated against a fixed local case set covering
-core subtitles, formatted text, ASR noise, and domain smoke cases.
+## Validation
 
-The gate must check:
+Protocol/runtime:
 
-- no new quality errors versus the current accepted baseline;
+- fake-translator unit tests for preview priority, stable reliability under
+  backlog, stable no-timeout behavior, preview debounce/cancel/stale-drop, and
+  finish suppression;
+- service-ordering unit tests for the invariant that an old preview is never
+  queued after a newer source revision;
+- subtitle document unit tests for window projection, SRT history, and
+  translation visibility;
+- WebSocket E2E for ASR-only parity and ASR+translation ordering.
+
+Translation quality gate, only for model/prompt/generation/decode changes:
+
+- no new quality errors versus the accepted baseline;
 - target language, empty output, length outliers, repetition loops, and required
   structural markers;
 - `must_preserve` items such as protocol labels, fixed UI strings, numbers,
   units, and subtitle cue ids;
-- per-case reference similarity, with a regression error when a candidate drops
-  meaningfully below a baseline that has the metric.
+- per-case reference similarity with regression failure on meaningful drops.
 
-Generation or prompt changes are not accepted on speed alone. If a change
-improves formatting but regresses core meaning, keep the old prompt/generation
-path and record the failed experiment outside git.
-
-## Implementation
-
-1. Add `TranslationRuntime`.
-2. Add startup flags: target language, model path, device, stable enable flag,
-   queue size, and timeout.
-3. Add fake-translator unit tests for queue order, timeout, overflow, finish
-   backlog, and send serialization.
-4. Add real-model smoke only after a smoke tool exists.
-5. Add WebSocket E2E comparing ASR-only and ASR+translation latency, quality,
-   GPU memory, and shutdown cleanup.
-
-Private audio, transcripts, and generated translation outputs stay in
-`local_data/` and `local_goldens/`.
-
-## Later Preview
-
-Preview translation may be added after v1. It must be latest-only, debounced,
-keyed by `source_revision`, and must silently drop stale results before sending.
+Private audio, transcripts, and generated outputs stay in `local_data/`,
+`local_goldens/`, or `/tmp`.

@@ -10,7 +10,14 @@ Start:
 {"type":"start","session_id":"local","language":"Chinese","context":""}
 ```
 
-Then send mono little-endian `pcm_s16le` at 16 kHz.
+If the service was started with translation enabled, a session can disable it:
+
+```json
+{"type":"start","session_id":"local","translation":false}
+```
+
+Then send mono little-endian `pcm_s16le` at 16 kHz. For low-latency captioning,
+send about 100 ms per WebSocket audio frame.
 
 Commands: `flush`, `finish`.
 
@@ -40,17 +47,19 @@ divergent transcript states.
 
 - `realtime_server.py`: one connection, start validation, PCM decode,
   `asyncio.to_thread(...)`, JSON send.
-- `RealtimeASRSession`: VAD, pre-roll, confirmed/undecided audio, ASR cadence,
-  stable cursor, partial replacement, final flush.
+- `RealtimeASRSession`: VAD endpoint hints, pre-roll, ASR cadence, stable
+  cursor, partial replacement, final flush.
 - `TranscriptStore`: in-memory source transcript.
 
 ## Rules
 
 - transport frames are not VAD frames, ASR chunks, or transcript segments;
 - VAD decides acoustic activity, not text stability;
+- after speech starts, VAD must not be the ASR input gate;
 - long speech may stabilize repeated text after `live_stability_delay_ms`;
 - ASCII word fragments stay partial;
 - stable history is never rewritten;
+- stable translation history must not drop middle source segments;
 - unaligned turn close clears partial and does not promote it;
 - undecided endpoint silence is not fed to ASR unless speech resumes;
 - translation/export belong above stable segments.
@@ -59,20 +68,25 @@ divergent transcript states.
 
 Service entrypoint defaults:
 
-- live20: `chunk_size_sec=1.0`, `max_window_sec=20`, `max_prefix_tokens=64`
+- live20: `chunk_size_sec=0.5`, `unfixed_chunk_num=4`,
+  `max_window_sec=20`, `max_prefix_tokens=64`
+- server input processing chunk: `input_chunk_ms=100`
 - `spec_decode=True`
 - `cuda_graph=True`, `cuda_graph_len_bucket=64`
+- startup CUDA graph prewarm for live20; prewarm failure is a startup failure
 - `flashinfer=True`
 - `fused_rmsnorm=True`, `fused_linears=True`
 - `w8a16=True` for qkv/gate_up
 - `live_stability_delay_ms=12000`
 
 Disable flags only for debugging, fallback, or comparison.
+When translation is enabled, HY-MT stable and preview lanes are both prewarmed
+before serving; failure is a startup failure.
 
 ## Validation
 
 ```bash
-uv run python -m unittest tests.test_realtime_asr
+uv run python -m unittest tests.test_realtime_asr tests.test_subtitle_document
 ```
 
 Use `tools/ws_e2e_leak_check.py` after starting `realtime_server.py` for service

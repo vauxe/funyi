@@ -1,6 +1,7 @@
 # coding=utf-8
 from __future__ import annotations
 
+import asyncio
 import sys
 import unittest
 from types import SimpleNamespace
@@ -8,8 +9,19 @@ from unittest.mock import patch
 
 import numpy as np
 
-from realtime_server import _build_model_load, _parse_args
+from realtime_server import (
+    CUDA_GRAPH_CAPTURE_LOCK,
+    _build_model_load,
+    _build_session_config,
+    _parse_args,
+    _prepare_cuda_graph_runtime,
+    _prewarm_translation,
+    _publish_finish_events,
+    _publish_session_events,
+    _session_translation_config,
+)
 from qwen3_asr_runtime.realtime_session import EnergyVadConfig, RealtimeASRConfig, RealtimeASRSession
+from qwen3_asr_runtime.realtime_translation import RealtimeTranslationConfig
 from qwen3_asr_runtime.transcript_store import TranscriptStore
 from qwen3_asr_runtime.vad import SileroVadAdapter, SileroVadConfig
 
@@ -20,20 +32,22 @@ class FakeStreamingModel:
         outputs: list[str] | None = None,
         finish_text: str | None = None,
         finish_outputs: list[str] | None = None,
+        chunk_size_sec: float = 1.0,
     ) -> None:
         self.outputs = list(outputs or [])
         self.finish_text = finish_text
         self.finish_outputs = list(finish_outputs or [])
+        self.chunk_size_sec = float(chunk_size_sec)
         self.init_count = 0
         self.stream_calls = 0
         self.finish_calls = 0
         self.init_kwargs: list[dict[str, object]] = []
         self.stream_audio_lengths: list[int] = []
 
-    @classmethod
-    def low_latency_preset_kwargs(cls) -> dict[str, object]:
+    def low_latency_preset_kwargs(self) -> dict[str, object]:
         return {
-            "chunk_size_sec": 1.0,
+            "chunk_size_sec": self.chunk_size_sec,
+            "unfixed_chunk_num": 4,
             "max_window_sec": 20.0,
             "spec_decode": True,
         }
@@ -59,11 +73,17 @@ class FakeStreamingModel:
         return state
 
 
-def make_session(model: FakeStreamingModel, *, live_stability_delay_ms: int = 12_000) -> RealtimeASRSession:
+def make_session(
+    model: FakeStreamingModel,
+    *,
+    input_chunk_ms: int = 100,
+    live_stability_delay_ms: int = 12_000,
+) -> RealtimeASRSession:
     return RealtimeASRSession(
         model,
         config=RealtimeASRConfig(
             language="Chinese",
+            input_chunk_ms=input_chunk_ms,
             live_stability_delay_ms=live_stability_delay_ms,
             vad=EnergyVadConfig(
                 speech_threshold=0.01,
@@ -152,10 +172,18 @@ class RealtimeServerCliTest(unittest.TestCase):
         self.assertIsNone(args.fused_rmsnorm)
         self.assertIsNone(args.fused_linears)
         self.assertIsNone(args.w8a16)
+        self.assertTrue(args.cuda_graph_prewarm)
+        self.assertEqual(args.cuda_graph_prewarm_language, "Chinese")
+        self.assertTrue(args.translation_prewarm)
+        self.assertEqual(args.translation_preview_debounce_ms, 700)
 
     def test_w8a16_can_be_disabled(self) -> None:
         with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--no-w8a16"]):
             self.assertFalse(_parse_args().w8a16)
+
+    def test_translation_prewarm_can_be_disabled(self) -> None:
+        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--no-translation-prewarm"]):
+            self.assertFalse(_parse_args().translation_prewarm)
 
     def test_transformers_load_kwargs_are_default(self) -> None:
         with patch.object(sys, "argv", ["realtime_server.py", "--model", "model"]):
@@ -169,6 +197,211 @@ class RealtimeServerCliTest(unittest.TestCase):
         self.assertTrue(kwargs["fused_rmsnorm"])
         self.assertTrue(kwargs["fused_linears"])
         self.assertTrue(kwargs["quantized_linears"])
+
+    def test_cuda_graph_prewarm_is_default_hard_gate_for_asr_only(self) -> None:
+        class FakeModel:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def prewarm_realtime_cuda_graph(self, **kwargs: object) -> bool:
+                self.calls.append(dict(kwargs))
+                return True
+
+        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model"]):
+            args = _parse_args()
+        model = FakeModel()
+
+        lock = _prepare_cuda_graph_runtime(model, args, translation_enabled=False)
+
+        self.assertIsNone(lock)
+        self.assertEqual(
+            model.calls,
+            [{"language": "Chinese", "max_window_sec": 20.0, "max_prefix_tokens": 64}],
+        )
+
+    def test_cuda_graph_prewarm_failure_is_startup_error(self) -> None:
+        class FakeModel:
+            def prewarm_realtime_cuda_graph(self, **kwargs: object) -> bool:
+                del kwargs
+                return False
+
+        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model"]):
+            args = _parse_args()
+
+        with self.assertRaises(RuntimeError):
+            _prepare_cuda_graph_runtime(FakeModel(), args, translation_enabled=False)
+
+    def test_translation_uses_capture_lock_when_prewarm_is_disabled(self) -> None:
+        class FakeModel:
+            def prewarm_realtime_cuda_graph(self, **kwargs: object) -> bool:
+                raise AssertionError("prewarm should not run")
+
+        with patch.object(
+            sys,
+            "argv",
+            ["realtime_server.py", "--model", "model", "--no-cuda-graph-prewarm"],
+        ):
+            args = _parse_args()
+
+        lock = _prepare_cuda_graph_runtime(FakeModel(), args, translation_enabled=True)
+
+        self.assertIs(lock, CUDA_GRAPH_CAPTURE_LOCK)
+
+    def test_translation_prewarm_runs_before_serving(self) -> None:
+        class FakeTranslator:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def warmup(self, texts: object, **kwargs: object) -> list[object]:
+                text_list = list(texts)  # type: ignore[arg-type]
+                self.calls.append({"texts": text_list, **kwargs})
+                return [object() for _ in text_list]
+
+        translator = FakeTranslator()
+        config = RealtimeTranslationConfig(target_language="English", max_new_tokens=16)
+
+        _prewarm_translation(translator, config)
+
+        self.assertEqual(len(translator.calls), 1)
+        self.assertEqual(translator.calls[0]["target_language"], "English")
+        self.assertEqual(translator.calls[0]["max_new_tokens"], 16)
+        self.assertTrue(translator.calls[0]["sync_cuda"])
+        texts = translator.calls[0]["texts"]  # type: ignore[assignment]
+        self.assertEqual(len(texts), 3)
+        self.assertLess(len(texts[0]), len(texts[1]))  # type: ignore[index]
+        self.assertLess(len(texts[1]), len(texts[2]))  # type: ignore[index]
+
+    def test_translation_prewarm_failure_is_startup_error(self) -> None:
+        class FakeTranslator:
+            def warmup(self, texts: object, **kwargs: object) -> list[object]:
+                del texts, kwargs
+                return []
+
+        with self.assertRaises(RuntimeError):
+            _prewarm_translation(FakeTranslator(), RealtimeTranslationConfig(target_language="English"))
+
+    def test_start_payload_can_disable_configured_translation(self) -> None:
+        config = RealtimeTranslationConfig(target_language="English")
+
+        self.assertIs(_session_translation_config({"type": "start"}, config), config)
+        self.assertIsNone(_session_translation_config({"type": "start", "translation": False}, config))
+        self.assertIsNone(
+            _session_translation_config({"type": "start", "translation": {"enabled": False}}, config)
+        )
+
+    def test_start_payload_rejects_mismatched_translation_target(self) -> None:
+        config = RealtimeTranslationConfig(target_language="English")
+
+        with self.assertRaises(ValueError):
+            _session_translation_config(
+                {"type": "start", "translation": {"enabled": True, "target_language": "Japanese"}},
+                config,
+            )
+
+    def test_service_session_config_uses_100ms_input_chunks(self) -> None:
+        config = _build_session_config({"type": "start"})
+
+        self.assertEqual(config.input_chunk_ms, 100)
+
+
+class RealtimeServerTranslationOrderingTest(unittest.IsolatedAsyncioTestCase):
+    async def test_pending_old_preview_is_not_queued_after_new_source_revision(self) -> None:
+        queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue()
+
+        class FakeTranslation:
+            async def accept_source_event(self, event: dict[str, object]) -> None:
+                self.assert_source_event(event)
+                await queue.put({"type": "translation_preview", "source_revision": 1, "text": "old"})
+
+            def assert_source_event(self, event: dict[str, object]) -> None:
+                if event.get("type") != "transcript_update" or event.get("revision") != 2:
+                    raise AssertionError(f"unexpected source event: {event!r}")
+
+        await _publish_session_events(
+            queue,
+            FakeTranslation(),  # type: ignore[arg-type]
+            [
+                {
+                    "type": "transcript_update",
+                    "revision": 2,
+                    "stable_appends": [],
+                    "partial": None,
+                }
+            ],
+        )
+
+        first = await queue.get()
+        second = await queue.get()
+        self.assertEqual(first["type"], "translation_preview")
+        self.assertEqual(first["source_revision"], 1)
+        self.assertEqual(second["type"], "transcript_update")
+        self.assertEqual(second["revision"], 2)
+
+    async def test_finish_cancels_preview_before_publishing_finish_source_update(self) -> None:
+        queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue()
+
+        class FakeTranslation:
+            async def cancel_preview(self) -> None:
+                await queue.put({"type": "translation_preview", "source_revision": 1, "text": "old"})
+
+            async def finish(self, transcript_updates: list[dict[str, object]]) -> list[dict[str, object]]:
+                if [event.get("revision") for event in transcript_updates] != [2]:
+                    raise AssertionError(f"unexpected finish updates: {transcript_updates!r}")
+                return [
+                    {
+                        "type": "translation_stable",
+                        "source_revision": 2,
+                        "source_segment_id": "seg_000001",
+                        "source_segment_index": 1,
+                        "target_language": "English",
+                        "text": "tail",
+                    }
+                ]
+
+        await _publish_finish_events(
+            queue,
+            FakeTranslation(),  # type: ignore[arg-type]
+            [
+                {
+                    "type": "transcript_update",
+                    "revision": 2,
+                    "stable_appends": [
+                        {
+                            "id": "seg_000001",
+                            "index": 1,
+                            "start_ms": 0,
+                            "end_ms": 900,
+                            "text": "tail",
+                            "language": "Chinese",
+                        }
+                    ],
+                    "partial": None,
+                },
+                {
+                    "type": "transcript_final",
+                    "segments": [
+                        {
+                            "id": "seg_000001",
+                            "index": 1,
+                            "start_ms": 0,
+                            "end_ms": 900,
+                            "text": "tail",
+                            "language": "Chinese",
+                        }
+                    ],
+                },
+            ],
+        )
+
+        events = [await queue.get(), await queue.get(), await queue.get(), await queue.get()]
+        self.assertEqual([event["type"] for event in events], [
+            "translation_preview",
+            "transcript_update",
+            "translation_stable",
+            "transcript_final",
+        ])
+        self.assertEqual(events[0]["source_revision"], 1)
+        self.assertEqual(events[1]["revision"], 2)
 
 
 class RealtimeASRSessionTest(unittest.TestCase):
@@ -198,39 +431,33 @@ class RealtimeASRSessionTest(unittest.TestCase):
         self.assertEqual(session.asr_epoch, 1)
         assert_transcript_update_invariants(self, events)
 
-    def test_asr_runs_on_server_side_one_second_cadence(self) -> None:
-        model = FakeStreamingModel(outputs=["一秒"])
+    def test_asr_runs_on_server_side_half_second_cadence(self) -> None:
+        model = FakeStreamingModel(outputs=["半秒"], chunk_size_sec=0.5)
         session = make_session(model)
-        speech = np.ones(4_000, dtype=np.float32) * 0.2
+        speech = np.ones(1_600, dtype=np.float32) * 0.2
 
-        for _ in range(3):
+        for _ in range(4):
             self.assertEqual(session.ingest_audio(speech), [])
             self.assertEqual(model.stream_calls, 0)
 
         events = session.ingest_audio(speech)
 
-        self.assertEqual(partial_texts(events), ["一秒"])
+        self.assertEqual(partial_texts(events), ["半秒"])
         self.assertEqual(model.stream_calls, 1)
-        self.assertEqual(model.stream_audio_lengths, [16_000])
-        self.assertEqual(model.init_kwargs[0]["chunk_size_sec"], 1.0)
+        self.assertEqual(model.stream_audio_lengths, [8_000])
+        self.assertEqual(model.init_kwargs[0]["chunk_size_sec"], 0.5)
+        self.assertEqual(model.init_kwargs[0]["unfixed_chunk_num"], 4)
         self.assertEqual(model.init_kwargs[0]["max_window_sec"], 20.0)
         self.assertEqual(model.init_kwargs[0]["max_prefix_tokens"], 64)
         self.assertTrue(model.init_kwargs[0]["spec_decode"])
         self.assertEqual(model.init_kwargs[0]["language"], "Chinese")
 
-    def test_input_audio_is_processed_in_server_side_200ms_chunks(self) -> None:
+    def test_input_audio_is_processed_in_server_side_100ms_chunks(self) -> None:
         model = FakeStreamingModel(outputs=["一秒"])
         session = make_session(model)
-        speech = np.ones(1_600, dtype=np.float32) * 0.2
 
-        for _ in range(9):
-            self.assertEqual(session.ingest_audio(speech), [])
-            self.assertEqual(model.stream_calls, 0)
-
-        events = session.ingest_audio(speech)
-
-        self.assertEqual(partial_texts(events), ["一秒"])
-        self.assertEqual(model.stream_audio_lengths, [16_000])
+        self.assertEqual(session.config.input_chunk_ms, 100)
+        self.assertEqual(session._input_chunk_samples, 1_600)
 
     def test_rewritten_partial_text_is_not_stabilized_by_punctuation(self) -> None:
         model = FakeStreamingModel(
@@ -416,6 +643,19 @@ class RealtimeASRSessionTest(unittest.TestCase):
 
         self.assertEqual([segment["text"] for segment in stable_appends(events)], ["第一句。第二句。尾巴"])
 
+    def test_finish_feeds_received_tail_even_without_new_vad_speech_end(self) -> None:
+        model = FakeStreamingModel(outputs=["前段", "前段后段"], finish_text="前段后段")
+        session = make_session(model, input_chunk_ms=100)
+        speech = np.ones(16_000, dtype=np.float32) * 0.2
+        quiet_tail = np.ones(3_840, dtype=np.float32) * 0.005
+
+        session.ingest_audio(speech)
+        session.ingest_audio(quiet_tail)
+        events = session.finish()
+
+        self.assertEqual(model.stream_audio_lengths, [16_000, 3_840])
+        self.assertEqual([segment["text"] for segment in stable_appends(events)], ["前段后段"])
+
     def test_vad_endpoint_timestamp_excludes_trailing_silence(self) -> None:
         model = FakeStreamingModel(outputs=["语音段"], finish_text="语音段")
         session = make_session(model)
@@ -447,7 +687,7 @@ class RealtimeASRSessionTest(unittest.TestCase):
         self.assertEqual(model.stream_audio_lengths, [16_000, 16_000])
 
     def test_large_transport_frame_is_split_before_vad(self) -> None:
-        model = FakeStreamingModel(outputs=["第一段", "第二段"])
+        model = FakeStreamingModel(outputs=["第一段", "第一段第二段"])
         session = make_session(model)
         payload = np.concatenate(
             [
@@ -462,8 +702,8 @@ class RealtimeASRSessionTest(unittest.TestCase):
         flush_events = session.flush()
 
         self.assertEqual([segment["text"] for segment in stable_appends(events + flush_events)], ["第一段", "第二段"])
-        self.assertEqual(model.init_count, 2)
-        self.assertEqual(model.stream_audio_lengths, [16_000, 16_000, 4_000])
+        self.assertEqual(model.init_count, 1)
+        self.assertEqual(model.stream_audio_lengths, [16_000, 16_000, 3_840])
 
     def test_finish_emits_transcript_final_snapshot(self) -> None:
         model = FakeStreamingModel(outputs=["尾句"], finish_text="尾句")

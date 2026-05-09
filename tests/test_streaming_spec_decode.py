@@ -53,6 +53,15 @@ class FakeBackend:
 
 
 class StreamingSpecDraftTest(unittest.TestCase):
+    def test_low_latency_preset_uses_half_second_cadence(self) -> None:
+        kwargs = Qwen3ASRModel.low_latency_preset_kwargs()
+
+        self.assertEqual(kwargs["chunk_size_sec"], 0.5)
+        self.assertEqual(kwargs["unfixed_chunk_num"], 4)
+        self.assertEqual(kwargs["max_window_sec"], 20.0)
+        self.assertEqual(kwargs["max_prefix_tokens"], 64)
+        self.assertTrue(kwargs["spec_decode"])
+
     def test_trimmed_prefix_still_reuses_rollback_token_ids(self) -> None:
         backend = FakeBackend()
         model = Qwen3ASRModel(backend_runtime=backend, max_new_tokens=8)

@@ -134,8 +134,8 @@ class Qwen3ASRModel:
         the local streaming CER gate.
         """
         return {
-            "chunk_size_sec": 1.0,
-            "unfixed_chunk_num": 2,
+            "chunk_size_sec": 0.5,
+            "unfixed_chunk_num": 4,
             "unfixed_token_num": 5,
             "max_window_sec": 20.0,
             "max_prefix_tokens": 64,
@@ -145,6 +145,28 @@ class Qwen3ASRModel:
     def eval(self) -> "Qwen3ASRModel":
         self.backend_runtime.eval()
         return self
+
+    @torch.inference_mode()
+    def prewarm_realtime_cuda_graph(
+        self,
+        *,
+        context: str = "",
+        language: Optional[str] = "Chinese",
+        max_window_sec: float = 20.0,
+        max_prefix_tokens: int = 64,
+    ) -> bool:
+        prewarm = getattr(self.backend_runtime, "prewarm_cuda_graph", None)
+        if prewarm is None:
+            return False
+        force_language = None
+        if language is not None and str(language).strip() != "":
+            force_language = normalize_language_name(str(language))
+            validate_language(force_language)
+        prompt = self._build_text_prompt(context=context, force_language=force_language)
+        prompt += self._build_prewarm_prefix(max_prefix_tokens)
+        sample_count = max(1, int(round(float(max_window_sec) * SAMPLE_RATE)))
+        wav = np.zeros((sample_count,), dtype=np.float32)
+        return bool(prewarm(prompt=prompt, wav=wav, max_new_tokens=self.max_new_tokens))
 
     @torch.inference_mode()
     def transcribe(
@@ -345,6 +367,17 @@ class Qwen3ASRModel:
         if force_language:
             base = base + f"language {force_language}{'<asr_text>'}"
         return base
+
+    def _build_prewarm_prefix(self, max_prefix_tokens: int) -> str:
+        token_budget = max(0, int(max_prefix_tokens))
+        if token_budget <= 0:
+            return ""
+        seed = "测试实时字幕翻译。"
+        text = seed
+        while len(self.backend_runtime.encode_text(text)) < token_budget:
+            text += seed
+        token_ids = self.backend_runtime.encode_text(text)[:token_budget]
+        return self.backend_runtime.decode_text(token_ids)
 
     def _infer_asr(
         self,

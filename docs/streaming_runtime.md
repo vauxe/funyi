@@ -68,7 +68,7 @@ Streaming kwargs:
 Qwen3ASRModel.low_latency_preset_kwargs()
 ```
 
-returns `chunk_size_sec=1.0`, `unfixed_chunk_num=2`, `unfixed_token_num=5`,
+returns `chunk_size_sec=0.5`, `unfixed_chunk_num=4`, `unfixed_token_num=5`,
 `max_window_sec=20.0`, `max_prefix_tokens=64`, and `spec_decode=True`.
 
 ## Spec Decode

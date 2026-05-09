@@ -25,8 +25,8 @@ def _empty_audio() -> np.ndarray:
 
 
 _LOW_LATENCY_STREAMING_KWARGS: dict[str, Any] = {
-    "chunk_size_sec": 1.0,
-    "unfixed_chunk_num": 2,
+    "chunk_size_sec": 0.5,
+    "unfixed_chunk_num": 4,
     "unfixed_token_num": 5,
     "max_window_sec": 20.0,
     "max_prefix_tokens": 64,
@@ -40,7 +40,7 @@ class RealtimeASRConfig:
     context: str = ""
     language: Optional[str] = None
     pre_roll_ms: int = 240
-    input_chunk_ms: int = 200
+    input_chunk_ms: int = 100
     live_stability_delay_ms: int = 12_000
     vad: VadConfig = field(default_factory=SileroVadConfig)
 
@@ -103,8 +103,8 @@ class _ActiveSpeech:
     previous_tail_text: str = ""
     previous_tail_end_sample: Optional[int] = None
     asr_state: Any = None
+    awaiting_speech_start: bool = False
     confirmed: _SampleBuffer = field(default_factory=_SampleBuffer)
-    undecided: _SampleBuffer = field(default_factory=_SampleBuffer)
 
 
 class RealtimeASRSession:
@@ -167,7 +167,7 @@ class RealtimeASRSession:
         self.revision = self.store.revision
         return events
 
-    def _ingest_audio_chunk(self, audio: np.ndarray) -> list[dict[str, Any]]:
+    def _ingest_audio_chunk(self, audio: np.ndarray, *, force: bool = False) -> list[dict[str, Any]]:
         chunk_start_sample = self._samples_received
         chunk_end_sample = chunk_start_sample + int(audio.shape[0])
         self._samples_received = chunk_end_sample
@@ -186,7 +186,13 @@ class RealtimeASRSession:
                 audio=audio,
             )
         else:
-            active.undecided.append(audio, start_sample=chunk_start_sample)
+            active.confirmed.append(audio, start_sample=chunk_start_sample)
+            if active.awaiting_speech_start and decision.speech_started:
+                speech_start_sample = self._absolute_vad_sample(decision.speech_start_sample, chunk_start_sample)
+                context_start = max(0, int(speech_start_sample) - self._pre_roll_samples)
+                self._drop_confirmed_before(active, context_start)
+                active.tail_start_sample = int(speech_start_sample)
+                active.awaiting_speech_start = False
 
         if decision.last_speech_end_sample is not None:
             last_speech_end = self._absolute_vad_sample(decision.last_speech_end_sample, chunk_end_sample)
@@ -195,23 +201,29 @@ class RealtimeASRSession:
                 if active.last_speech_end_sample is None
                 else max(active.last_speech_end_sample, last_speech_end)
             )
-            self._promote_undecided(active, until_sample=active.last_speech_end_sample)
 
         events: list[dict[str, Any]] = []
-
-        active = self._active
-        if active is not None:
-            events.extend(self._drain_confirmed(active, force=False, emit_live=not decision.speech_ended))
 
         if decision.speech_ended and self._active is not None:
             active = self._active
             speech_end_sample = self._absolute_vad_sample(decision.speech_end_sample, chunk_end_sample)
             active.last_speech_end_sample = speech_end_sample
-            self._promote_undecided(active, until_sample=speech_end_sample)
-            self._drop_undecided(active, remember_pre_roll=True)
-            events.extend(self._close_speech_segment(end_sample=speech_end_sample))
+            if force:
+                events.extend(self._close_speech_segment())
+            elif self._last_asr_end_sample - speech_end_sample > self._asr_cadence_samples:
+                active.awaiting_speech_start = True
+            else:
+                events.extend(self._finalize_endpoint(active, end_sample=speech_end_sample))
+                active.awaiting_speech_start = True
             self.vad.reset()
             self._vad_base_sample = self._samples_received
+            return events
+
+        active = self._active
+        if active is not None:
+            if active.awaiting_speech_start:
+                return events
+            events.extend(self._drain_confirmed(active, force=False, emit_live=True))
 
         return events
 
@@ -233,37 +245,51 @@ class RealtimeASRSession:
         current_start = max(int(chunk_start_sample), context_start)
         current_offset = max(0, current_start - int(chunk_start_sample))
         if current_offset < audio.shape[0]:
-            active.undecided.append(audio[current_offset:], start_sample=current_start)
+            active.confirmed.append(audio[current_offset:], start_sample=current_start)
 
         self._pre_roll_audio = _empty_audio()
         self._active = active
         return active
 
-    def _close_speech_segment(self, *, end_sample: int | None = None) -> list[dict[str, Any]]:
+    def _close_speech_segment(
+        self,
+        *,
+        end_sample: int | None = None,
+        remember_trailing: bool = False,
+    ) -> list[dict[str, Any]]:
         active = self._active
         if active is None:
             return []
 
-        close_sample = end_sample
-        if close_sample is None:
-            close_sample = active.last_speech_end_sample
-        if close_sample is None:
-            close_sample = self._samples_received
-
-        self._promote_undecided(active, until_sample=close_sample)
-        self._drop_undecided(active, remember_pre_roll=False)
-        close_sample = int(close_sample)
+        close_sample = self._samples_received if end_sample is None else int(end_sample)
         events = self._drain_confirmed(active, force=True, emit_live=False, until_sample=close_sample)
         if active.asr_state is None:
             if self.store.clear_partial():
                 events.extend(self._emit_transcript_update(stable_base=self.store.stable_count, stable_appends=[]))
+            if remember_trailing and active.confirmed.samples > 0:
+                self._remember_pre_roll(active.confirmed.audio)
             self._active = None
             return events
 
         active.asr_state = self.model.finish_streaming_transcribe(active.asr_state)
         self._last_asr_end_sample = close_sample
         events.extend(self._handle_decoded_text(active, finalize=True))
+        if remember_trailing and active.confirmed.samples > 0:
+            self._remember_pre_roll(active.confirmed.audio)
         self._active = None
+        return events
+
+    def _finalize_endpoint(self, active: _ActiveSpeech, *, end_sample: int) -> list[dict[str, Any]]:
+        end_sample = int(end_sample)
+        events = self._drain_confirmed(active, force=True, emit_live=False, until_sample=end_sample)
+        if active.asr_state is None:
+            if self.store.clear_partial():
+                events.extend(self._emit_transcript_update(stable_base=self.store.stable_count, stable_appends=[]))
+            return events
+
+        active.asr_state = self.model.finish_streaming_transcribe(active.asr_state)
+        self._last_asr_end_sample = end_sample
+        events.extend(self._handle_decoded_text(active, finalize=True))
         return events
 
     def _run_asr(
@@ -488,19 +514,8 @@ class RealtimeASRSession:
             chunk_samples = min(self._input_chunk_samples, int(self._input_audio.shape[0]))
             chunk = self._input_audio[:chunk_samples].copy()
             self._input_audio = self._input_audio[chunk_samples:].copy()
-            events.extend(self._ingest_audio_chunk(chunk))
+            events.extend(self._ingest_audio_chunk(chunk, force=force))
         return events
-
-    def _promote_undecided(self, active: _ActiveSpeech, *, until_sample: int) -> None:
-        audio, start_sample = active.undecided.pop_until(until_sample)
-        if start_sample is None:
-            return
-        active.confirmed.append(audio, start_sample=start_sample)
-
-    def _drop_undecided(self, active: _ActiveSpeech, *, remember_pre_roll: bool) -> None:
-        if remember_pre_roll and active.undecided.samples > 0:
-            self._remember_pre_roll(active.undecided.audio)
-        active.undecided.clear()
 
     def _drain_confirmed(
         self,
@@ -523,6 +538,9 @@ class RealtimeASRSession:
             chunk_end_sample = int(start_sample) + chunk_samples
             events.extend(self._run_asr(active, chunk, chunk_end_sample, emit_live=emit_live))
         return events
+
+    def _drop_confirmed_before(self, active: _ActiveSpeech, sample: int) -> None:
+        active.confirmed.pop_until(int(sample))
 
     def _remember_pre_roll(self, audio: np.ndarray) -> None:
         if self._pre_roll_samples <= 0:

@@ -64,4 +64,4 @@ git diff --check
 - `docs/streaming_runtime.md`: streaming defaults and live presets
 - `docs/performance_optimization.md`: optimization stack and dead ends
 - `docs/qwen3_asr_1_7b_architecture.md`: model-shape facts
-- `docs/realtime_translation_design.md`: translation design, not implemented
+- `docs/realtime_translation_design.md`: optional translation pipeline and client replay model

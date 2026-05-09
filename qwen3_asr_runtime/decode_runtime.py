@@ -16,6 +16,8 @@ from typing import Any, Callable, List, Sequence
 import torch
 from transformers.cache_utils import DynamicCache, StaticCache
 
+from .cuda_serialization import CUDA_GRAPH_CAPTURE_LOCK
+
 
 @dataclass
 class DecodeBuffers:
@@ -65,6 +67,10 @@ class _ProfileSection:
         return False
 
 
+class CudaGraphCaptureRequired(RuntimeError):
+    """Raised when a frozen CUDA graph decoder would need a larger capture."""
+
+
 class CudaGraphDecoder:
     """
     Reusable decode runtime. One instance per thinker; it re-allocates buffers
@@ -89,6 +95,7 @@ class CudaGraphDecoder:
         self._logits_buf: torch.Tensor | None = None
         self._static_cache: StaticCache | None = None
         self._profile_callback: ProfileCallback | None = None
+        self._runtime_capture_enabled = True
 
     def set_profile_callback(self, callback: ProfileCallback | None) -> None:
         """Install an optional timing callback used only by profiling tools."""
@@ -102,10 +109,21 @@ class CudaGraphDecoder:
         self._graph_max_len = 0
 
     def reset_runtime(self) -> None:
+        if not self._runtime_capture_enabled and self._graph is not None:
+            return
         self.reset_graph()
         self._buffers = None
         self._logits_buf = None
         self._static_cache = None
+
+    def freeze_runtime_capture(self) -> None:
+        if self._graph is None:
+            raise RuntimeError("cannot freeze CUDA graph capture before a graph is captured")
+        self._runtime_capture_enabled = False
+
+    @property
+    def runtime_capture_enabled(self) -> bool:
+        return self._runtime_capture_enabled
 
     @torch.inference_mode()
     def generate(
@@ -346,6 +364,11 @@ class CudaGraphDecoder:
             return self._build_output(input_ids, generated)
 
         if self._graph is None or self._graph_max_len != graph_len:
+            if not self._runtime_capture_enabled:
+                raise CudaGraphCaptureRequired(
+                    f"frozen CUDA graph is not available for graph_len={graph_len}; "
+                    f"captured graph_len={self._graph_max_len}"
+                )
             if self._profile_callback is None:
                 self._capture_graph(
                     buffers=buffers,
@@ -433,6 +456,12 @@ class CudaGraphDecoder:
         max_len = self._reserve_len(max_len)
         cache = self._static_cache
         if cache is None or cache.max_cache_len < max_len or cache.max_batch_size < batch:
+            if not self._runtime_capture_enabled:
+                cached_len = 0 if cache is None else int(cache.max_cache_len)
+                raise CudaGraphCaptureRequired(
+                    f"frozen CUDA graph cache is too small: requested max_len={max_len}, "
+                    f"cached max_len={cached_len}"
+                )
             # Release the graph private pool before allocating a larger cache.
             self.reset_graph()
             self._static_cache = StaticCache(
@@ -454,6 +483,12 @@ class CudaGraphDecoder:
             or buffers.attention_mask.shape[0] < batch
             or buffers.attention_mask.shape[1] < max_len
         ):
+            if not self._runtime_capture_enabled:
+                cached_len = 0 if buffers is None else int(buffers.attention_mask.shape[1])
+                raise CudaGraphCaptureRequired(
+                    f"frozen CUDA graph buffers are too small: requested max_len={max_len}, "
+                    f"cached max_len={cached_len}"
+                )
             self.reset_graph()
             self._buffers = DecodeBuffers(
                 input_ids=torch.zeros(batch, 1, dtype=ref_ids.dtype, device=self.device),
@@ -508,33 +543,34 @@ class CudaGraphDecoder:
         current_len: int,
         rope_deltas: torch.Tensor,
     ) -> None:
-        # Graph capture locks in buffers.attention_mask's full max_len shape.
-        side = torch.cuda.Stream()
-        side.wait_stream(torch.cuda.current_stream())
-        with torch.cuda.stream(side):
-            buffers.input_ids.copy_(next_tok_t.view(1, 1))
-            buffers.cache_position[0] = current_len
-            buffers.attention_mask[0, current_len] = 1
-            self._update_position_ids(buffers, rope_deltas)
-            logits = self._decode_forward(
-                buffers,
-                static_cache,
-                attention_mask_slice=buffers.attention_mask,
-            )
-            self._logits_buf.copy_(logits)
-        torch.cuda.current_stream().wait_stream(side)
+        with CUDA_GRAPH_CAPTURE_LOCK:
+            # Graph capture locks in buffers.attention_mask's full max_len shape.
+            side = torch.cuda.Stream()
+            side.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(side):
+                buffers.input_ids.copy_(next_tok_t.view(1, 1))
+                buffers.cache_position[0] = current_len
+                buffers.attention_mask[0, current_len] = 1
+                self._update_position_ids(buffers, rope_deltas)
+                logits = self._decode_forward(
+                    buffers,
+                    static_cache,
+                    attention_mask_slice=buffers.attention_mask,
+                )
+                self._logits_buf.copy_(logits)
+            torch.cuda.current_stream().wait_stream(side)
 
-        self.reset_graph()
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph):
-            logits = self._decode_forward(
-                buffers,
-                static_cache,
-                attention_mask_slice=buffers.attention_mask,
-            )
-            self._logits_buf.copy_(logits)
-        self._graph = graph
-        self._graph_max_len = int(buffers.attention_mask.shape[1])
+            self.reset_graph()
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                logits = self._decode_forward(
+                    buffers,
+                    static_cache,
+                    attention_mask_slice=buffers.attention_mask,
+                )
+                self._logits_buf.copy_(logits)
+            self._graph = graph
+            self._graph_max_len = int(buffers.attention_mask.shape[1])
 
     def _build_output(self, input_ids: torch.Tensor, generated: Sequence[int]) -> torch.Tensor:
         prompt_len = input_ids.shape[1]
@@ -546,4 +582,4 @@ class CudaGraphDecoder:
         return out
 
 
-__all__ = ["CudaGraphDecoder"]
+__all__ = ["CudaGraphCaptureRequired", "CudaGraphDecoder"]
