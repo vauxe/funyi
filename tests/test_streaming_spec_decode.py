@@ -81,12 +81,36 @@ class StreamingSpecDraftTest(unittest.TestCase):
         self.assertEqual(backend.draft_calls[0]["prompt"], state.prompt_raw + "bcd")
         self.assertEqual(backend.draft_calls[0]["draft_ids"], [ord("e"), ord("f")])
         self.assertEqual(backend.prompt_calls, [])
+        self.assertEqual(state.carried_text_prefix, "a")
         self.assertEqual(state.committed_text, "a")
         self.assertEqual(state._raw_decoded, "bcdG")
         self.assertEqual(state.text, "abcdG")
+        self.assertIsNotNone(state.recognition_frame)
+        self.assertEqual(state.recognition_frame.full_text, "abcdG")
+        self.assertEqual(state.recognition_frame.generated_text, "G")
         self.assertEqual(state.spec_decode_stats["spec_attempt_steps"], 1)
         self.assertEqual(state.spec_decode_stats["spec_trimmed_attempt_steps"], 1)
         self.assertEqual(state.spec_decode_stats["spec_accepted_tokens"], 1)
+
+    def test_rolling_window_advances_audio_trim_cursor(self) -> None:
+        backend = FakeBackend()
+        model = Qwen3ASRModel(backend_runtime=backend, max_new_tokens=8)
+        state = model.init_streaming_state(
+            language="Chinese",
+            chunk_size_sec=1.0,
+            max_window_sec=1.0,
+        )
+
+        model.streaming_transcribe(np.ones(16_000, dtype=np.float32), state)
+        model.streaming_transcribe(np.ones(16_000, dtype=np.float32), state)
+
+        self.assertEqual(state.audio_seen_samples, 32_000)
+        self.assertEqual(state.audio_trim_cursor, 16_000)
+        self.assertEqual(state.audio_dropped_samples, 16_000)
+        self.assertEqual(state.audio_accum.shape[0], 16_000)
+        self.assertIsNotNone(state.recognition_frame)
+        self.assertEqual(state.recognition_frame.window_start_sample, 16_000)
+        self.assertEqual(state.recognition_frame.audio_end_sample, 32_000)
 
 
 class FakeSpecThinker:

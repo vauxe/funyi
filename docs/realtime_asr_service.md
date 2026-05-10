@@ -17,7 +17,9 @@ If the service was started with translation enabled, a session can disable it:
 ```
 
 Then send mono little-endian `pcm_s16le` at 16 kHz. For low-latency captioning,
-send about 100 ms per WebSocket audio frame.
+send about 100 ms per WebSocket audio frame. Frame size is transport cadence;
+the service accepts each frame directly and ASR runs on the model streaming
+cadence.
 
 Commands: `flush`, `finish`.
 
@@ -47,21 +49,30 @@ divergent transcript states.
 
 - `realtime_server.py`: one connection, start validation, PCM decode,
   `asyncio.to_thread(...)`, JSON send.
-- `RealtimeASRSession`: VAD endpoint hints, pre-roll, ASR cadence, stable
-  cursor, partial replacement, final flush.
-- `TranscriptStore`: in-memory source transcript.
+- `RealtimeASRSession`: lossless PCM ingestion, ASR cadence, sample clock, text
+  stabilization, `TranscriptStore` writes, final flush.
+- `TranscriptStore`: in-memory append-only source transcript.
+
+Model windowing, prompt rollback, carried text prefixes, and spec decode belong
+to the streaming runtime design in `@docs/streaming_runtime.md`. The session
+must not treat model-carried prefix text as user-visible stable history.
 
 ## Rules
 
-- transport frames are not VAD frames, ASR chunks, or transcript segments;
-- VAD decides acoustic activity, not text stability;
-- after speech starts, VAD must not be the ASR input gate;
+- transport frames are not ASR chunks or transcript segments;
+- every accepted PCM sample must eventually be fed to the streaming ASR state;
+- VAD must not be the ASR input gate or reset model state;
+- one WebSocket session owns one continuous ASR stream;
+- `flush` promotes the current tail but does not start a new model epoch;
 - long speech may stabilize repeated text after `live_stability_delay_ms`;
 - ASCII word fragments stay partial;
 - stable history is never rewritten;
+- bounded-window recognition frames may be tail-only after the stable cursor,
+  and prompt-carried text must not be stabilized as new evidence;
 - stable translation history must not drop middle source segments;
-- unaligned turn close clears partial and does not promote it;
-- undecided endpoint silence is not fed to ASR unless speech resumes;
+- unaligned finalization promotes a final tail update when it extends the last
+  visible partial; otherwise it promotes the last visible partial instead of
+  dropping user-visible tail text;
 - translation/export belong above stable segments.
 
 ## Defaults
@@ -70,7 +81,6 @@ Service entrypoint defaults:
 
 - live20: `chunk_size_sec=0.5`, `unfixed_chunk_num=4`,
   `max_window_sec=20`, `max_prefix_tokens=64`
-- server input processing chunk: `input_chunk_ms=100`
 - `spec_decode=True`
 - `cuda_graph=True`, `cuda_graph_len_bucket=64`
 - startup CUDA graph prewarm for live20; prewarm failure is a startup failure
@@ -86,7 +96,7 @@ thread used at runtime before serving; failure is a startup failure.
 ## Validation
 
 ```bash
-uv run python -m unittest tests.test_realtime_asr tests.test_subtitle_document
+uv run python -m unittest discover tests
 ```
 
 Use `tools/ws_e2e_leak_check.py` after starting `realtime_server.py` for service

@@ -270,8 +270,8 @@ Protocol/runtime:
   finish suppression;
 - service-ordering unit tests for the invariant that an old preview is never
   queued after a newer source revision;
-- subtitle document unit tests for window projection, SRT history, and
-  translation visibility;
+- subtitle document unit tests for recognition-frame tail selection, SRT
+  history, and translation visibility;
 - WebSocket E2E for ASR-only parity and ASR+translation ordering.
 
 Translation quality gate, only for model/prompt/generation/decode changes:

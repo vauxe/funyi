@@ -1,13 +1,19 @@
 # coding=utf-8
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import torch
 
 from .backends import ASRRuntimeBackend, TransformersASRBackend
+from .streaming import (
+    ASRStreamingState,
+    RecognitionFrame,
+    RollingWindowTrimPolicy,
+    StreamingPrefixPlan,
+)
 from .utils import (
     MAX_ASR_INPUT_SECONDS,
     SAMPLE_RATE,
@@ -24,6 +30,7 @@ from .utils import (
 
 _ASR_TEXT_TAG = "<asr_text>"
 _LIVE_DEFAULT_MAX_PREFIX_TOKENS = 192
+_TRIM_POLICY = RollingWindowTrimPolicy()
 
 
 @dataclass
@@ -31,43 +38,6 @@ class ASRTranscription:
     language: str
     text: str
     time_stamps: Optional[Any] = None
-
-
-@dataclass
-class ASRStreamingState:
-    unfixed_chunk_num: int
-    unfixed_token_num: int
-    chunk_size_sec: float
-    chunk_size_samples: int
-    max_window_sec: Optional[float]
-    max_window_samples: Optional[int]
-    max_prefix_tokens: Optional[int]
-
-    chunk_id: int
-    buffer: np.ndarray
-    audio_accum: np.ndarray
-    audio_seen_samples: int
-    audio_dropped_samples: int
-
-    prompt_raw: str
-    context: str
-    force_language: Optional[str]
-
-    language: str
-    text: str
-    committed_text: str
-    partial_text: str
-    _raw_decoded: str
-
-    spec_decode: bool = False
-    spec_decode_stats: Dict[str, int] = field(default_factory=dict)
-
-
-@dataclass
-class _StreamingPrefixPlan:
-    prefix: str
-    draft_ids: List[int]
-    trimmed: bool = False
 
 
 class Qwen3ASRModel:
@@ -274,17 +244,16 @@ class Qwen3ASRModel:
 
         chunk_size_samples = max(1, int(round(float(chunk_size_sec) * SAMPLE_RATE)))
         max_window_samples = None
-        normalized_max_window_sec = None
         if max_window_sec is not None:
-            normalized_max_window_sec = float(max_window_sec)
-            if normalized_max_window_sec <= 0:
+            max_window_sec = float(max_window_sec)
+            if max_window_sec <= 0:
                 raise ValueError(f"max_window_sec must be > 0, got: {max_window_sec}")
-            if normalized_max_window_sec < float(chunk_size_sec):
+            if max_window_sec < float(chunk_size_sec):
                 raise ValueError(
                     f"max_window_sec must be >= chunk_size_sec when set, got "
                     f"max_window_sec={max_window_sec}, chunk_size_sec={chunk_size_sec}"
                 )
-            max_window_samples = max(1, int(round(normalized_max_window_sec * SAMPLE_RATE)))
+            max_window_samples = max(1, int(round(max_window_sec * SAMPLE_RATE)))
             if max_prefix_tokens is None:
                 max_prefix_tokens = _LIVE_DEFAULT_MAX_PREFIX_TOKENS
         if max_prefix_tokens is not None and int(max_prefix_tokens) <= 0:
@@ -296,22 +265,19 @@ class Qwen3ASRModel:
         return ASRStreamingState(
             unfixed_chunk_num=int(unfixed_chunk_num),
             unfixed_token_num=int(unfixed_token_num),
-            chunk_size_sec=float(chunk_size_sec),
             chunk_size_samples=int(chunk_size_samples),
-            max_window_sec=normalized_max_window_sec,
             max_window_samples=max_window_samples,
             max_prefix_tokens=int(max_prefix_tokens) if max_prefix_tokens is not None else None,
             chunk_id=0,
             buffer=np.zeros((0,), dtype=np.float32),
             audio_accum=np.zeros((0,), dtype=np.float32),
             audio_seen_samples=0,
-            audio_dropped_samples=0,
+            audio_trim_cursor=0,
             prompt_raw=prompt_raw,
-            context=context or "",
             force_language=force_language,
             language="",
             text="",
-            committed_text="",
+            carried_text_prefix="",
             partial_text="",
             _raw_decoded="",
             spec_decode=bool(spec_decode),
@@ -351,7 +317,7 @@ class Qwen3ASRModel:
         prompt = state.prompt_raw + prefix
         generated = self._infer_with_prompts([prompt], [state.audio_accum])[0]
         raw_decoded = prefix + generated
-        self._set_streaming_decoded(state, raw_decoded)
+        self._set_streaming_decoded(state, raw_decoded, prompt_prefix=prefix)
         state.chunk_id += 1
         return state
 
@@ -428,11 +394,11 @@ class Qwen3ASRModel:
         if generated is None:
             generated = self._infer_with_prompts([prompt], [state.audio_accum])[0]
         raw_decoded = prefix + generated
-        self._set_streaming_decoded(state, raw_decoded)
+        self._set_streaming_decoded(state, raw_decoded, prompt_prefix=prefix)
 
-    def _build_streaming_prefix_plan(self, state: ASRStreamingState) -> _StreamingPrefixPlan:
+    def _build_streaming_prefix_plan(self, state: ASRStreamingState) -> StreamingPrefixPlan:
         if state.chunk_id < state.unfixed_chunk_num:
-            return _StreamingPrefixPlan(prefix="", draft_ids=[])
+            return StreamingPrefixPlan(prefix="", draft_ids=[])
 
         cur_ids = self.backend_runtime.encode_text(state._raw_decoded)
         rollback = max(0, int(state.unfixed_token_num))
@@ -441,7 +407,7 @@ class Qwen3ASRModel:
             prefix = self.backend_runtime.decode_text(cur_ids[:end_idx]) if end_idx > 0 else ""
             if "\ufffd" not in prefix or end_idx == 0:
                 prefix, trimmed = self._limit_streaming_prefix(state, prefix)
-                return _StreamingPrefixPlan(
+                return StreamingPrefixPlan(
                     prefix=prefix,
                     draft_ids=list(cur_ids[end_idx:]),
                     trimmed=trimmed,
@@ -449,34 +415,40 @@ class Qwen3ASRModel:
             rollback += 1
 
     def _build_finish_streaming_prefix(self, state: ASRStreamingState) -> str:
-        if state.chunk_id < state.unfixed_chunk_num:
-            return ""
-
-        cur_ids = self.backend_runtime.encode_text(state._raw_decoded)
-        end_idx = max(1, len(cur_ids) - int(state.unfixed_token_num))
-        prefix = self.backend_runtime.decode_text(cur_ids[:end_idx])
-        prefix, _ = self._limit_streaming_prefix(state, prefix)
-        return prefix
+        return self._build_streaming_prefix_plan(state).prefix
 
     def _append_streaming_audio(self, state: ASRStreamingState, chunk: np.ndarray) -> None:
         if chunk.shape[0] == 0:
             return
         state.audio_seen_samples += int(chunk.shape[0])
         state.audio_accum = self._append_audio(state.audio_accum, chunk)
-        if state.max_window_samples is None:
-            return
-        overflow = int(state.audio_accum.shape[0]) - int(state.max_window_samples)
-        if overflow <= 0:
-            return
-        state.audio_dropped_samples += overflow
-        state.audio_accum = state.audio_accum[overflow:].copy()
+        _TRIM_POLICY.apply(state)
 
-    def _set_streaming_decoded(self, state: ASRStreamingState, raw_decoded: str) -> None:
+    def _set_streaming_decoded(self, state: ASRStreamingState, raw_decoded: str, *, prompt_prefix: str) -> None:
         state._raw_decoded = raw_decoded
-        language, partial_text = parse_asr_output(raw_decoded, user_language=state.force_language)
+        language, decoded_text = parse_asr_output(raw_decoded, user_language=state.force_language)
+        _, prompt_text_prefix = parse_asr_output(prompt_prefix, user_language=state.force_language)
+        generated_text = self._strip_prompt_text_prefix(decoded_text, prompt_text_prefix)
+        full_text = state.carried_text_prefix + decoded_text
         state.language = language
-        state.partial_text = partial_text
-        state.text = state.committed_text + partial_text
+        state.partial_text = decoded_text
+        state.text = full_text
+        state.recognition_frame = RecognitionFrame(
+            window_start_sample=state.audio_trim_cursor,
+            audio_end_sample=state.audio_seen_samples,
+            full_text=full_text,
+            language=language,
+            decoded_text=decoded_text,
+            generated_text=generated_text,
+        )
+
+    @staticmethod
+    def _strip_prompt_text_prefix(decoded_text: str, prompt_text_prefix: str) -> str:
+        decoded = str(decoded_text or "").strip()
+        prefix = str(prompt_text_prefix or "").strip()
+        if prefix and decoded.startswith(prefix):
+            return decoded[len(prefix) :].strip()
+        return decoded
 
     def _limit_streaming_prefix(self, state: ASRStreamingState, prefix: str) -> tuple[str, bool]:
         if state.max_prefix_tokens is None or not prefix:
@@ -491,7 +463,7 @@ class Qwen3ASRModel:
         dropped = self.backend_runtime.decode_text(text_ids[:split])
         kept = self.backend_runtime.decode_text(text_ids[split:])
         if dropped:
-            state.committed_text += dropped
+            state.carried_text_prefix += dropped
         return header + kept, True
 
     @staticmethod

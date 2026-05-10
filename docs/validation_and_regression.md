@@ -20,7 +20,7 @@ No private audio required:
 
 ```bash
 uv run python -m compileall -q qwen3_asr_runtime realtime_server.py tools tests
-uv run python -m unittest tests.test_streaming_spec_decode tests.test_realtime_asr
+uv run python -m unittest discover tests
 git diff --check
 ```
 
@@ -109,8 +109,8 @@ Use `--strip-ruby` for SRT files with furigana annotations.
 
 ## WebSocket E2E
 
-Use this when changing `realtime_server.py`, session/VAD behavior, WebSocket
-contracts, or service dependencies.
+Use this when changing `realtime_server.py`, realtime session behavior,
+WebSocket contracts, or service dependencies.
 
 ```bash
 uv run python realtime_server.py \

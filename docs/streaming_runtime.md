@@ -1,30 +1,205 @@
 # Streaming Runtime
 
-Use when changing `streaming_transcribe`, bounded live captions, or streaming
-gates. WebSocket/VAD behavior is in `@docs/realtime_asr_service.md`.
+Use when changing `streaming_transcribe`, bounded live captions, model-window
+state, or streaming quality gates. WebSocket and client event semantics live in
+`@docs/realtime_asr_service.md`.
 
-## Defaults
+## Goal
 
-Library streaming must stay upstream-compatible:
+Qwen3-ASR is a finite-audio transcription model. Realtime captions are built by
+running that model repeatedly over bounded audio windows, then stabilizing the
+mutable hypotheses outside the model.
+
+The streaming runtime must make an infinite PCM stream look like a sequence of
+finite ASR requests without letting mutable model output rewrite user-visible
+history.
+
+## Invariants
+
+- ASR hypotheses are mutable; transcript history is append-only.
+- Model input audio is bounded when `max_window_sec` is set.
+- Prompted text is context, not new evidence.
+- Only the stabilizer may decide that text is stable.
+- Text stability does not by itself prove that old audio can be dropped.
+- `TranscriptStore` is the source of user-visible history.
+- Sample indices are the timing source; convert to milliseconds only at output
+  boundaries.
+- Without timestamps or an aligner, text-to-audio cut points are approximate and
+  must be quality-gated with CER and WebSocket E2E.
+
+## Two Cursors
+
+The core streaming state has two independent cursors:
+
+```text
+audio_trim_cursor       oldest sample that must still be retained
+transcript_commit_cursor oldest text position not yet committed to history
+```
+
+They move for different reasons:
+
+- `transcript_commit_cursor` advances when the text stabilizer finds a stable
+  prefix across repeated hypotheses.
+- `audio_trim_cursor` advances only when a trim policy proves that earlier audio
+  is no longer needed.
+
+Do not infer one cursor from the other. A stable text prefix does not identify
+the exact audio cut point unless the system has timestamps or an aligner. A
+trimmed audio prefix does not mean its text is user-visible stable history.
+
+## Current Split
+
+The runtime keeps these responsibilities separate:
+
+| Layer | Responsibility |
+|---|---|
+| `Qwen3ASRModel` | public offline facade and streaming wrapper over finite-window ASR calls |
+| `ASRStreamingState` / `RollingWindowTrimPolicy` | PCM buffering, bounded audio windows, prompt prefix, rollback/spec-decode state |
+| `RecognitionFrame` | explicit model/session data contract separating prompt text from generated evidence |
+| `TailSelector` | select the replaceable transcript tail from one recognition frame and the transcript cursor |
+| `TextStabilizer` | LocalAgreement-style stable prefix and replaceable partial text |
+| `RealtimeASRSession` | lossless PCM ingestion, sample clock, ASR cadence, TranscriptStore writes |
+| `realtime_server.py` | WebSocket transport, one active local connection, JSON send policy |
+
+`ASRStreamingState`, `RecognitionFrame`, `TailSelector`, `TextStabilizer`, and
+`RollingWindowTrimPolicy` live in
+`qwen3_asr_runtime/streaming.py`. A separate `WindowedStreamingRecognizer` is
+only worth adding if stateful audio/prefill reuse or another caller needs that
+boundary; otherwise it would mostly wrap the current model methods.
+
+`model.py` should not own user-visible committed history. If it needs to carry
+text that was dropped from the prompt or audio window, call it
+`carried_text_prefix`, not `committed_text`.
+
+`realtime_session.py` should not require a bounded-window frame to start
+with the full user-visible history. It consumes explicit `RecognitionFrame`
+objects, asks `TailSelector` for the uncommitted tail, then
+writes stable or partial transcript updates.
+
+## Non-Streaming Model To Infinite Stream
+
+Each decode step uses:
+
+```text
+incoming PCM
+  -> advance audio_now
+  -> fixed ASR cadence chunks
+  -> audio window from audio_trim_cursor and retention policy
+  -> finite ASR request with prompt context
+  -> RecognitionFrame
+  -> TailSelector selects uncommitted tail from explicit frame fields
+  -> text stabilizer
+  -> append stable text, replace partial text
+  -> trim policy may advance audio_trim_cursor
+```
+
+The recognizer exposes recognition frames:
+
+```python
+RecognitionFrame(
+    window_start_sample: int,
+    audio_end_sample: int,
+    full_text: str,
+    language: str,
+    decoded_text: str = "",
+    generated_text: str = "",
+)
+```
+
+`full_text` is kept for compatibility and diagnostics. It may include text
+forced through the prompt or carried across prefix trimming. `decoded_text` is
+the current model-visible text after any carried prefix has been removed; it may
+still include mutable prompt-prefix text that has not been user-visible stable.
+`generated_text` is the continuation after the current prompt prefix has been
+stripped; it is a fallback tail candidate, not stable history by itself.
+
+`TailSelector` selects a replaceable tail by contract:
+
+- if `full_text` starts with the stable transcript prefix, use the exact suffix;
+- if `decoded_text` starts with the stable transcript prefix, use the exact
+  suffix;
+- if the audio window overlaps the stable cursor and a stable transcript suffix
+  overlaps the start of `decoded_text` after normalizing only whitespace and
+  punctuation, remove that overlap; this handles prompt-prefix tail that became
+  stable after the previous decode;
+- if the candidate already matches the last visible partial, keep it as the
+  current tail instead of removing a stable-suffix overlap;
+- if `window_start_sample >= stable_end_sample`, use `decoded_text`, not
+  `full_text`, because carried text is outside the current audio window while
+  decoded prompt-prefix text may still be mutable uncommitted tail;
+- otherwise the frame is unaligned: live updates may replace partial text. On
+  finalization, commit the final tail if it extends the last visible partial;
+  otherwise promote the last visible partial instead of dropping user-visible
+  text.
+
+Do not use fuzzy full-history overlap as a substitute for explicit frame fields.
+The only overlap rule is stable-suffix to decoded-prefix after punctuation/space
+normalization, and only when the audio window still overlaps the stable cursor.
+At or after the cursor boundary, keep the decoded prefix because it may be a real
+repeated phrase rather than prompt echo. After the rolling window advances, a
+correct frame may be tail-only.
+
+The stabilizer keeps only a previous tail and emits:
+
+```python
+StableTextUpdate(
+    stable_text: str,
+    partial_text: str | None,
+    stable_end_sample: int | None,
+)
+```
+
+Live stable text comes from a repeated common prefix between consecutive
+hypotheses, trimmed to a safe text boundary. Finalization may promote the
+remaining aligned tail. If the final decode is unaligned but extends the last
+emitted partial, finalization promotes the longer final tail. If it is a rewrite,
+finalization falls back to the last emitted partial; final history must not lose
+a tail the user has already seen.
+
+For realtime service sessions, the WebSocket session owns one continuous
+`ASRStreamingState`. `flush` and `finish` may promote the current tail into
+stable history, but they must not make VAD or silence an ASR input gate. Any
+accepted PCM sample that is dropped before it reaches the model is permanently
+unrecoverable.
+
+The trim policy is explicit:
+
+| Policy | Behavior | Correctness |
+|---|---|---|
+| `ManualFlushTrim` | trim only on explicit flush or finish | safest without timestamps; long speech may grow |
+| `RollingWindowTrim` | keep `max_window_sec` plus overlap | practical low-latency mode; CER/E2E gated |
+| `TimestampTrim` | trim to stable token or word `end_sample` | strict bounded mode, requires timestamp/aligner |
+
+If the model returns only text, `RollingWindowTrim` is an approximation. It must
+never be described as a proof that no uncommitted audio was dropped.
+
+## Current Runtime
+
+Library streaming defaults stay upstream-compatible:
 
 - `chunk_size_sec=2.0`
 - `max_window_sec=None`
 - `spec_decode=False`
 - optimized load flags off
-- each step re-feeds the accumulated audio
+- each step re-feeds accumulated audio
 
-This path is hash-regressed by `local_goldens/streaming_regression.json`.
-Optimized paths are CER-gated, not hash-gated.
-
-## Live Modes
+This default path is hash-regressed by
+`local_goldens/streaming_regression.json`. Optimized and bounded-live paths are
+CER-gated, not hash-gated.
 
 Setting `max_window_sec` enables bounded live semantics:
 
-- audio context is capped;
-- old text may move to `committed_text`;
-- `partial_text` remains mutable;
-- `state.text = committed_text + partial_text`;
+- model audio context is capped;
+- prompt text carries context across windows;
+- old text carried by the model is not user-visible stable history;
 - omitted `max_prefix_tokens` becomes `192`.
+
+Current implementation: `ASRStreamingState.carried_text_prefix` is the model
+continuity prefix carried across text-prefix trimming. `committed_text` remains
+only as a backward-compatible alias and must not be treated as
+`TranscriptStore` history.
+
+## Live Modes
 
 | Mode | Window | Role |
 |---|---:|---|
@@ -33,17 +208,6 @@ Setting `max_window_sec` enables bounded live semantics:
 | live45 | 45s | stricter quality mode |
 
 Keep `abs-delta` drift separate from `worse-delta` quality regression.
-
-## Current Decisions
-
-- live30 is the generic start point.
-- live20 is the service preset: lower first-text/update latency, higher total
-  wall and more drift.
-- `spec_decode + cuda_graph` is the current best live30 speed/latency path, but
-  not byte-identical under bf16.
-- W8A16 means qkv/gate_up only.
-- service graph bucket is `cuda_graph_len_bucket=64`; library/tool defaults stay
-  `1`.
 
 ## Service Preset
 
@@ -71,19 +235,55 @@ Qwen3ASRModel.low_latency_preset_kwargs()
 returns `chunk_size_sec=0.5`, `unfixed_chunk_num=4`, `unfixed_token_num=5`,
 `max_window_sec=20.0`, `max_prefix_tokens=64`, and `spec_decode=True`.
 
+Service graph bucket is `cuda_graph_len_bucket=64`; library and tool defaults
+stay `1`.
+
 ## Spec Decode
 
 `spec_decode=True` verifies rollback draft tokens with a prefill over
 `prompt + rollback_draft`. Accepted draft tokens skip decode steps. Under bf16,
 prefill-path KV can drift from decode-path KV, so gate with streaming CER.
 
-Implementation invariant: prefix trimming may commit old text, but must preserve
-the rolled-back token suffix as `draft_ids`.
+Implementation invariant: prefix trimming may carry old text forward, but it
+must preserve the rolled-back token suffix as `draft_ids`.
+
+## Validation
+
+Use `@docs/validation_and_regression.md`.
+
+Required gates by change type:
+
+- default library streaming: exact streaming regression;
+- bounded-live or prompt/window/stabilizer changes: streaming CER gates;
+- `RealtimeASRSession` or WebSocket behavior: WebSocket E2E;
+- user-visible caption behavior: client replay assertions for append-only
+  stable history and replace-only partial text.
+
+Property tests should cover:
+
+- stable text is append-only;
+- partial text is replace-only;
+- model rewrites do not mutate stable history;
+- `audio_trim_cursor` and `transcript_commit_cursor` advance independently;
+- tail-only bounded-window frames after the stable cursor are finalized;
+- repeated phrases are not dropped by overlap handling;
+- bounded windows do not duplicate or skip text across window rolls;
+- finalization promotes the remaining current tail, a longer final tail update,
+  or the last visible partial.
 
 ## Do Not Reopen Without New Evidence
 
 - `chunk_size_sec=3`, `unfixed_token_num=3`, or `max_new_tokens=64`
 - live30 `max_prefix_tokens=64` outside the service profile
 - graph buckets `32` or `256`
-- audio-prefix KV reuse or frozen-block audio/KV reuse
+- fuzzy full-history overlap as a substitute for explicit window state
+- VAD as a service ASR input gate
 - persistent reserved StaticCache/graph across steps without allocator control
+
+Open architecture work:
+
+- replace full-window re-feed with stateful audio/prefill reuse;
+- introduce timestamp or aligner support if strict audio-text trimming becomes
+  required;
+- introduce a separate `WindowedStreamingRecognizer` only if another caller or
+  stateful audio/prefill reuse makes the current model wrapper too broad.

@@ -2,7 +2,7 @@
 
 import argparse
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 import json
 import logging
 from typing import Any
@@ -26,10 +26,8 @@ from qwen3_asr_runtime.translation import (
 from qwen3_asr_runtime.realtime_session import RealtimeASRConfig, RealtimeASRSession
 from qwen3_asr_runtime.transcript_store import TranscriptStore
 from qwen3_asr_runtime.utils import SAMPLE_RATE
-from qwen3_asr_runtime.vad import SileroVadConfig
 
-_SERVICE_PRE_ROLL_MS = 240
-_SERVICE_INPUT_CHUNK_MS = 100
+_SERVICE_SEND_TIMEOUT_SEC = 5.0
 _SERVICE_TRANSLATION_PREVIEW_DEBOUNCE_MS = 700
 _TRANSLATION_PREWARM_TEXTS = (
     "今天天气很好。",
@@ -40,6 +38,10 @@ _TRANSLATION_PREWARM_TEXTS = (
     ),
 )
 _LOGGER = logging.getLogger(__name__)
+
+
+class WebSocketSendTimeout(RuntimeError):
+    """Raised when a connected client stops consuming server output."""
 
 
 def build_app(
@@ -77,12 +79,17 @@ def build_app(
     @app.websocket("/ws/asr")
     async def websocket_asr(websocket: WebSocket) -> None:
         await websocket.accept()
+        reject_connection = False
         async with active_lock:
             if active_connection["open"]:
-                await _send_json(websocket, {"type": "error", "error": "Another realtime session is active."})
-                await websocket.close(code=1013)
-                return
-            active_connection["open"] = True
+                reject_connection = True
+            else:
+                active_connection["open"] = True
+        if reject_connection:
+            with suppress(WebSocketSendTimeout):
+                await _send_error_and_close(websocket, "Another realtime session is active.", code=1013)
+            await _close_websocket(websocket, code=1013)
+            return
 
         try:
             start_payload = await _receive_start(websocket)
@@ -94,14 +101,12 @@ def build_app(
             try:
                 session_translation_config = _session_translation_config(start_payload, translation_config)
             except ValueError as exc:
-                await _send_json(websocket, {"type": "error", "error": str(exc)})
-                await websocket.close(code=1003)
+                await _send_error_and_close(websocket, str(exc), code=1003)
                 return
             try:
                 session = RealtimeASRSession(model, transcript_store=store, config=config)
             except RuntimeError as exc:
-                await _send_json(websocket, {"type": "error", "error": str(exc)})
-                await websocket.close(code=1011)
+                await _send_error_and_close(websocket, str(exc), code=1011)
                 return
 
             event_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
@@ -128,7 +133,7 @@ def build_app(
             await event_queue.put(ready)
 
             while True:
-                message = await websocket.receive()
+                message = await _receive_or_sender_failed(websocket, sender_task)
                 if message.get("type") == "websocket.disconnect":
                     return
                 if message.get("bytes") is not None:
@@ -157,11 +162,15 @@ def build_app(
                     await _publish_finish_events(event_queue, translation, events)
                     await event_queue.put(None)
                     await sender_task
-                    await websocket.close(code=1000)
+                    await _close_websocket(websocket, code=1000)
                     return
                 else:
                     await event_queue.put({"type": "error", "error": f"Unsupported command: {command_type}"})
         except WebSocketDisconnect:
+            return
+        except WebSocketSendTimeout:
+            _LOGGER.warning("Realtime ASR WebSocket client stopped consuming output.")
+            await _close_websocket(websocket, code=1011)
             return
         except Exception as exc:
             _LOGGER.exception("Realtime ASR WebSocket session failed.")
@@ -170,9 +179,9 @@ def build_app(
                     await event_queue.put({"type": "error", "error": str(exc) or type(exc).__name__})
                     await event_queue.put(None)
                     await sender_task
+                    await _close_websocket(websocket, code=1011)
                 else:
-                    await _send_json(websocket, {"type": "error", "error": str(exc) or type(exc).__name__})
-                await websocket.close(code=1011)
+                    await _send_error_and_close(websocket, str(exc) or type(exc).__name__, code=1011)
             except Exception:
                 _LOGGER.exception("Failed to send realtime ASR error response.")
             return
@@ -208,9 +217,6 @@ def _build_session_config(payload: dict[str, Any]) -> RealtimeASRConfig:
     return RealtimeASRConfig(
         context=str(payload.get("context") or ""),
         language=payload.get("language"),
-        pre_roll_ms=_SERVICE_PRE_ROLL_MS,
-        input_chunk_ms=_SERVICE_INPUT_CHUNK_MS,
-        vad=SileroVadConfig(),
     )
 
 
@@ -268,39 +274,31 @@ async def _receive_start(websocket: Any) -> dict[str, Any] | None:
     if message.get("type") == "websocket.disconnect":
         return None
     if message.get("text") is None:
-        await _send_json(websocket, {"type": "error", "error": "First frame must be a JSON start command."})
-        await websocket.close(code=1003)
+        await _send_error_and_close(websocket, "First frame must be a JSON start command.", code=1003)
         return None
     try:
         payload = json.loads(message["text"])
     except json.JSONDecodeError:
-        await _send_json(websocket, {"type": "error", "error": "Start command must be valid JSON."})
-        await websocket.close(code=1003)
+        await _send_error_and_close(websocket, "Start command must be valid JSON.", code=1003)
         return None
     if not isinstance(payload, dict):
-        await _send_json(websocket, {"type": "error", "error": "Start command must be a JSON object."})
-        await websocket.close(code=1003)
+        await _send_error_and_close(websocket, "Start command must be a JSON object.", code=1003)
         return None
     if payload.get("type") != "start":
-        await _send_json(websocket, {"type": "error", "error": "First command must be type=start."})
-        await websocket.close(code=1003)
+        await _send_error_and_close(websocket, "First command must be type=start.", code=1003)
         return None
     try:
         sample_rate = int(payload.get("sample_rate", SAMPLE_RATE))
     except (TypeError, ValueError):
-        await _send_json(websocket, {"type": "error", "error": "sample_rate must be 16000."})
-        await websocket.close(code=1003)
+        await _send_error_and_close(websocket, "sample_rate must be 16000.", code=1003)
         return None
     audio_format = str(payload.get("audio_format") or "pcm_s16le").lower()
     if sample_rate != SAMPLE_RATE or audio_format != "pcm_s16le":
-        await _send_json(
+        await _send_error_and_close(
             websocket,
-            {
-                "type": "error",
-                "error": "Only mono pcm_s16le at 16000 Hz is supported.",
-            },
+            "Only mono pcm_s16le at 16000 Hz is supported.",
+            code=1003,
         )
-        await websocket.close(code=1003)
         return None
     return payload
 
@@ -346,15 +344,76 @@ async def _publish_finish_events(
         await event_queue.put(event)
 
 
-async def _send_queued_events(websocket: Any, event_queue: asyncio.Queue[dict[str, Any] | None]) -> None:
+async def _send_queued_events(
+    websocket: Any,
+    event_queue: asyncio.Queue[dict[str, Any] | None],
+    *,
+    send_timeout_sec: float = _SERVICE_SEND_TIMEOUT_SEC,
+) -> None:
     while True:
         event = await event_queue.get()
         try:
             if event is None:
                 return
-            await _send_json(websocket, event)
+            await _send_json_with_timeout(websocket, event, timeout_sec=send_timeout_sec)
         finally:
             event_queue.task_done()
+
+
+async def _receive_or_sender_failed(websocket: Any, sender_task: asyncio.Task[None]) -> dict[str, Any]:
+    if sender_task.done():
+        sender_task.result()
+        return {"type": "websocket.disconnect"}
+
+    receive_task = asyncio.create_task(websocket.receive())
+    try:
+        done, _pending = await asyncio.wait(
+            {receive_task, sender_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if sender_task in done:
+            if not receive_task.done():
+                receive_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await receive_task
+            sender_task.result()
+            return {"type": "websocket.disconnect"}
+        return receive_task.result()
+    except BaseException:
+        if not receive_task.done():
+            receive_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await receive_task
+        raise
+
+
+async def _send_json_with_timeout(websocket: Any, payload: dict[str, Any], *, timeout_sec: float) -> None:
+    try:
+        await asyncio.wait_for(
+            _send_json(websocket, payload),
+            timeout=max(0.001, float(timeout_sec)),
+        )
+    except asyncio.TimeoutError as exc:
+        raise WebSocketSendTimeout(
+            f"client did not consume WebSocket output within {float(timeout_sec):.3f}s"
+        ) from exc
+
+
+async def _send_error_and_close(websocket: Any, error: str, *, code: int) -> None:
+    await _send_json_with_timeout(
+        websocket,
+        {"type": "error", "error": str(error)},
+        timeout_sec=_SERVICE_SEND_TIMEOUT_SEC,
+    )
+    await _close_websocket(websocket, code=code)
+
+
+async def _close_websocket(websocket: Any, *, code: int, timeout_sec: float = _SERVICE_SEND_TIMEOUT_SEC) -> None:
+    with suppress(Exception):
+        await asyncio.wait_for(
+            websocket.close(code=code),
+            timeout=max(0.001, float(timeout_sec)),
+        )
 
 
 async def _send_json(websocket: Any, payload: dict[str, Any]) -> None:
