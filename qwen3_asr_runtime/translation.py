@@ -411,6 +411,11 @@ def _hymt_fixed_mask_generate(
     pad_token_id = generation_config._pad_token_tensor
     do_sample = bool(generation_config.do_sample)
     has_eos_stopping_criteria = any(hasattr(criteria, "eos_token_id") for criteria in stopping_criteria)
+    fast_stop_eos_ids = (
+        _fast_stop_eos_token_ids(stopping_criteria)
+        if batch_size == 1 and not synced_gpus
+        else None
+    )
 
     compile_kwargs = dict(model_kwargs)
     compile_kwargs["cache_position"] = cache_positions[prompt_len - 1 : prompt_len]
@@ -422,7 +427,10 @@ def _hymt_fixed_mask_generate(
     unfinished_sequences = torch.ones(batch_size, dtype=torch.long, device=input_ids.device)
     this_peer_finished = False
     is_prefill = True
-    while model._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
+    while cur_len < max_length and (
+        fast_stop_eos_ids is not None
+        or model._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device)
+    ):
         current_input_ids = sequences[:, :cur_len]
         if is_prefill:
             outputs = model(
@@ -460,20 +468,43 @@ def _hymt_fixed_mask_generate(
             next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1)
         else:
             next_tokens = torch.argmax(next_token_scores, dim=-1)
-        if has_eos_stopping_criteria:
+        if has_eos_stopping_criteria and fast_stop_eos_ids is None:
             next_tokens = next_tokens * unfinished_sequences + pad_token_id * (1 - unfinished_sequences)
 
-        if cur_len >= max_length:
-            break
         sequences[:, cur_len] = next_tokens
         if static_attention_masks is None:
             attention_mask[:, cur_len] = True
         cur_len += 1
-        unfinished_sequences = unfinished_sequences & ~stopping_criteria(sequences[:, :cur_len], None)
-        this_peer_finished = unfinished_sequences.max() == 0
+        if fast_stop_eos_ids is not None:
+            if fast_stop_eos_ids and int(next_tokens.item()) in fast_stop_eos_ids:
+                break
+        else:
+            unfinished_sequences = unfinished_sequences & ~stopping_criteria(sequences[:, :cur_len], None)
+            this_peer_finished = unfinished_sequences.max() == 0
         del outputs
 
     return sequences[:, :cur_len]
+
+
+def _fast_stop_eos_token_ids(stopping_criteria: Any) -> frozenset[int] | None:
+    eos_ids: set[int] = set()
+    for criteria in stopping_criteria:
+        if hasattr(criteria, "eos_token_id"):
+            value = getattr(criteria, "eos_token_id")
+            if isinstance(value, torch.Tensor):
+                if value.numel() != 1:
+                    return None
+                eos_ids.add(int(value.detach().cpu().reshape(-1)[0]))
+            else:
+                values = value if isinstance(value, (list, tuple, set)) else [value]
+                if len(values) != 1:
+                    return None
+                eos_ids.add(int(next(iter(values))))
+        elif criteria.__class__.__name__ == "MaxLengthCriteria":
+            continue
+        else:
+            return None
+    return frozenset(eos_ids)
 
 
 def _build_static_sdpa_attention_masks(

@@ -8,6 +8,7 @@ import unittest
 from unittest import mock
 
 import torch
+from transformers.generation.stopping_criteria import EosTokenCriteria, MaxLengthCriteria
 
 from qwen3_asr_runtime.translation import (
     DEFAULT_HYMT_ATTN_IMPLEMENTATION,
@@ -18,6 +19,7 @@ from qwen3_asr_runtime.translation import (
     _attention_mask_for_step,
     _build_static_sdpa_attention_masks,
     build_hymt_prompt,
+    _fast_stop_eos_token_ids,
     _resolve_model_path,
 )
 
@@ -249,6 +251,19 @@ class HYMTFixedMaskDecodeTest(unittest.TestCase):
         )
 
         self.assertIsNone(masks)
+
+    def test_fast_stop_eos_ids_accepts_single_eos_and_max_length_only(self) -> None:
+        criteria = [
+            MaxLengthCriteria(max_length=12),
+            EosTokenCriteria(eos_token_id=torch.tensor([7])),
+        ]
+
+        self.assertEqual(_fast_stop_eos_token_ids(criteria), frozenset({7}))
+
+    def test_fast_stop_eos_ids_rejects_multi_eos_or_unknown_criteria(self) -> None:
+        self.assertIsNone(_fast_stop_eos_token_ids([EosTokenCriteria(eos_token_id=torch.tensor([7, 8]))]))
+        self.assertIsNone(_fast_stop_eos_token_ids([SimpleNamespace()]))
+
 
 class HYMTModelPathTest(unittest.TestCase):
     def test_local_files_keeps_existing_path(self) -> None:
