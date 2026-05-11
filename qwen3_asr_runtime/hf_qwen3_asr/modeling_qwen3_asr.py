@@ -665,6 +665,60 @@ class Qwen3ASRAudioEncoder(Qwen3ASRPreTrainedModel):
             attention_mask[..., cu_seqlens[i - 1] : cu_seqlens[i], cu_seqlens[i - 1] : cu_seqlens[i]] = 0
         return attention_mask
 
+    def _pack_single_audio(
+        self,
+        input_features: torch.Tensor,
+        feature_lens: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        feature_len = int(feature_lens[0].item())
+        chunk_width = self.n_window * 2
+        chunk_count = max(1, (feature_len + chunk_width - 1) // chunk_width)
+        tail_len = feature_len - (chunk_count - 1) * chunk_width
+        max_chunk_len = chunk_width if chunk_count > 1 else tail_len
+
+        mel_bins = input_features.shape[0]
+        flattened = input_features.new_zeros((chunk_count * max_chunk_len, mel_bins))
+        flattened[:feature_len] = input_features[:, :feature_len].transpose(0, 1)
+        padded_feature = flattened.view(chunk_count, max_chunk_len, mel_bins).transpose(1, 2)
+
+        chunk_lengths = torch.full((chunk_count,), chunk_width, dtype=torch.long, device=feature_lens.device)
+        chunk_lengths[-1] = tail_len
+        feature_lens_after_cnn = _get_feat_extract_output_lengths(chunk_lengths)
+        positions = torch.arange(
+            int(feature_lens_after_cnn.max().item()),
+            device=input_features.device,
+        )
+        padded_mask_after_cnn = positions.unsqueeze(0) < feature_lens_after_cnn.unsqueeze(1)
+        return padded_feature, padded_mask_after_cnn
+
+    def _pack_audio(
+        self,
+        input_features: torch.Tensor,
+        feature_lens: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if feature_lens.numel() == 1:
+            return self._pack_single_audio(input_features, feature_lens)
+
+        chunk_width = self.n_window * 2
+        chunk_num = torch.ceil(feature_lens / chunk_width).long()
+        chunk_lengths = torch.tensor(
+            [chunk_width] * int(chunk_num.sum().item()),
+            dtype=torch.long,
+            device=feature_lens.device,
+        )
+        tail_chunk_index = F.pad(chunk_num, (1, 0), value=-1).cumsum(0)[1:]
+        chunk_lengths[tail_chunk_index] = feature_lens % chunk_width
+        chunk_lengths[chunk_lengths == 0] = chunk_width
+
+        chunk_list = input_features.T.split(chunk_lengths.tolist(), dim=0)
+        padded_feature = nn.utils.rnn.pad_sequence(chunk_list, batch_first=True).transpose(1, 2)
+        feature_lens_after_cnn = _get_feat_extract_output_lengths(chunk_lengths)
+        padded_mask_after_cnn = nn.utils.rnn.pad_sequence(
+            [torch.ones(length, dtype=torch.bool, device=padded_feature.device) for length in feature_lens_after_cnn],
+            batch_first=True,
+        )
+        return padded_feature, padded_mask_after_cnn
+
     @auto_docstring
     def forward(
         self,
@@ -679,24 +733,7 @@ class Qwen3ASRAudioEncoder(Qwen3ASRPreTrainedModel):
             mel length after cnn
         """
         aftercnn_lens = _get_feat_extract_output_lengths(feature_lens)
-        chunk_num = torch.ceil(feature_lens / (self.n_window * 2)).long()
-
-        chunk_lengths = torch.tensor(
-            [self.n_window * 2] * chunk_num.sum(),
-            dtype=torch.long,
-            device=feature_lens.device,
-        )
-        tail_chunk_index = F.pad(chunk_num, (1, 0), value=-1).cumsum(0)[1:]
-        chunk_lengths[tail_chunk_index] = feature_lens % (self.n_window * 2)
-        chunk_lengths[chunk_lengths == 0] = self.n_window * 2
-
-        chunk_list = input_features.T.split(chunk_lengths.tolist(), dim=0)
-        padded_feature = nn.utils.rnn.pad_sequence(chunk_list, batch_first=True).transpose(1, 2)
-        feature_lens_after_cnn = _get_feat_extract_output_lengths(chunk_lengths)
-        padded_mask_after_cnn = nn.utils.rnn.pad_sequence(
-            [torch.ones(length, dtype=torch.bool, device=padded_feature.device) for length in feature_lens_after_cnn],
-            batch_first=True,
-        )
+        padded_feature, padded_mask_after_cnn = self._pack_audio(input_features, feature_lens)
         padded_feature = padded_feature.unsqueeze(1)
         # Split to chunk to avoid OOM during convolution
         padded_embeds = []
@@ -1115,9 +1152,11 @@ class Qwen3ASRThinkerForConditionalGeneration(Qwen3ASRPreTrainedModelForConditio
         """
         if feature_attention_mask is not None:
             audio_feature_lengths = torch.sum(feature_attention_mask, dim=1)
-        else:
-            audio_feature_lengths = None
-        feature_lens = audio_feature_lengths if audio_feature_lengths is not None else feature_attention_mask.sum(-1)
+        if audio_feature_lengths is None:
+            if feature_attention_mask is None:
+                raise ValueError("feature_attention_mask or audio_feature_lengths must be provided")
+            audio_feature_lengths = feature_attention_mask.sum(-1)
+        feature_lens = audio_feature_lengths
     
         # audio encoder do not support batch inference to keep precision
         audio_features = []
@@ -1205,8 +1244,6 @@ class Qwen3ASRThinkerForConditionalGeneration(Qwen3ASRPreTrainedModelForConditio
 
         if feature_attention_mask is not None:
             audio_feature_lengths = torch.sum(feature_attention_mask, dim=1)
-        else:
-            audio_feature_lengths = None
 
         if attention_mask is not None and position_ids is None:
             if (

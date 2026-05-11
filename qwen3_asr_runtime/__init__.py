@@ -1,5 +1,14 @@
 # coding=utf-8
 from .backends import ASRRuntimeBackend, TransformersASRBackend
+from .forced_aligner import (
+    FORCED_ALIGNER_SUPPORTED_LANGUAGES,
+    ForcedAlignItem,
+    ForcedAlignResult,
+    ForcedAlignSentence,
+    ForcedAlignTextSegment,
+    Qwen3ForceAlignTextProcessor,
+    Qwen3ForcedAlignerBackend,
+)
 from .model import ASRStreamingState, ASRTranscription, Qwen3ASRModel
 from .realtime_session import RealtimeASRConfig, RealtimeASRSession
 from .realtime_translation import RealtimeTranslationConfig, RealtimeTranslationRuntime
@@ -25,6 +34,11 @@ __all__ = [
     "DEFAULT_HYMT_MODEL",
     "EnergyVadAdapter",
     "EnergyVadConfig",
+    "FORCED_ALIGNER_SUPPORTED_LANGUAGES",
+    "ForcedAlignItem",
+    "ForcedAlignResult",
+    "ForcedAlignSentence",
+    "ForcedAlignTextSegment",
     "HYMTGenerationConfig",
     "HYMTTranslationResult",
     "HYMTTranslator",
@@ -41,6 +55,8 @@ __all__ = [
     "StableSegment",
     "ASRStreamingState",
     "ASRTranscription",
+    "Qwen3ForceAlignTextProcessor",
+    "Qwen3ForcedAlignerBackend",
     "Qwen3ASRModel",
     "TranscriptState",
     "TransformersASRBackend",

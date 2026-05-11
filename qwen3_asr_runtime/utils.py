@@ -162,17 +162,18 @@ def to_mono(audio: np.ndarray) -> np.ndarray:
 
 
 def float_range_normalize(audio: np.ndarray) -> np.ndarray:
-    audio = audio.astype(np.float32)
+    audio = audio.astype(np.float32, copy=False)
     if audio.size == 0:
         return audio
     peak = float(np.max(np.abs(audio)))
     if peak == 0.0:
         return audio
+    if np.isnan(peak):
+        return np.clip(audio, -1.0, 1.0)
+    if peak <= 1.0:
+        return audio
     # If decoded audio is int-like scaled or out-of-range, normalize conservatively.
-    if peak > 1.0:
-        audio = audio / peak
-    audio = np.clip(audio, -1.0, 1.0)
-    return audio
+    return np.clip(audio / peak, -1.0, 1.0)
 
 
 def normalize_audio_input(a: AudioLike) -> np.ndarray:

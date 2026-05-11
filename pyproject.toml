@@ -16,6 +16,8 @@ dependencies = [
   "torchaudio==2.9.1",
   "flashinfer-python>=0.6.9",
   "ninja>=1.13",
+  "nagisa==0.2.11",
+  "soynlp==0.0.493",
 ]
 
 [tool.uv]
