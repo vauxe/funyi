@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from tools.benchmark_translation import (
+    _parse_args,
     _parse_json_object,
     _pearson,
     _resolve_warmup_count,
@@ -28,6 +30,17 @@ class FakeTranslator:
 
 
 class BenchmarkTranslationTest(unittest.TestCase):
+    def test_decode_mode_defaults_to_greedy_and_sample_is_explicit(self) -> None:
+        with mock.patch("sys.argv", ["benchmark_translation.py", "--dataset", "cases.jsonl"]):
+            args = _parse_args()
+        self.assertFalse(args.sample)
+        self.assertFalse(args.greedy)
+
+        with mock.patch("sys.argv", ["benchmark_translation.py", "--dataset", "cases.jsonl", "--sample"]):
+            args = _parse_args()
+        self.assertTrue(args.sample)
+        self.assertFalse(args.greedy)
+
     def test_resolve_warmup_count_accepts_all(self) -> None:
         self.assertEqual(_resolve_warmup_count("all", 42), 42)
         self.assertEqual(_resolve_warmup_count("3", 42), 3)

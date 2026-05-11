@@ -5,11 +5,13 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest import mock
 
 from tools.gate_translation import (
     _evaluate_quality,
     _extract_format_markers,
     _parse_json_object,
+    _parse_args,
     _performance_issues,
     _quality_gate,
     _reference_similarity,
@@ -18,6 +20,17 @@ from tools.gate_translation import (
 
 
 class TranslationGateQualityTest(unittest.TestCase):
+    def test_decode_mode_defaults_to_greedy_and_sample_is_explicit(self) -> None:
+        with mock.patch("sys.argv", ["gate_translation.py", "--dataset", "cases.jsonl"]):
+            args = _parse_args()
+        self.assertFalse(args.sample)
+        self.assertFalse(args.greedy)
+
+        with mock.patch("sys.argv", ["gate_translation.py", "--dataset", "cases.jsonl", "--sample"]):
+            args = _parse_args()
+        self.assertTrue(args.sample)
+        self.assertFalse(args.greedy)
+
     def test_parse_json_object_rejects_non_object(self) -> None:
         self.assertEqual(_parse_json_object('{"logits_to_keep": 1}'), {"logits_to_keep": 1})
 

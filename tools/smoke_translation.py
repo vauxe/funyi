@@ -50,7 +50,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--top-p", type=float, default=0.6)
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--repetition-penalty", type=float, default=1.05)
-    parser.add_argument("--greedy", action="store_true", help="Disable sampling for deterministic decode.")
+    decode_group = parser.add_mutually_exclusive_group()
+    decode_group.add_argument("--sample", action="store_true", help="Enable sampling. Default is deterministic greedy decode.")
+    decode_group.add_argument("--greedy", action="store_true", help="Use deterministic greedy decode. This is the default.")
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument(
@@ -72,7 +74,7 @@ def main() -> None:
         top_p=args.top_p,
         repetition_penalty=args.repetition_penalty,
         temperature=args.temperature,
-        do_sample=not args.greedy,
+        do_sample=bool(args.sample),
     )
 
     load_started = time.perf_counter()

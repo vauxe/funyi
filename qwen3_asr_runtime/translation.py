@@ -25,7 +25,7 @@ class HYMTGenerationConfig:
     top_p: float = 0.6
     repetition_penalty: float = 1.05
     temperature: float = 0.7
-    do_sample: bool = True
+    do_sample: bool = False
     extra_generate_kwargs: dict[str, Any] = field(
         default_factory=lambda: {"logits_to_keep": 1, "cache_implementation": "static"}
     )
@@ -257,6 +257,10 @@ class HYMTTranslator:
             kwargs["top_k"] = int(config.top_k)
             kwargs["top_p"] = float(config.top_p)
             kwargs["temperature"] = float(config.temperature)
+        else:
+            kwargs["top_k"] = 50
+            kwargs["top_p"] = 1.0
+            kwargs["temperature"] = 1.0
         pad_token_id = getattr(self.tokenizer, "pad_token_id", None)
         eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
         if pad_token_id is not None:

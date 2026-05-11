@@ -111,6 +111,9 @@ class HYMTTranslatorTest(unittest.TestCase):
         self.assertEqual(DEFAULT_HYMT_MAX_NEW_TOKENS, 512)
         self.assertEqual(HYMTGenerationConfig().max_new_tokens, DEFAULT_HYMT_MAX_NEW_TOKENS)
 
+    def test_default_generation_is_greedy(self) -> None:
+        self.assertFalse(HYMTGenerationConfig().do_sample)
+
     def test_model_load_uses_default_attention_implementation(self) -> None:
         tokenizer = FakeTokenizer()
         model = FakeModel()
@@ -158,7 +161,9 @@ class HYMTTranslatorTest(unittest.TestCase):
         self.assertEqual(model.generate_kwargs["cache_implementation"], "static")
         self.assertEqual(model.generate_kwargs["logits_to_keep"], 1)
         self.assertNotIn("custom_generate", model.generate_kwargs)
-        self.assertNotIn("temperature", model.generate_kwargs)
+        self.assertEqual(model.generate_kwargs["top_k"], 50)
+        self.assertEqual(model.generate_kwargs["top_p"], 1.0)
+        self.assertEqual(model.generate_kwargs["temperature"], 1.0)
 
     def test_generate_backend_can_use_hf_generate(self) -> None:
         tokenizer = FakeTokenizer()

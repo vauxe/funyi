@@ -449,6 +449,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--translation-preview-debounce-ms", type=int, default=_SERVICE_TRANSLATION_PREVIEW_DEBOUNCE_MS)
     parser.add_argument("--translation-preview-timeout-ms", type=int, default=30_000)
     parser.add_argument("--translation-max-new-tokens", type=int, default=DEFAULT_HYMT_MAX_NEW_TOKENS)
+    parser.add_argument("--translation-sample", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--translation-decode-backend", default=DEFAULT_HYMT_DECODE_BACKEND, choices=["fixed_mask", "generate"])
     parser.add_argument("--translation-attn-implementation", default=DEFAULT_HYMT_ATTN_IMPLEMENTATION)
     parser.add_argument("--translation-local-files-only", action=argparse.BooleanOptionalAction, default=True)
@@ -497,7 +498,10 @@ def _build_translation(args: argparse.Namespace) -> tuple[Any | None, RealtimeTr
         preview_timeout_ms=int(args.translation_preview_timeout_ms),
         max_new_tokens=int(args.translation_max_new_tokens),
     )
-    generation_config = HYMTGenerationConfig(max_new_tokens=int(args.translation_max_new_tokens))
+    generation_config = HYMTGenerationConfig(
+        max_new_tokens=int(args.translation_max_new_tokens),
+        do_sample=bool(args.translation_sample),
+    )
     translator = HYMTTranslator(
         args.translation_model,
         device=str(args.translation_device),

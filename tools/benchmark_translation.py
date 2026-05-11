@@ -43,7 +43,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--top-p", type=float, default=0.6)
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--repetition-penalty", type=float, default=1.05)
-    parser.add_argument("--greedy", action="store_true", help="Disable sampling for deterministic decode.")
+    decode_group = parser.add_mutually_exclusive_group()
+    decode_group.add_argument("--sample", action="store_true", help="Enable sampling. Default is deterministic greedy decode.")
+    decode_group.add_argument("--greedy", action="store_true", help="Use deterministic greedy decode. This is the default.")
     parser.add_argument("--seed", type=int, default=0, help="Torch RNG seed for repeatable sampling benchmarks.")
     parser.add_argument(
         "--seed-mode",
@@ -76,6 +78,7 @@ def main() -> None:
     if not cases:
         raise ValueError("No translation benchmark cases selected")
 
+    do_sample = bool(args.sample)
     torch.manual_seed(int(args.seed))
     config_kwargs: dict[str, Any] = {
         "max_new_tokens": args.max_new_tokens,
@@ -83,7 +86,7 @@ def main() -> None:
         "top_p": args.top_p,
         "repetition_penalty": args.repetition_penalty,
         "temperature": args.temperature,
-        "do_sample": not args.greedy,
+        "do_sample": do_sample,
     }
     if args.extra_generate_kwargs is not None:
         config_kwargs["extra_generate_kwargs"] = _parse_json_object(args.extra_generate_kwargs)
@@ -141,7 +144,7 @@ def main() -> None:
         "decode_backend": translator.decode_backend,
         "max_new_tokens": args.max_new_tokens,
         "generation": {
-            "do_sample": not args.greedy,
+            "do_sample": do_sample,
             "top_k": args.top_k,
             "top_p": args.top_p,
             "temperature": args.temperature,

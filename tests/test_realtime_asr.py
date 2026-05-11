@@ -396,6 +396,11 @@ class RealtimeServerCliTest(unittest.TestCase):
         self.assertEqual(args.cuda_graph_prewarm_language, "Chinese")
         self.assertTrue(args.translation_prewarm)
         self.assertEqual(args.translation_preview_debounce_ms, 700)
+        self.assertFalse(args.translation_sample)
+
+    def test_translation_sampling_can_be_enabled(self) -> None:
+        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--translation-sample"]):
+            self.assertTrue(_parse_args().translation_sample)
 
     def test_w8a16_can_be_disabled(self) -> None:
         with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--no-w8a16"]):
