@@ -92,6 +92,11 @@ Service entrypoint defaults:
 Disable flags only for debugging, fallback, or comparison.
 When translation is enabled, HY-MT is prewarmed on the same single model actor
 thread used at runtime before serving; failure is a startup failure.
+Stable translation batching is opt-in with `--translation-stable-batch-size`.
+The default is `1` so preview latency and existing single-item runtime behavior
+stay unchanged; larger values only batch queued stable segments with the same
+source language. Prewarm covers the singleton path and the configured max
+stable batch shape.
 
 ## Validation
 

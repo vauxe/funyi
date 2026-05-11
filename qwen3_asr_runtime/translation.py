@@ -99,6 +99,24 @@ class HYMTTranslator:
             max_new_tokens=max_new_tokens,
         ).text
 
+    def translate_batch(
+        self,
+        texts: Iterable[str],
+        *,
+        target_language: str,
+        source_language: str = "",
+        max_new_tokens: int | None = None,
+    ) -> list[str]:
+        return [
+            result.text
+            for result in self.profile_translate_batch(
+                texts,
+                target_language=target_language,
+                source_language=source_language,
+                max_new_tokens=max_new_tokens,
+            )
+        ]
+
     def warmup(
         self,
         texts: Iterable[str],
@@ -107,14 +125,28 @@ class HYMTTranslator:
         source_language: str = "",
         max_new_tokens: int | None = None,
         sync_cuda: bool = False,
+        batch_size: int = 1,
     ) -> list[HYMTTranslationResult]:
         results: list[HYMTTranslationResult] = []
-        for text in texts:
-            if not str(text or "").strip():
-                continue
-            results.append(
-                self.profile_translate(
-                    str(text),
+        pending = [str(text) for text in texts if str(text or "").strip()]
+        batch_size = max(1, int(batch_size))
+        if batch_size == 1:
+            for text in pending:
+                results.append(
+                    self.profile_translate(
+                        text,
+                        target_language=target_language,
+                        source_language=source_language,
+                        max_new_tokens=max_new_tokens,
+                        sync_cuda=sync_cuda,
+                    )
+                )
+            return results
+        for offset in range(0, len(pending), batch_size):
+            results.extend(
+                result
+                for result in self.profile_translate_batch(
+                    pending[offset : offset + batch_size],
                     target_language=target_language,
                     source_language=source_language,
                     max_new_tokens=max_new_tokens,
@@ -159,7 +191,7 @@ class HYMTTranslator:
         encode_wall_sec = time.perf_counter() - encode_started
 
         generate_started = time.perf_counter()
-        generated_ids = self._generate(input_ids, max_new_tokens=max_new_tokens)
+        generated_ids = self._generate(input_ids, max_new_tokens=max_new_tokens)[0]
         self._sync_if_needed(sync_cuda)
         generate_wall_sec = time.perf_counter() - generate_started
 
@@ -176,6 +208,76 @@ class HYMTTranslator:
             decode_wall_sec=decode_wall_sec,
             total_wall_sec=time.perf_counter() - total_started,
         )
+
+    def profile_translate_batch(
+        self,
+        texts: Iterable[str],
+        *,
+        target_language: str,
+        source_language: str = "",
+        max_new_tokens: int | None = None,
+        sync_cuda: bool = False,
+    ) -> list[HYMTTranslationResult]:
+        total_started = time.perf_counter()
+        source_texts = [str(text or "").strip() for text in texts]
+        results = [
+            HYMTTranslationResult(
+                text="",
+                prompt_tokens=0,
+                generated_tokens=0,
+                encode_wall_sec=0.0,
+                generate_wall_sec=0.0,
+                decode_wall_sec=0.0,
+                total_wall_sec=0.0,
+            )
+            for _ in source_texts
+        ]
+        indexed_texts = [(index, text) for index, text in enumerate(source_texts) if text]
+        if not indexed_texts:
+            return results
+        target = str(target_language or "").strip()
+        if not target:
+            raise ValueError("target_language must not be empty")
+
+        prompts = [
+            build_hymt_prompt(text, target_language=target, source_language=source_language)
+            for _index, text in indexed_texts
+        ]
+        encode_started = time.perf_counter()
+        input_ids, attention_mask = self._encode_prompts(prompts)
+        self._sync_if_needed(sync_cuda)
+        encode_wall_sec = time.perf_counter() - encode_started
+
+        generate_started = time.perf_counter()
+        generated_ids = self._generate(
+            input_ids,
+            max_new_tokens=max_new_tokens,
+            attention_mask=attention_mask,
+        )
+        self._sync_if_needed(sync_cuda)
+        generate_wall_sec = time.perf_counter() - generate_started
+
+        decode_started = time.perf_counter()
+        generated_rows = [self._trim_right_pad(row).tolist() for row in generated_ids]
+        outputs = self._decode_batch(generated_rows)
+        if len(outputs) != len(indexed_texts):
+            raise RuntimeError("translation batch output length mismatch")
+        decode_wall_sec = time.perf_counter() - decode_started
+        total_wall_sec = time.perf_counter() - total_started
+        prompt_tokens = attention_mask.to(dtype=torch.long).sum(dim=1).detach().cpu().tolist()
+        for row_index, ((source_index, _source_text), output, token_ids) in enumerate(
+            zip(indexed_texts, outputs, generated_rows)
+        ):
+            results[source_index] = HYMTTranslationResult(
+                text=str(output).strip(),
+                prompt_tokens=int(prompt_tokens[row_index]),
+                generated_tokens=len(token_ids),
+                encode_wall_sec=encode_wall_sec,
+                generate_wall_sec=generate_wall_sec,
+                decode_wall_sec=decode_wall_sec,
+                total_wall_sec=total_wall_sec,
+            )
+        return results
 
     def _load_model(
         self,
@@ -213,6 +315,20 @@ class HYMTTranslator:
     def _encode_prompt(self, prompt: str) -> torch.Tensor:
         return self._tokenize_prompt(prompt).to(self.input_device)
 
+    def _encode_prompts(self, prompts: list[str]) -> tuple[torch.Tensor, torch.Tensor]:
+        rows = [self._tokenize_prompt(prompt).squeeze(0) for prompt in prompts]
+        max_len = max(int(row.shape[-1]) for row in rows)
+        pad_token_id = getattr(self.tokenizer, "pad_token_id", None)
+        if pad_token_id is None:
+            pad_token_id = getattr(self.tokenizer, "eos_token_id", 0)
+        input_ids = torch.full((len(rows), max_len), int(pad_token_id), dtype=torch.long)
+        attention_mask = torch.zeros((len(rows), max_len), dtype=torch.bool)
+        for index, row in enumerate(rows):
+            length = int(row.shape[-1])
+            input_ids[index, max_len - length :] = row.to(dtype=torch.long)
+            attention_mask[index, max_len - length :] = True
+        return input_ids.to(self.input_device), attention_mask.to(self.input_device)
+
     def _tokenize_prompt(self, prompt: str) -> torch.Tensor:
         messages = [{"role": "user", "content": prompt}]
         input_ids = self.tokenizer.apply_chat_template(
@@ -228,15 +344,44 @@ class HYMTTranslator:
         return input_ids
 
     @torch.inference_mode()
-    def _generate(self, input_ids: torch.Tensor, *, max_new_tokens: int | None) -> torch.Tensor:
+    def _generate(
+        self,
+        input_ids: torch.Tensor,
+        *,
+        max_new_tokens: int | None,
+        attention_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         generate_kwargs = self._build_generate_kwargs(max_new_tokens=max_new_tokens)
+        if attention_mask is not None:
+            generate_kwargs["attention_mask"] = attention_mask
         if self.decode_backend == "fixed_mask" and self._can_use_fixed_mask_decode(generate_kwargs):
             generate_kwargs["custom_generate"] = _hymt_fixed_mask_generate
         outputs = self.model.generate(
             input_ids=input_ids,
             **generate_kwargs,
         )
-        return outputs[0, input_ids.shape[-1] :].detach().cpu()
+        return outputs[:, input_ids.shape[-1] :].detach().cpu()
+
+    def _trim_right_pad(self, token_ids: torch.Tensor) -> torch.Tensor:
+        pad_token_id = getattr(self.tokenizer, "pad_token_id", None)
+        if pad_token_id is None:
+            return token_ids
+        end = int(token_ids.shape[-1])
+        while end > 0 and int(token_ids[end - 1]) == int(pad_token_id):
+            end -= 1
+        return token_ids[:end]
+
+    def _decode_batch(self, rows: list[list[int]]) -> list[str]:
+        batch_decode = getattr(self.tokenizer, "batch_decode", None)
+        if batch_decode is not None:
+            return [
+                str(text).strip()
+                for text in batch_decode(rows, skip_special_tokens=True)
+            ]
+        return [
+            str(self.tokenizer.decode(row, skip_special_tokens=True)).strip()
+            for row in rows
+        ]
 
     def _can_use_fixed_mask_decode(self, generate_kwargs: dict[str, Any]) -> bool:
         return (

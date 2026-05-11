@@ -22,6 +22,7 @@ class RealtimeTranslationConfig:
     preview_debounce_ms: int = 700
     preview_timeout_ms: int = 30_000
     max_new_tokens: int | None = None
+    stable_batch_size: int = 1
 
     def __post_init__(self) -> None:
         if not str(self.target_language or "").strip():
@@ -30,6 +31,8 @@ class RealtimeTranslationConfig:
             raise ValueError("preview_debounce_ms must be >= 0")
         if int(self.preview_timeout_ms) <= 0:
             raise ValueError("preview_timeout_ms must be > 0")
+        if int(self.stable_batch_size) <= 0:
+            raise ValueError("stable_batch_size must be > 0")
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,7 @@ class TranslationModelActor:
         source_language: str,
         max_new_tokens: int | None,
         sync_cuda: bool,
+        batch_size: int = 1,
     ) -> list[Any]:
         warmup = getattr(self.translator, "warmup", None)
         if warmup is None:
@@ -92,6 +96,7 @@ class TranslationModelActor:
                 source_language=source_language,
                 max_new_tokens=max_new_tokens,
                 sync_cuda=sync_cuda,
+                batch_size=batch_size,
             ),
         )
         return list(future.result())
@@ -133,6 +138,44 @@ class TranslationModelActor:
             _LOGGER.debug("Realtime translation failed.", exc_info=True)
             return None, "failed"
 
+    async def translate_batch(
+        self,
+        texts: list[str],
+        *,
+        target_language: str,
+        source_language: str,
+        max_new_tokens: int | None,
+        timeout_sec: float | None,
+    ) -> list[tuple[str | None, str | None]]:
+        if not texts:
+            return []
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(
+            self._executor,
+            partial(
+                self._call_translate_batch,
+                list(texts),
+                target_language=target_language,
+                source_language=source_language,
+                max_new_tokens=max_new_tokens,
+            ),
+        )
+        future.add_done_callback(_consume_future)
+        try:
+            raw_outputs = await _wait_future_result(
+                future,
+                timeout_sec=None if timeout_sec is None else max(0.001, float(timeout_sec)),
+            )
+            outputs = [str(output).strip() for output in raw_outputs]
+            if len(outputs) != len(texts):
+                raise RuntimeError("translation batch output length mismatch")
+            return [(output, None) if output else (None, "failed") for output in outputs]
+        except asyncio.TimeoutError:
+            return [(None, "timeout") for _ in texts]
+        except Exception:
+            _LOGGER.debug("Realtime translation batch failed.", exc_info=True)
+            return [(None, "failed") for _ in texts]
+
     def close(self, *, wait: bool = False) -> None:
         if self._owns_executor:
             self._executor.shutdown(wait=wait, cancel_futures=True)
@@ -156,6 +199,36 @@ class TranslationModelActor:
                 )
             )
         )
+
+    def _call_translate_batch(
+        self,
+        texts: list[str],
+        *,
+        target_language: str,
+        source_language: str,
+        max_new_tokens: int | None,
+    ) -> list[str]:
+        translate_batch = getattr(self.translator, "translate_batch", None)
+        if translate_batch is not None:
+            result = self._call_with_capture_lock(
+                partial(
+                    translate_batch,
+                    texts,
+                    target_language=target_language,
+                    source_language=source_language,
+                    max_new_tokens=max_new_tokens,
+                )
+            )
+            return [str(item) for item in result]
+        return [
+            self._call_translate(
+                text,
+                target_language=target_language,
+                source_language=source_language,
+                max_new_tokens=max_new_tokens,
+            )
+            for text in texts
+        ]
 
     def _call_with_capture_lock(self, call: Any) -> Any:
         if self._capture_lock is None:
@@ -200,6 +273,7 @@ class RealtimeTranslationRuntime:
                 "reliable": True,
                 "queue_size": None,
                 "timeout_ms": None,
+                "batch_size": int(self.config.stable_batch_size),
             },
             "preview": {
                 "enabled": bool(self.config.preview_enabled),
@@ -262,8 +336,8 @@ class RealtimeTranslationRuntime:
                         finish_jobs.append(job)
 
         pending_jobs = finish_jobs + queued_jobs
-        for job in pending_jobs:
-            events.append(await self._run_stable_job(job, publish=False))
+        for jobs in self._stable_batches(pending_jobs):
+            events.extend(await self._run_stable_jobs(jobs, publish=False))
         return events
 
     async def _enqueue_stable(self, revision: int, segment: dict[str, Any]) -> None:
@@ -304,7 +378,7 @@ class RealtimeTranslationRuntime:
         while True:
             await self._wake.wait()
             while True:
-                job: _PreviewJob | _StableJob | None = None
+                job: _PreviewJob | list[_StableJob] | None = None
                 async with self._lock:
                     self._wake.clear()
                     if self._closed:
@@ -315,7 +389,7 @@ class RealtimeTranslationRuntime:
                         job = self._preview_slot
                         self._preview_slot = None
                     elif self._stable_queue:
-                        job = self._stable_queue.popleft()
+                        job = self._take_stable_batch()
                 if job is None:
                     break
                 kind = "preview" if isinstance(job, _PreviewJob) else "stable"
@@ -328,7 +402,7 @@ class RealtimeTranslationRuntime:
                         await self._clear_running_job(kind)
                 else:
                     try:
-                        await self._run_stable_job(job, publish=True)
+                        await self._run_stable_jobs(job, publish=True)
                     finally:
                         await self._clear_running_job(kind)
 
@@ -367,13 +441,37 @@ class RealtimeTranslationRuntime:
             }
         )
 
-    async def _run_stable_job(self, job: _StableJob, *, publish: bool) -> dict[str, Any]:
-        event: dict[str, Any]
-        translated, error_code = await self._translate_text(
-            job.source_text,
-            source_language=job.source_language,
+    async def _run_stable_jobs(self, jobs: list[_StableJob], *, publish: bool) -> list[dict[str, Any]]:
+        if not jobs:
+            return []
+        translations = await self._translate_texts(
+            [job.source_text for job in jobs],
+            source_language=jobs[0].source_language,
             timeout_sec=None,
         )
+        events = [
+            self._stable_event(job, translated=translated, error_code=error_code)
+            for job, (translated, error_code) in zip(jobs, translations)
+        ]
+
+        async with self._lock:
+            should_publish = publish and not self._closed
+            if should_publish:
+                self._wake.set()
+
+        if should_publish:
+            for event in events:
+                await self.event_queue.put(event)
+        return events
+
+    def _stable_event(
+        self,
+        job: _StableJob,
+        *,
+        translated: str | None,
+        error_code: str | None,
+    ) -> dict[str, Any]:
+        event: dict[str, Any]
         if translated is None:
             code = error_code or "failed"
             message = "translation failed"
@@ -387,14 +485,6 @@ class RealtimeTranslationRuntime:
                 "target_language": self.config.target_language,
                 "text": translated,
             }
-
-        async with self._lock:
-            should_publish = publish and not self._closed
-            if should_publish:
-                self._wake.set()
-
-        if should_publish:
-            await self.event_queue.put(event)
         return event
 
     async def _translate_text(
@@ -410,6 +500,60 @@ class RealtimeTranslationRuntime:
             source_language=source_language,
             max_new_tokens=self.config.max_new_tokens,
             timeout_sec=timeout_sec,
+        )
+
+    async def _translate_texts(
+        self,
+        texts: list[str],
+        *,
+        source_language: str,
+        timeout_sec: float | None,
+    ) -> list[tuple[str | None, str | None]]:
+        if len(texts) == 1:
+            return [
+                await self._translate_text(
+                    texts[0],
+                    source_language=source_language,
+                    timeout_sec=timeout_sec,
+                )
+            ]
+        return await self.model_actor.translate_batch(
+            texts,
+            target_language=self.config.target_language,
+            source_language=source_language,
+            max_new_tokens=self.config.max_new_tokens,
+            timeout_sec=timeout_sec,
+        )
+
+    def _take_stable_batch(self) -> list[_StableJob]:
+        if not self._stable_queue:
+            return []
+        batch = [self._stable_queue.popleft()]
+        while self._stable_queue and self._can_append_to_stable_batch(batch, self._stable_queue[0]):
+            batch.append(self._stable_queue.popleft())
+        return batch
+
+    def _stable_batches(self, jobs: list[_StableJob]) -> list[list[_StableJob]]:
+        batches: list[list[_StableJob]] = []
+        current: list[_StableJob] = []
+        for job in jobs:
+            if not current:
+                current = [job]
+                continue
+            if not self._can_append_to_stable_batch(current, job):
+                batches.append(current)
+                current = [job]
+            else:
+                current.append(job)
+        if current:
+            batches.append(current)
+        return batches
+
+    def _can_append_to_stable_batch(self, batch: list[_StableJob], job: _StableJob) -> bool:
+        return (
+            bool(batch)
+            and len(batch) < max(1, int(self.config.stable_batch_size))
+            and job.source_language == batch[0].source_language
         )
 
     async def _stop_worker(self, *, cancel_running_preview: bool = False) -> None:

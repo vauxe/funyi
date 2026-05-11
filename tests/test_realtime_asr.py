@@ -23,6 +23,7 @@ from realtime_server import (
     _receive_or_sender_failed,
     _send_queued_events,
     _session_translation_config,
+    _translation_prewarm_texts,
     _translation_capture_lock,
 )
 from qwen3_asr_runtime.realtime_session import RealtimeASRConfig, RealtimeASRSession
@@ -396,11 +397,20 @@ class RealtimeServerCliTest(unittest.TestCase):
         self.assertEqual(args.cuda_graph_prewarm_language, "Chinese")
         self.assertTrue(args.translation_prewarm)
         self.assertEqual(args.translation_preview_debounce_ms, 700)
+        self.assertEqual(args.translation_stable_batch_size, 1)
         self.assertFalse(args.translation_sample)
 
     def test_translation_sampling_can_be_enabled(self) -> None:
         with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--translation-sample"]):
             self.assertTrue(_parse_args().translation_sample)
+
+    def test_translation_stable_batch_size_can_be_configured(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            ["realtime_server.py", "--model", "model", "--translation-stable-batch-size", "4"],
+        ):
+            self.assertEqual(_parse_args().translation_stable_batch_size, 4)
 
     def test_w8a16_can_be_disabled(self) -> None:
         with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--no-w8a16"]):
@@ -514,10 +524,47 @@ class RealtimeServerCliTest(unittest.TestCase):
         self.assertEqual(translator.calls[0]["target_language"], "English")
         self.assertEqual(translator.calls[0]["max_new_tokens"], 16)
         self.assertTrue(translator.calls[0]["sync_cuda"])
+        self.assertEqual(translator.calls[0]["batch_size"], 1)
         texts = translator.calls[0]["texts"]  # type: ignore[assignment]
         self.assertEqual(len(texts), 3)
         self.assertLess(len(texts[0]), len(texts[1]))  # type: ignore[index]
         self.assertLess(len(texts[1]), len(texts[2]))  # type: ignore[index]
+
+    def test_translation_prewarm_covers_configured_stable_batch_shape(self) -> None:
+        class FakeTranslator:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def warmup(self, texts: object, **kwargs: object) -> list[object]:
+                text_list = list(texts)  # type: ignore[arg-type]
+                self.calls.append({"texts": text_list, **kwargs})
+                return [object() for _ in text_list]
+
+        translator = FakeTranslator()
+        actor = TranslationModelActor(translator)
+        config = RealtimeTranslationConfig(target_language="English", max_new_tokens=16, stable_batch_size=4)
+
+        try:
+            _prewarm_translation(actor, config)
+        finally:
+            actor.close(wait=True)
+
+        self.assertEqual([call["batch_size"] for call in translator.calls], [1, 4])
+        self.assertEqual([len(call["texts"]) for call in translator.calls], [3, 4])
+        self.assertEqual(translator.calls[1]["texts"][:3], translator.calls[0]["texts"])
+        self.assertEqual(translator.calls[1]["texts"][3], translator.calls[0]["texts"][2])
+
+    def test_translation_prewarm_texts_expand_to_requested_batch_size(self) -> None:
+        pair = _translation_prewarm_texts(2)
+        texts = _translation_prewarm_texts(5)
+
+        self.assertEqual(len(pair), 2)
+        self.assertLess(len(pair[0]), len(pair[1]))
+        self.assertEqual(pair[1], texts[2])
+        self.assertEqual(len(texts), 5)
+        self.assertLess(len(texts[0]), len(texts[1]))
+        self.assertLess(len(texts[1]), len(texts[2]))
+        self.assertEqual(texts[3:], (texts[2], texts[2]))
 
     def test_translation_prewarm_failure_is_startup_error(self) -> None:
         class FakeTranslator:

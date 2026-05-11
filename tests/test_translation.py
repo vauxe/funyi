@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 from tempfile import TemporaryDirectory
+import time
 import unittest
 from unittest import mock
 
@@ -51,18 +52,53 @@ class FakeTokenizer:
     def decode(self, token_ids: list[int], *, skip_special_tokens: bool) -> str:
         self.decoded_ids = [int(item) for item in token_ids]
         self.skip_special_tokens = skip_special_tokens
-        return " translated text "
+        outputs = {
+            (21, 22): " translated text ",
+            (31, 32): " second translated ",
+        }
+        return outputs.get(tuple(self.decoded_ids), " translated text ")
+
+
+class VariableLengthTokenizer(FakeTokenizer):
+    def apply_chat_template(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        tokenize: bool,
+        add_generation_prompt: bool,
+        return_tensors: str,
+    ) -> torch.Tensor:
+        self.template_calls += 1
+        self.messages = list(messages)
+        self.tokenize = tokenize
+        self.add_generation_prompt = add_generation_prompt
+        self.return_tensors = return_tensors
+        content = str(messages[0]["content"])
+        if "second" in content:
+            return torch.tensor([[10, 11, 12, 13]], dtype=torch.long)
+        return torch.tensor([[10, 11]], dtype=torch.long)
+
+
+class ShortBatchDecodeTokenizer(FakeTokenizer):
+    def batch_decode(self, rows: list[list[int]], *, skip_special_tokens: bool) -> list[str]:
+        del rows, skip_special_tokens
+        return ["only one output"]
 
 
 class FakeModel(torch.nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, *, generate_delay_sec: float = 0.0) -> None:
         super().__init__()
         self.anchor = torch.nn.Parameter(torch.zeros(1))
+        self.generate_delay_sec = float(generate_delay_sec)
         self.generate_kwargs: dict[str, object] = {}
+        self.input_ids: torch.Tensor | None = None
 
     def generate(self, *, input_ids: torch.Tensor, **kwargs: object) -> torch.Tensor:
         self.generate_kwargs = dict(kwargs)
-        suffix = torch.tensor([[21, 22]], dtype=torch.long, device=input_ids.device)
+        self.input_ids = input_ids.detach().cpu()
+        if self.generate_delay_sec > 0:
+            time.sleep(self.generate_delay_sec)
+        suffix = torch.tensor([[21, 22], [31, 32]], dtype=torch.long, device=input_ids.device)[: input_ids.shape[0]]
         return torch.cat([input_ids, suffix], dim=1)
 
 
@@ -205,6 +241,48 @@ class HYMTTranslatorTest(unittest.TestCase):
 
         self.assertEqual(len(results), 2)
         self.assertEqual([result.text for result in results], ["translated text", "translated text"])
+
+    def test_translate_batch_preserves_order_and_left_pads_prompts(self) -> None:
+        tokenizer = VariableLengthTokenizer()
+        model = FakeModel(generate_delay_sec=0.05)
+        translator = HYMTTranslator(
+            "fake-model",
+            device="cpu",
+            generation_config=HYMTGenerationConfig(),
+            model=model,
+            tokenizer=tokenizer,
+        )
+
+        results = translator.profile_translate_batch(
+            ["first", "", "second"],
+            target_language="Chinese",
+            max_new_tokens=4,
+        )
+
+        self.assertEqual([result.text for result in results], ["translated text", "", "second translated"])
+        self.assertEqual([result.prompt_tokens for result in results], [2, 0, 4])
+        self.assertEqual([result.generated_tokens for result in results], [2, 0, 2])
+        self.assertGreaterEqual(results[0].generate_wall_sec, 0.04)
+        self.assertEqual(results[0].generate_wall_sec, results[2].generate_wall_sec)
+        self.assertEqual(tokenizer.template_calls, 2)
+        self.assertIsNotNone(model.input_ids)
+        assert model.input_ids is not None
+        self.assertEqual(model.input_ids.tolist(), [[0, 0, 10, 11], [10, 11, 12, 13]])
+        attention_mask = model.generate_kwargs["attention_mask"]
+        self.assertIsInstance(attention_mask, torch.Tensor)
+        self.assertEqual(attention_mask.cpu().tolist(), [[False, False, True, True], [True, True, True, True]])
+
+    def test_translate_batch_rejects_decoder_output_count_mismatch(self) -> None:
+        translator = HYMTTranslator(
+            "fake-model",
+            device="cpu",
+            generation_config=HYMTGenerationConfig(),
+            model=FakeModel(),
+            tokenizer=ShortBatchDecodeTokenizer(),
+        )
+
+        with self.assertRaises(RuntimeError):
+            translator.profile_translate_batch(["first", "second"], target_language="Chinese")
 
 
 class HYMTFixedMaskDecodeTest(unittest.TestCase):

@@ -449,6 +449,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--translation-preview-debounce-ms", type=int, default=_SERVICE_TRANSLATION_PREVIEW_DEBOUNCE_MS)
     parser.add_argument("--translation-preview-timeout-ms", type=int, default=30_000)
     parser.add_argument("--translation-max-new-tokens", type=int, default=DEFAULT_HYMT_MAX_NEW_TOKENS)
+    parser.add_argument("--translation-stable-batch-size", type=int, default=1)
     parser.add_argument("--translation-sample", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--translation-decode-backend", default=DEFAULT_HYMT_DECODE_BACKEND, choices=["fixed_mask", "generate"])
     parser.add_argument("--translation-attn-implementation", default=DEFAULT_HYMT_ATTN_IMPLEMENTATION)
@@ -497,6 +498,7 @@ def _build_translation(args: argparse.Namespace) -> tuple[Any | None, RealtimeTr
         preview_debounce_ms=int(args.translation_preview_debounce_ms),
         preview_timeout_ms=int(args.translation_preview_timeout_ms),
         max_new_tokens=int(args.translation_max_new_tokens),
+        stable_batch_size=int(args.translation_stable_batch_size),
     )
     generation_config = HYMTGenerationConfig(
         max_new_tokens=int(args.translation_max_new_tokens),
@@ -515,21 +517,50 @@ def _build_translation(args: argparse.Namespace) -> tuple[Any | None, RealtimeTr
     return translator, config
 
 
+def _translation_prewarm_texts(batch_size: int) -> tuple[str, ...]:
+    target_count = max(1, int(batch_size))
+    texts = list(_TRANSLATION_PREWARM_TEXTS[:target_count])
+    if target_count < len(_TRANSLATION_PREWARM_TEXTS):
+        texts[-1] = _TRANSLATION_PREWARM_TEXTS[-1]
+    while len(texts) < target_count:
+        texts.append(_TRANSLATION_PREWARM_TEXTS[-1])
+    return tuple(texts)
+
+
 def _prewarm_translation(
     translation_actor: TranslationModelActor,
     config: RealtimeTranslationConfig,
 ) -> None:
+    _run_translation_prewarm_batch(translation_actor, config, texts=_TRANSLATION_PREWARM_TEXTS, batch_size=1)
+    stable_batch_size = max(1, int(config.stable_batch_size))
+    if stable_batch_size > 1:
+        _run_translation_prewarm_batch(
+            translation_actor,
+            config,
+            texts=_translation_prewarm_texts(stable_batch_size),
+            batch_size=stable_batch_size,
+        )
+
+
+def _run_translation_prewarm_batch(
+    translation_actor: TranslationModelActor,
+    config: RealtimeTranslationConfig,
+    *,
+    texts: tuple[str, ...],
+    batch_size: int,
+) -> None:
     try:
         results = translation_actor.warmup(
-            _TRANSLATION_PREWARM_TEXTS,
+            texts,
             target_language=config.target_language,
             source_language=config.source_language,
             max_new_tokens=config.max_new_tokens,
             sync_cuda=True,
+            batch_size=batch_size,
         )
     except Exception as exc:
         raise RuntimeError("translation prewarm failed") from exc
-    if len(results) != len(_TRANSLATION_PREWARM_TEXTS):
+    if len(results) != len(texts):
         raise RuntimeError("translation prewarm did not run all warmup cases")
 
 

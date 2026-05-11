@@ -27,6 +27,7 @@ class FakeTranslator:
         self.failures = set(failures or set())
         self.empty_outputs = set(empty_outputs or set())
         self.calls: list[str] = []
+        self.batch_calls: list[list[str]] = []
 
     def translate(
         self,
@@ -45,6 +46,18 @@ class FakeTranslator:
         if text in self.empty_outputs:
             return ""
         return f"{target_language}:{text}"
+
+    def translate_batch(
+        self,
+        texts: list[str],
+        *,
+        target_language: str,
+        source_language: str = "",
+        max_new_tokens: int | None = None,
+    ) -> list[str]:
+        del source_language, max_new_tokens
+        self.batch_calls.append(list(texts))
+        return [self.translate(text, target_language=target_language) for text in texts]
 
 
 class BlockingTextTranslator:
@@ -130,6 +143,7 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
         preview_enabled: bool = True,
         preview_debounce_ms: int = 0,
         preview_timeout_ms: int = 1000,
+        stable_batch_size: int = 1,
     ) -> tuple[RealtimeTranslationRuntime, asyncio.Queue[dict[str, object]]]:
         queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
         self.actor = TranslationModelActor(translator)
@@ -141,6 +155,7 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 preview_enabled=preview_enabled,
                 preview_debounce_ms=preview_debounce_ms,
                 preview_timeout_ms=preview_timeout_ms,
+                stable_batch_size=stable_batch_size,
             ),
             event_queue=queue,
         )
@@ -182,6 +197,81 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
         events = [await get_event(queue), await get_event(queue)]
         self.assertEqual([event["type"] for event in events], ["translation_stable", "translation_stable"])
         self.assertEqual([event["source_segment_id"] for event in events], ["seg_000001", "seg_000002"])
+
+    async def test_stable_batch_mode_preserves_order(self) -> None:
+        translator = FakeTranslator()
+        runtime, queue = await self.make_runtime(
+            translator,
+            preview_enabled=False,
+            stable_batch_size=3,
+        )
+        await runtime.accept_source_event(
+            transcript_update(
+                1,
+                stable_appends=[
+                    stable_segment(1, "one"),
+                    stable_segment(2, "two"),
+                    stable_segment(3, "three"),
+                ],
+            )
+        )
+        await runtime.start()
+
+        events = [await get_event(queue), await get_event(queue), await get_event(queue)]
+
+        self.assertEqual(translator.batch_calls, [["one", "two", "three"]])
+        self.assertEqual(
+            [event["source_segment_id"] for event in events],
+            ["seg_000001", "seg_000002", "seg_000003"],
+        )
+        self.assertEqual([event["text"] for event in events], ["English:one", "English:two", "English:three"])
+
+    async def test_stable_batch_mode_reports_empty_items_individually(self) -> None:
+        translator = FakeTranslator(empty_outputs={"two"})
+        runtime, queue = await self.make_runtime(
+            translator,
+            preview_enabled=False,
+            stable_batch_size=2,
+        )
+        await runtime.start()
+        await runtime.accept_source_event(
+            transcript_update(
+                1,
+                stable_appends=[stable_segment(1, "one"), stable_segment(2, "two")],
+            )
+        )
+
+        events = [await get_event(queue), await get_event(queue)]
+
+        self.assertEqual([event["type"] for event in events], ["translation_stable", "translation_status"])
+        self.assertEqual([event["source_segment_id"] for event in events], ["seg_000001", "seg_000002"])
+        self.assertEqual(events[0]["text"], "English:one")
+        self.assertEqual(events[1]["code"], "failed")
+
+    async def test_stable_batch_mode_splits_source_languages(self) -> None:
+        translator = FakeTranslator()
+        runtime, queue = await self.make_runtime(
+            translator,
+            preview_enabled=False,
+            stable_batch_size=3,
+        )
+        second = stable_segment(2, "two")
+        third = stable_segment(3, "three")
+        second["language"] = "Japanese"
+        third["language"] = "Japanese"
+
+        await runtime.accept_source_event(
+            transcript_update(1, stable_appends=[stable_segment(1, "one"), second, third])
+        )
+        await runtime.start()
+        events = [await get_event(queue), await get_event(queue), await get_event(queue)]
+
+        self.assertEqual(translator.batch_calls, [["two", "three"]])
+        self.assertEqual(translator.calls, ["one", "two", "three"])
+        self.assertEqual(
+            [event["source_segment_id"] for event in events],
+            ["seg_000001", "seg_000002", "seg_000003"],
+        )
 
     async def test_finish_returns_every_queued_stable_translation_once(self) -> None:
         runtime, _queue = await self.make_runtime(FakeTranslator(), preview_enabled=False)
