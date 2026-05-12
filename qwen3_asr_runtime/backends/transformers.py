@@ -62,33 +62,16 @@ class TransformersASRBackend(ASRRuntimeBackend):
             raise RuntimeError("quantized_linears=True requires fused_linears=True")
 
         if use_flashinfer:
-            # Register the kernel under the key the model config will later pick up.
-            if register_flashinfer("flashinfer"):
-                # Override the requested attn_implementation so thinker's sub-configs
-                # route through our flashinfer dispatcher. We still need to propagate
-                # the key down because of the sub_configs bug noted below.
-                kwargs["attn_implementation"] = "flashinfer"
-            else:
+            if not register_flashinfer("flashinfer"):
                 raise RuntimeError("flashinfer is not installed; install dependencies with `uv sync --python 3.12`")
+            kwargs["attn_implementation"] = "flashinfer"
 
         model = AutoModel.from_pretrained(pretrained_model_name_or_path, **kwargs)
-        # NOTE: attn_implementation does NOT propagate from the top config down
-        # to thinker / text_config / audio_config. The upstream wrapper has the
-        # same behavior, so ASR runs actually execute with whatever the
-        # sub-configs default to (typically sdpa) regardless of the top flag.
-        # Keeping this "bug" deliberately so that runtime output matches the
-        # local runtime-default golden. See notes in AGENTS.md before changing.
+        # Upstream-style loading does not propagate top-level attn_implementation
+        # into the nested thinker configs. Keep that behavior for normal paths;
+        # FlashInfer is opt-in and must be propagated explicitly to take effect.
         if use_flashinfer:
-            # For flashinfer we *do* want propagation (the whole point is to use
-            # the custom attention kernel). Set it explicitly on all sub-configs.
-            for cfg in (
-                getattr(model.config, "thinker_config", None),
-                getattr(getattr(model, "thinker", None), "config", None),
-                getattr(getattr(getattr(model, "thinker", None), "config", None), "text_config", None),
-                getattr(getattr(getattr(model, "thinker", None), "config", None), "audio_config", None),
-            ):
-                if cfg is not None:
-                    cfg._attn_implementation = "flashinfer"
+            cls._configure_flashinfer_attention(model)
         if use_fused_rmsnorm:
             patched = patch_model_rmsnorms(model)
             if patched == 0:
@@ -295,6 +278,30 @@ class TransformersASRBackend(ASRRuntimeBackend):
         if device_map is not None and "cuda" in str(device_map).lower():
             return "flash_attention_2"
         return None
+
+    @classmethod
+    def _configure_flashinfer_attention(cls, model: Any) -> None:
+        # The custom "flashinfer" entry only uses a FlashInfer kernel for
+        # single-token text decode; prefill and audio attention fall back to
+        # SDPA without switching the model into Transformers' heavier direct
+        # SDPA/FA2 dispatch paths.
+        thinker = getattr(model, "thinker", None)
+        model_config = getattr(model, "config", None)
+        root_thinker_config = getattr(model_config, "thinker_config", None)
+        thinker_config = getattr(thinker, "config", None)
+
+        for config in (
+            root_thinker_config,
+            thinker_config,
+            getattr(root_thinker_config, "text_config", None),
+            getattr(thinker_config, "text_config", None),
+            getattr(getattr(thinker, "model", None), "config", None),
+            getattr(root_thinker_config, "audio_config", None),
+            getattr(thinker_config, "audio_config", None),
+            getattr(getattr(thinker, "audio_tower", None), "config", None),
+        ):
+            if config is not None:
+                config._attn_implementation = "flashinfer"
 
     @staticmethod
     def _prepare_inference_only_model(model: Any) -> None:

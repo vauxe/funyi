@@ -17,7 +17,10 @@ validated single-user service profile.
 
 Rules:
 
-- FlashInfer is decode-only; prefill/audio encoder stay on SDPA.
+- FlashInfer only uses a custom kernel for single-token text decode. Text
+  prefill and audio-encoder attention still enter the same attention dispatcher,
+  then fall back to SDPA; keep this route because direct SDPA/FA2 dispatch was
+  slower on the live profile.
 - W8A16 requires `fused_linears=True`.
 - `lm_head` stays BF16.
 - Keep HND StaticCache layout.
@@ -53,6 +56,13 @@ Known-language prompts are opt-in; auto language stays default.
 Do not reopen without new evidence:
 
 - FlashInfer prefill, FlashInfer BF16 GEMM, tensor-core decode
+- Direct SDPA or FlashAttention 2 varlen dispatch for the audio encoder in the
+  FlashInfer live profile; 60s live20 checks measured no stable win and a
+  same-run regression (`~10.6s` direct SDPA, `~10.35s` FA2, `~9.4s` dispatcher
+  fallback)
+- Audio-feature block caching under the 20s sliding live window; hit rate was
+  low, assembled features drifted from full recompute, and audio-tower-only
+  speedup was only `~1.06x`
 - `torch.compile`, HF `StaticCache`, auto `max_new_tokens`
 - FlashInfer/Triton `silu_and_mul`, `fused_add_rmsnorm`, RMSNorm replacement
 - naive W8A16 prefill GEMM, FP8 KV/cache, FP8 or fused `lm_head`
