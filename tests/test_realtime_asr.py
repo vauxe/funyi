@@ -21,6 +21,7 @@ from realtime_server import (
     _publish_finish_events,
     _publish_session_events,
     _receive_or_sender_failed,
+    _run_store_write,
     _send_queued_events,
     _session_translation_config,
     _translation_prewarm_texts,
@@ -109,12 +110,14 @@ def make_session(
     model: FakeStreamingModel,
     *,
     live_stability_delay_ms: int = 12_000,
+    force_align_timestamps: bool = False,
 ) -> RealtimeASRSession:
     return RealtimeASRSession(
         model,
         config=RealtimeASRConfig(
             language="Chinese",
             live_stability_delay_ms=live_stability_delay_ms,
+            force_align_timestamps=force_align_timestamps,
         ),
     )
 
@@ -184,6 +187,43 @@ class TranscriptStoreTest(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             store.update_event(stable_base=1, stable_appends=[segment])
+
+    def test_pending_stable_segment_timing_is_patched_by_segment_id(self) -> None:
+        store = TranscriptStore(transcript_id="t1")
+        segment = store.append_stable_segment(
+            text="稳定",
+            start_ms=None,
+            end_ms=None,
+            language="Chinese",
+            timing_status="pending",
+        )
+        update = store.update_event(stable_base=0, stable_appends=[segment])
+
+        self.assertIsNone(update["stable_appends"][0]["start_ms"])
+        self.assertIsNone(update["stable_appends"][0]["end_ms"])
+        self.assertEqual(update["stable_appends"][0]["timing_status"], "pending")
+
+        timing_update = store.update_segment_timing(
+            source_segment_id="seg_000001",
+            start_ms=120,
+            end_ms=860,
+            timing_status="aligned",
+        )
+        final = store.final_event()
+
+        self.assertEqual(
+            timing_update,
+            {
+                "type": "transcript_timing_update",
+                "source_segment_id": "seg_000001",
+                "start_ms": 120,
+                "end_ms": 860,
+                "timing_status": "aligned",
+            },
+        )
+        self.assertEqual(final["segments"][0]["start_ms"], 120)
+        self.assertEqual(final["segments"][0]["end_ms"], 860)
+        self.assertEqual(final["segments"][0]["timing_status"], "aligned")
 
 
 class TextStabilizerTest(unittest.TestCase):
@@ -395,6 +435,10 @@ class RealtimeServerCliTest(unittest.TestCase):
         self.assertIsNone(args.w8a16)
         self.assertTrue(args.cuda_graph_prewarm)
         self.assertEqual(args.cuda_graph_prewarm_language, "Chinese")
+        self.assertIsNone(args.timestamp_model)
+        self.assertTrue(args.timestamp_local_files_only)
+        self.assertEqual(args.timestamp_pad_ms, 500)
+        self.assertEqual(args.timestamp_finish_timeout_ms, 30_000)
         self.assertTrue(args.translation_prewarm)
         self.assertEqual(args.translation_preview_debounce_ms, 700)
         self.assertEqual(args.translation_stable_batch_size, 1)
@@ -762,8 +806,146 @@ class RealtimeServerTranslationOrderingTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[0]["source_revision"], 1)
         self.assertEqual(events[1]["revision"], 2)
 
+    async def test_finish_publishes_timing_patch_before_fresh_final_snapshot(self) -> None:
+        queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue()
+        finish_seen = False
+
+        class FakeTimestamp:
+            async def finish(self, jobs: list[object]) -> list[dict[str, object]]:
+                nonlocal finish_seen
+                if jobs != ["job"]:
+                    raise AssertionError(f"unexpected timestamp jobs: {jobs!r}")
+                finish_seen = True
+                return [
+                    {
+                        "type": "transcript_timing_update",
+                        "source_segment_id": "seg_000001",
+                        "start_ms": 120,
+                        "end_ms": 860,
+                        "timing_status": "aligned",
+                    }
+                ]
+
+        def final_event() -> dict[str, object]:
+            if not finish_seen:
+                raise AssertionError("final snapshot was built before timestamp finish")
+            return {
+                "type": "transcript_final",
+                "segments": [
+                    {
+                        "id": "seg_000001",
+                        "index": 1,
+                        "start_ms": 120,
+                        "end_ms": 860,
+                        "text": "tail",
+                        "language": "Chinese",
+                    }
+                ],
+            }
+
+        await _publish_finish_events(
+            queue,
+            None,
+            [
+                {
+                    "type": "transcript_update",
+                    "revision": 2,
+                    "stable_appends": [
+                        {
+                            "id": "seg_000001",
+                            "index": 1,
+                            "start_ms": None,
+                            "end_ms": None,
+                            "timing_status": "pending",
+                            "text": "tail",
+                            "language": "Chinese",
+                        }
+                    ],
+                    "partial": None,
+                }
+            ],
+            FakeTimestamp(),  # type: ignore[arg-type]
+            ["job"],  # type: ignore[list-item]
+            final_event_factory=final_event,
+        )
+
+        events = [await queue.get(), await queue.get(), await queue.get()]
+        self.assertEqual([event["type"] for event in events], [
+            "transcript_update",
+            "transcript_timing_update",
+            "transcript_final",
+        ])
+        self.assertEqual(events[2]["segments"][0]["start_ms"], 120)
+
+    async def test_finish_final_snapshot_waits_for_store_lock(self) -> None:
+        queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue()
+        store_lock = asyncio.Lock()
+        final_called = False
+
+        def final_event() -> dict[str, object]:
+            nonlocal final_called
+            final_called = True
+            return {"type": "transcript_final", "segments": []}
+
+        async with store_lock:
+            publish_task = asyncio.create_task(
+                _publish_finish_events(
+                    queue,
+                    None,
+                    [],
+                    final_event_factory=final_event,
+                    store_lock=store_lock,
+                )
+            )
+            await asyncio.sleep(0.05)
+            self.assertFalse(final_called)
+            self.assertFalse(publish_task.done())
+
+        await asyncio.wait_for(publish_task, timeout=1.0)
+        self.assertTrue(final_called)
+        self.assertEqual((await queue.get())["type"], "transcript_final")
+
+    async def test_session_store_write_waits_for_store_lock(self) -> None:
+        store_lock = asyncio.Lock()
+        called = False
+
+        def write_store() -> str:
+            nonlocal called
+            called = True
+            return "done"
+
+        async def run_inline(func, *args):
+            return func(*args)
+
+        with patch("realtime_server.asyncio.to_thread", side_effect=run_inline):
+            async with store_lock:
+                write_task = asyncio.create_task(_run_store_write(store_lock, write_store))
+                await asyncio.sleep(0.05)
+                self.assertFalse(called)
+                self.assertFalse(write_task.done())
+
+            self.assertEqual(await asyncio.wait_for(write_task, timeout=1.0), "done")
+
 
 class RealtimeASRSessionTest(unittest.TestCase):
+    def test_force_align_timestamp_mode_emits_pending_stable_segment_and_hidden_timing_job(self) -> None:
+        model = FakeStreamingModel(outputs=["第一秒", "第一秒第二秒"])
+        session = make_session(model, live_stability_delay_ms=0, force_align_timestamps=True)
+        speech = np.ones(16_000, dtype=np.float32) * 0.2
+
+        events = session.ingest_audio(speech) + session.ingest_audio(speech)
+        stable = stable_appends(events)
+        jobs = session.stable_timing_jobs_for_events(events)
+
+        self.assertEqual(len(stable), 1)
+        self.assertIsNone(stable[0]["start_ms"])
+        self.assertIsNone(stable[0]["end_ms"])
+        self.assertEqual(stable[0]["timing_status"], "pending")
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].source_segment_id, stable[0]["id"])
+        self.assertEqual(jobs[0].source_text, "第一秒")
+        self.assertEqual((jobs[0].start_sample, jobs[0].end_sample), (0, 16_000))
+
     def test_silence_is_not_an_asr_input_gate(self) -> None:
         model = FakeStreamingModel(outputs=["低能量语音。"])
         session = make_session(model)

@@ -5,11 +5,18 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 import json
 import logging
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
 from qwen3_asr_runtime.cuda_serialization import CUDA_GRAPH_CAPTURE_LOCK
+from qwen3_asr_runtime.realtime_timestamps import (
+    AudioTimelineBuffer,
+    RealtimeTimestampConfig,
+    RealtimeTimestampRuntime,
+    StableTimingJob,
+    TimestampModelActor,
+)
 from qwen3_asr_runtime.realtime_translation import (
     RealtimeTranslationConfig,
     RealtimeTranslationRuntime,
@@ -47,6 +54,8 @@ class WebSocketSendTimeout(RuntimeError):
 def build_app(
     *,
     model: Any,
+    timestamp_actor: TimestampModelActor | None = None,
+    timestamp_config: RealtimeTimestampConfig | None = None,
     translation_actor: TranslationModelActor | None = None,
     translation_config: RealtimeTranslationConfig | None = None,
 ) -> Any:
@@ -56,17 +65,20 @@ def build_app(
         raise RuntimeError("Install service dependencies with: uv sync --python 3.12") from exc
 
     lifespan = None
-    if translation_actor is not None:
+    if translation_actor is not None or timestamp_actor is not None:
 
         @asynccontextmanager
-        async def translation_lifespan(app: Any) -> Any:
+        async def model_actor_lifespan(app: Any) -> Any:
             del app
             try:
                 yield
             finally:
-                translation_actor.close(wait=False)
+                if translation_actor is not None:
+                    translation_actor.close(wait=False)
+                if timestamp_actor is not None:
+                    timestamp_actor.close(wait=False)
 
-        lifespan = translation_lifespan
+        lifespan = model_actor_lifespan
 
     app = FastAPI(title="Qwen3-ASR Runtime Realtime ASR Service", lifespan=lifespan)
     active_lock = asyncio.Lock()
@@ -97,7 +109,9 @@ def build_app(
                 return
             session_id = str(start_payload.get("session_id") or "default")
             store = TranscriptStore(transcript_id=session_id)
-            config = _build_session_config(start_payload)
+            store_lock = asyncio.Lock()
+            timestamps_enabled = timestamp_actor is not None and timestamp_config is not None
+            config = _build_session_config(start_payload, force_align_timestamps=timestamps_enabled)
             try:
                 session_translation_config = _session_translation_config(start_payload, translation_config)
             except ValueError as exc:
@@ -111,6 +125,17 @@ def build_app(
 
             event_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
             sender_task = asyncio.create_task(_send_queued_events(websocket, event_queue))
+            timestamp_runtime: RealtimeTimestampRuntime | None = None
+            if timestamps_enabled and timestamp_actor is not None and timestamp_config is not None:
+                timestamp_runtime = RealtimeTimestampRuntime(
+                    timestamp_actor,
+                    store=store,
+                    audio_buffer=AudioTimelineBuffer(),
+                    config=timestamp_config,
+                    event_queue=event_queue,
+                    store_lock=store_lock,
+                )
+                await timestamp_runtime.start()
             translation: RealtimeTranslationRuntime | None = None
             if translation_actor is not None and session_translation_config is not None:
                 translation = RealtimeTranslationRuntime(
@@ -126,6 +151,8 @@ def build_app(
                 "sample_rate": SAMPLE_RATE,
                 "audio_format": "pcm_s16le",
             }
+            if timestamp_runtime is not None:
+                ready["timestamps"] = timestamp_runtime.ready_payload()
             if translation is not None:
                 ready["translation"] = translation.ready_payload()
             elif translation_actor is not None and translation_config is not None:
@@ -138,8 +165,10 @@ def build_app(
                     return
                 if message.get("bytes") is not None:
                     audio = decode_pcm_s16le(message["bytes"])
-                    events = await asyncio.to_thread(session.ingest_audio, audio)
-                    await _publish_session_events(event_queue, translation, events)
+                    if timestamp_runtime is not None:
+                        timestamp_runtime.accept_audio(audio)
+                    events = await _run_store_write(store_lock, session.ingest_audio, audio)
+                    await _publish_session_events(event_queue, translation, events, timestamp_runtime, session)
                     continue
 
                 if message.get("text") is None:
@@ -155,11 +184,23 @@ def build_app(
                     continue
                 command_type = command.get("type")
                 if command_type == "flush":
-                    events = await asyncio.to_thread(session.flush)
-                    await _publish_session_events(event_queue, translation, events)
+                    events = await _run_store_write(store_lock, session.flush)
+                    await _publish_session_events(event_queue, translation, events, timestamp_runtime, session)
                 elif command_type == "finish":
-                    events = await asyncio.to_thread(session.finish)
-                    await _publish_finish_events(event_queue, translation, events)
+                    if timestamp_runtime is None:
+                        events = await _run_store_write(store_lock, session.finish)
+                        await _publish_finish_events(event_queue, translation, events)
+                    else:
+                        events = await _run_store_write(store_lock, session.flush)
+                        await _publish_finish_events(
+                            event_queue,
+                            translation,
+                            events,
+                            timestamp_runtime,
+                            session.stable_timing_jobs_for_events(events),
+                            final_event_factory=store.final_event,
+                            store_lock=store_lock,
+                        )
                     await event_queue.put(None)
                     await sender_task
                     await _close_websocket(websocket, code=1000)
@@ -186,6 +227,8 @@ def build_app(
                 _LOGGER.exception("Failed to send realtime ASR error response.")
             return
         finally:
+            if "timestamp_runtime" in locals() and timestamp_runtime is not None:
+                await timestamp_runtime.close()
             if "translation" in locals() and translation is not None:
                 await translation.close()
             if "sender_task" in locals() and not sender_task.done():
@@ -213,10 +256,16 @@ def decode_pcm_s16le(payload: bytes) -> np.ndarray:
     return np.frombuffer(payload, dtype="<i2").copy()
 
 
-def _build_session_config(payload: dict[str, Any]) -> RealtimeASRConfig:
+async def _run_store_write(store_lock: asyncio.Lock, func: Callable[..., Any], *args: Any) -> Any:
+    async with store_lock:
+        return await asyncio.to_thread(func, *args)
+
+
+def _build_session_config(payload: dict[str, Any], *, force_align_timestamps: bool = False) -> RealtimeASRConfig:
     return RealtimeASRConfig(
         context=str(payload.get("context") or ""),
         language=payload.get("language"),
+        force_align_timestamps=bool(force_align_timestamps),
     )
 
 
@@ -307,24 +356,29 @@ async def _publish_session_events(
     event_queue: asyncio.Queue[dict[str, Any] | None],
     translation: RealtimeTranslationRuntime | None,
     events: list[dict[str, Any]],
+    timestamp_runtime: RealtimeTimestampRuntime | None = None,
+    session: RealtimeASRSession | None = None,
 ) -> None:
     for event in events:
         if translation is not None:
             await translation.accept_source_event(event)
         await event_queue.put(event)
+        if timestamp_runtime is not None and session is not None:
+            await timestamp_runtime.accept_jobs(session.stable_timing_jobs(event))
 
 
 async def _publish_finish_events(
     event_queue: asyncio.Queue[dict[str, Any] | None],
     translation: RealtimeTranslationRuntime | None,
     events: list[dict[str, Any]],
+    timestamp_runtime: RealtimeTimestampRuntime | None = None,
+    timestamp_jobs: list[StableTimingJob] | None = None,
+    *,
+    final_event_factory: Any | None = None,
+    store_lock: asyncio.Lock | None = None,
 ) -> None:
-    if translation is None:
-        for event in events:
-            await event_queue.put(event)
-        return
-
-    await translation.cancel_preview()
+    if translation is not None:
+        await translation.cancel_preview()
 
     transcript_updates: list[dict[str, Any]] = []
     final_events: list[dict[str, Any]] = []
@@ -337,9 +391,22 @@ async def _publish_finish_events(
         else:
             await event_queue.put(event)
 
-    translation_events = await translation.finish(transcript_updates)
-    for event in translation_events:
-        await event_queue.put(event)
+    if timestamp_runtime is not None:
+        timing_events = await timestamp_runtime.finish(list(timestamp_jobs or []))
+        for event in timing_events:
+            await event_queue.put(event)
+
+    if translation is not None:
+        translation_events = await translation.finish(transcript_updates)
+        for event in translation_events:
+            await event_queue.put(event)
+
+    if final_event_factory is not None:
+        if store_lock is None:
+            final_events = [final_event_factory()]
+        else:
+            async with store_lock:
+                final_events = [final_event_factory()]
     for event in final_events:
         await event_queue.put(event)
 
@@ -441,6 +508,18 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--cuda-graph-prewarm-language", default="Chinese")
     parser.add_argument("--cuda-graph-prewarm-window-sec", type=float, default=20.0)
     parser.add_argument("--cuda-graph-prewarm-prefix-tokens", type=int, default=64)
+    parser.add_argument("--timestamp-model", default=None, help="Enable forced-aligner timestamps with this model.")
+    parser.add_argument("--timestamp-device-map", default=None, help="Forced-aligner device_map. Default: cuda:0.")
+    parser.add_argument(
+        "--timestamp-dtype",
+        default=None,
+        choices=["auto", "float16", "bfloat16", "float32"],
+        help="Torch dtype for the forced-aligner model. Default: bfloat16.",
+    )
+    parser.add_argument("--timestamp-attn-implementation", default=None)
+    parser.add_argument("--timestamp-local-files-only", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--timestamp-pad-ms", type=int, default=500)
+    parser.add_argument("--timestamp-finish-timeout-ms", type=int, default=30_000)
     parser.add_argument("--translation-target-language", default=None, help="Enable realtime translation to this language.")
     parser.add_argument("--translation-model", default=DEFAULT_HYMT_MODEL)
     parser.add_argument("--translation-device", default="cuda:0")
@@ -515,6 +594,42 @@ def _build_translation(args: argparse.Namespace) -> tuple[Any | None, RealtimeTr
         generation_config=generation_config,
     )
     return translator, config
+
+
+def _build_timestamp_actor(args: argparse.Namespace) -> tuple[TimestampModelActor | None, RealtimeTimestampConfig | None]:
+    model_path = str(args.timestamp_model or "").strip()
+    if not model_path:
+        return None, None
+
+    import torch
+    from qwen3_asr_runtime.forced_aligner import Qwen3ForcedAlignerBackend
+
+    dtype_name = args.timestamp_dtype or "bfloat16"
+    dtype = None
+    if dtype_name != "auto":
+        dtype = {
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+            "float32": torch.float32,
+        }[dtype_name]
+
+    load_kwargs: dict[str, Any] = {
+        "local_files_only": bool(args.timestamp_local_files_only),
+    }
+    device_map = args.timestamp_device_map or "cuda:0"
+    if device_map:
+        load_kwargs["device_map"] = device_map
+    if dtype is not None:
+        load_kwargs["dtype"] = dtype
+    if args.timestamp_attn_implementation:
+        load_kwargs["attn_implementation"] = args.timestamp_attn_implementation
+
+    aligner = Qwen3ForcedAlignerBackend.from_pretrained(model_path, **load_kwargs)
+    config = RealtimeTimestampConfig(
+        pad_ms=int(args.timestamp_pad_ms),
+        finish_timeout_ms=int(args.timestamp_finish_timeout_ms),
+    )
+    return TimestampModelActor(aligner), config
 
 
 def _translation_prewarm_texts(batch_size: int) -> tuple[str, ...]:
@@ -616,15 +731,22 @@ def main() -> None:
     translation_actor = (
         TranslationModelActor(translator, capture_lock=translation_capture_lock) if translator is not None else None
     )
+    timestamp_actor: TimestampModelActor | None = None
+    timestamp_config: RealtimeTimestampConfig | None = None
     try:
+        timestamp_actor, timestamp_config = _build_timestamp_actor(args)
         if translation_actor is not None and translation_config is not None and args.translation_prewarm:
             _prewarm_translation(translation_actor, translation_config)
     except Exception:
         if translation_actor is not None:
             translation_actor.close(wait=True)
+        if timestamp_actor is not None:
+            timestamp_actor.close(wait=True)
         raise
     app = build_app(
         model=model,
+        timestamp_actor=timestamp_actor,
+        timestamp_config=timestamp_config,
         translation_actor=translation_actor,
         translation_config=translation_config,
     )

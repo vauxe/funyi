@@ -7,6 +7,7 @@ from typing import Any, Optional
 import numpy as np
 
 from .streaming import RecognitionFrame, RecognitionTail, TailSelector, TextStabilizer
+from .realtime_timestamps import StableTimingJob
 from .transcript_store import PartialSegment, StableSegment, TranscriptStore
 from .utils import SAMPLE_RATE
 from .vad import normalize_pcm
@@ -32,6 +33,7 @@ class RealtimeASRConfig:
     context: str = ""
     language: Optional[str] = None
     live_stability_delay_ms: int = 12_000
+    force_align_timestamps: bool = False
 
 
 @dataclass
@@ -100,6 +102,7 @@ class RealtimeASRSession:
             0,
             int(round(self.config.sample_rate * self.config.live_stability_delay_ms / 1000)),
         )
+        self._timing_hints: dict[str, tuple[int, int]] = {}
 
         self._last_asr_end_sample = 0
 
@@ -126,6 +129,36 @@ class RealtimeASRSession:
         events = self.flush()
         events.append(self.store.final_event())
         return events
+
+    def stable_timing_jobs(self, event: dict[str, Any]) -> list[StableTimingJob]:
+        if not self.config.force_align_timestamps or event.get("type") != "transcript_update":
+            return []
+
+        jobs: list[StableTimingJob] = []
+        for segment in event.get("stable_appends") or []:
+            if not isinstance(segment, dict):
+                continue
+            segment_id = str(segment.get("id") or "")
+            hint = self._timing_hints.get(segment_id)
+            source_text = str(segment.get("text") or "").strip()
+            if hint is None or not segment_id or not source_text:
+                continue
+            jobs.append(
+                StableTimingJob(
+                    source_segment_id=segment_id,
+                    source_text=source_text,
+                    source_language=str(segment.get("language") or self.config.language or ""),
+                    start_sample=int(hint[0]),
+                    end_sample=int(hint[1]),
+                )
+            )
+        return jobs
+
+    def stable_timing_jobs_for_events(self, events: list[dict[str, Any]]) -> list[StableTimingJob]:
+        jobs: list[StableTimingJob] = []
+        for event in events:
+            jobs.extend(self.stable_timing_jobs(event))
+        return jobs
 
     def _append_asr_audio(self, audio: np.ndarray) -> None:
         self._samples_received += int(audio.shape[0])
@@ -239,16 +272,19 @@ class RealtimeASRSession:
 
         stable_base = self.store.stable_count
         end_sample = max(int(self._transcript.sample), int(end_sample))
+        start_sample = int(self._transcript.sample)
         start_ms = self._sample_to_ms(self._transcript.sample)
         end_ms = max(start_ms, self._sample_to_ms(end_sample))
         language = self._current_asr_language()
 
         segment = self.store.append_stable_segment(
             text=normalized,
-            start_ms=start_ms,
-            end_ms=end_ms,
+            start_ms=None if self.config.force_align_timestamps else start_ms,
+            end_ms=None if self.config.force_align_timestamps else end_ms,
             language=language,
+            timing_status="pending" if self.config.force_align_timestamps else None,
         )
+        self._remember_timing_hint(segment, start_sample=start_sample, end_sample=end_sample)
         self._transcript.sample = end_sample
         self._transcript.stable_text_prefix += normalized
         self._transcript.stabilizer.set_tail(partial, end_sample=self._last_asr_end_sample if partial else None)
@@ -277,15 +313,19 @@ class RealtimeASRSession:
             return []
 
         stable_base = self.store.stable_count
+        start_sample = int(round(int(partial.start_ms) * int(self.config.sample_rate) / 1000))
+        end_sample = int(round(int(partial.end_ms) * int(self.config.sample_rate) / 1000))
         segment = self.store.append_stable_segment(
             text=partial.text,
-            start_ms=partial.start_ms,
-            end_ms=partial.end_ms,
+            start_ms=None if self.config.force_align_timestamps else partial.start_ms,
+            end_ms=None if self.config.force_align_timestamps else partial.end_ms,
             language=partial.language,
+            timing_status="pending" if self.config.force_align_timestamps else None,
         )
+        self._remember_timing_hint(segment, start_sample=start_sample, end_sample=end_sample)
         self._transcript.sample = max(
             int(self._transcript.sample),
-            int(round(int(partial.end_ms) * int(self.config.sample_rate) / 1000)),
+            end_sample,
         )
         self._transcript.stable_text_prefix += TextStabilizer.clean_tail_text(partial.text)
         self._transcript.stabilizer.set_tail("", end_sample=None)
@@ -324,6 +364,11 @@ class RealtimeASRSession:
     ) -> list[dict[str, Any]]:
         event = self.store.update_event(stable_base=stable_base, stable_appends=stable_appends)
         return [event]
+
+    def _remember_timing_hint(self, segment: StableSegment, *, start_sample: int, end_sample: int) -> None:
+        if not self.config.force_align_timestamps:
+            return
+        self._timing_hints[segment.id] = (int(start_sample), max(int(start_sample), int(end_sample)))
 
     def _drain_asr_audio(self, *, force: bool, emit_live: bool) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []

@@ -173,6 +173,39 @@ The trim policy is explicit:
 If the model returns only text, `RollingWindowTrim` is an approximation. It must
 never be described as a proof that no uncommitted audio was dropped.
 
+## Forced Aligner Timestamps
+
+Qwen3-ForcedAligner returns item-level spans, not transcript-segment spans. The
+forced-align text processor first splits transcript text into alignable units:
+CJK text is mostly character-level, mixed Latin text is kept as words, and
+space-delimited languages are word-level after punctuation cleanup. It then
+inserts two `<timestamp>` markers per unit. The model predicts timestamp token
+classes at those marker positions; the runtime multiplies the classes by
+`model.config.timestamp_segment_time`, repairs non-monotonic values, and returns
+`ForcedAlignResult.items` with relative `start_time` / `end_time` in seconds.
+
+Realtime timestamp mode aggregates stable-segment timestamps from item spans:
+
+```text
+stable segment text
+  -> crop audio by the segment's private sample-clock hint plus configured pad
+  -> align(crop, stable_text, language)
+  -> segment.start_ms = crop_start_ms + round(first item start_sec * 1000)
+  -> segment.end_ms   = crop_start_ms + round(last item end_sec * 1000)
+```
+
+Do not expose sample-clock estimates as public segment timestamps in that mode.
+A newly stable segment is emitted with `start_ms=null`, `end_ms=null`, and
+`timing_status="pending"`. `RealtimeTimestampRuntime` asynchronously patches
+the same segment with `timing_status="aligned"` after alignment succeeds, or
+`timing_status="failed"` if the aligner returns no items or invalid timing.
+
+The timestamp runtime needs an absolute-sample audio buffer. Aligner output is
+relative to the crop, so every timing patch must add `crop_start_sample /
+SAMPLE_RATE` before converting to milliseconds. The forced aligner does not
+clamp item times to audio duration; validate output before patching public
+state.
+
 ## Current Runtime
 
 Library streaming defaults stay upstream-compatible:

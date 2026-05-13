@@ -340,9 +340,15 @@ class Qwen3ForcedAlignerBackend:
                 f"AutoModel returned {type(model)}, expected Qwen3ASRForConditionalGeneration."
             )
 
+        processor_kwargs = {
+            key: kwargs[key]
+            for key in ("cache_dir", "local_files_only", "revision", "token", "trust_remote_code")
+            if key in kwargs
+        }
         processor = AutoProcessor.from_pretrained(
             pretrained_model_name_or_path,
             fix_mistral_regex=True,
+            **processor_kwargs,
         )
         return cls(model=model, processor=processor, aligner_processor=Qwen3ForceAlignTextProcessor())
 

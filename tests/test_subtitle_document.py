@@ -6,8 +6,15 @@ import unittest
 from qwen3_asr_runtime.subtitle_document import SubtitleDocument
 
 
-def stable_segment(index: int, text: str, *, start_ms: int, end_ms: int) -> dict[str, object]:
-    return {
+def stable_segment(
+    index: int,
+    text: str,
+    *,
+    start_ms: int | None,
+    end_ms: int | None,
+    timing_status: str | None = None,
+) -> dict[str, object]:
+    segment = {
         "id": f"seg_{index:06d}",
         "index": index,
         "start_ms": start_ms,
@@ -15,6 +22,9 @@ def stable_segment(index: int, text: str, *, start_ms: int, end_ms: int) -> dict
         "text": text,
         "language": "Chinese",
     }
+    if timing_status is not None:
+        segment["timing_status"] = timing_status
+    return segment
 
 
 def partial_segment(text: str, *, start_ms: int, end_ms: int) -> dict[str, object]:
@@ -76,6 +86,47 @@ class SubtitleDocumentTest(unittest.TestCase):
             document.to_srt(),
             "1\n00:00:00,000 --> 00:00:01,200\n第一句\n",
         )
+
+    def test_timing_update_patches_pending_stable_line(self) -> None:
+        document = SubtitleDocument()
+        document.apply_event(
+            {
+                "type": "transcript_update",
+                "revision": 1,
+                "stable_base": 0,
+                "stable_count": 1,
+                "stable_appends": [
+                    stable_segment(
+                        1,
+                        "第一句",
+                        start_ms=None,
+                        end_ms=None,
+                        timing_status="pending",
+                    )
+                ],
+                "partial": None,
+            }
+        )
+
+        window = document.window()
+        self.assertIsNone(window.previous.start_ms)  # type: ignore[union-attr]
+        self.assertEqual(window.previous.timing_status, "pending")  # type: ignore[union-attr]
+        self.assertEqual(document.to_srt(), "")
+
+        document.apply_event(
+            {
+                "type": "transcript_timing_update",
+                "source_segment_id": "seg_000001",
+                "start_ms": 120,
+                "end_ms": 860,
+                "timing_status": "aligned",
+            }
+        )
+
+        self.assertEqual(document.stable_lines[0].start_ms, 120)
+        self.assertEqual(document.stable_lines[0].end_ms, 860)
+        self.assertEqual(document.stable_lines[0].timing_status, "aligned")
+        self.assertEqual(document.to_srt(), "1\n00:00:00,120 --> 00:00:00,860\n第一句\n")
 
     def test_translation_events_are_annotations_not_scroll_inputs(self) -> None:
         document = SubtitleDocument()

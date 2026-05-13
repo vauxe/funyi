@@ -8,12 +8,13 @@ from typing import Any
 @dataclass(frozen=True)
 class SubtitleLine:
     text: str
-    start_ms: int
-    end_ms: int
+    start_ms: int | None
+    end_ms: int | None
     language: str = ""
     id: str | None = None
     index: int | None = None
     source_revision: int | None = None
+    timing_status: str | None = None
     translation: str | None = None
     translation_status: str | None = None
     translation_message: str | None = None
@@ -45,6 +46,8 @@ class SubtitleDocument:
         event_type = str(event.get("type") or "")
         if event_type == "transcript_update":
             self._apply_transcript_update(event)
+        elif event_type == "transcript_timing_update":
+            self._apply_transcript_timing_update(event)
         elif event_type == "transcript_final":
             self._apply_transcript_final(event)
         elif event_type == "translation_stable":
@@ -65,7 +68,10 @@ class SubtitleDocument:
     def to_srt(self, *, include_translation: bool | None = None) -> str:
         enabled = self.translation_enabled if include_translation is None else bool(include_translation)
         blocks: list[str] = []
-        for number, line in enumerate(self.stable_lines, start=1):
+        number = 1
+        for line in self.stable_lines:
+            if line.start_ms is None or line.end_ms is None:
+                continue
             text_lines = [line.text]
             if enabled and line.translation:
                 text_lines.append(line.translation)
@@ -78,6 +84,7 @@ class SubtitleDocument:
                     ]
                 )
             )
+            number += 1
         return "\n\n".join(blocks) + ("\n" if blocks else "")
 
     def _apply_transcript_update(self, event: dict[str, Any]) -> None:
@@ -102,6 +109,17 @@ class SubtitleDocument:
         partial = event.get("partial")
         self.current = _line_from_segment(partial, source_revision=revision) if isinstance(partial, dict) else None
         self.revision = revision
+
+    def _apply_transcript_timing_update(self, event: dict[str, Any]) -> None:
+        index = self._stable_index(event)
+        if index is None:
+            return
+        self.stable_lines[index] = replace(
+            self.stable_lines[index],
+            start_ms=_optional_int(event.get("start_ms")),
+            end_ms=_optional_int(event.get("end_ms")),
+            timing_status=str(event.get("timing_status") or "") or None,
+        )
 
     def _apply_transcript_final(self, event: dict[str, Any]) -> None:
         existing = {line.id: line for line in self.stable_lines if line.id}
@@ -180,11 +198,12 @@ def _line_from_segment(segment: dict[str, Any], *, source_revision: int) -> Subt
     return SubtitleLine(
         id=str(segment.get("id") or "") or None,
         index=_optional_int(segment.get("index")),
-        start_ms=int(segment.get("start_ms") or 0),
-        end_ms=int(segment.get("end_ms") or 0),
+        start_ms=_optional_int(segment.get("start_ms")),
+        end_ms=_optional_int(segment.get("end_ms")),
         text=text,
         language=str(segment.get("language") or ""),
         source_revision=int(source_revision),
+        timing_status=str(segment.get("timing_status") or "") or None,
     )
 
 

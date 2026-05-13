@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -53,8 +54,19 @@ def _summarize_event_timings(
         return [float(item["wall_sec"]) for item in event_times if item.get("type") == event_type]
 
     update_times = times_for("transcript_update")
+    timing_update_times = times_for("transcript_timing_update")
     final_times = times_for("transcript_final")
     update_gaps = [right - left for left, right in zip(update_times, update_times[1:])]
+    stable_emit_wall_by_id: dict[str, float] = {}
+    timing_update_lags: list[float] = []
+    for item in event_times:
+        if item.get("type") == "transcript_update":
+            for segment_id in item.get("stable_segment_ids") or []:
+                stable_emit_wall_by_id[str(segment_id)] = float(item["wall_sec"])
+        elif item.get("type") == "transcript_timing_update":
+            segment_id = str(item.get("source_segment_id") or "")
+            if segment_id in stable_emit_wall_by_id:
+                timing_update_lags.append(float(item["wall_sec"]) - stable_emit_wall_by_id[segment_id])
 
     final_wall = final_times[0] if final_times else None
     return {
@@ -67,6 +79,17 @@ def _summarize_event_timings(
         ),
         "update_gap_p95_sec": (
             round(_percentile(update_gaps, 0.95), 3) if _percentile(update_gaps, 0.95) is not None else None
+        ),
+        "first_timing_update_wall_sec": round(timing_update_times[0], 3) if timing_update_times else None,
+        "timing_update_lag_p50_sec": (
+            round(_percentile(timing_update_lags, 0.50), 3)
+            if _percentile(timing_update_lags, 0.50) is not None
+            else None
+        ),
+        "timing_update_lag_p95_sec": (
+            round(_percentile(timing_update_lags, 0.95), 3)
+            if _percentile(timing_update_lags, 0.95) is not None
+            else None
         ),
         "processing_speed_x": round(audio_sent_sec / elapsed_sec, 3) if elapsed_sec > 0 else None,
     }
@@ -147,6 +170,15 @@ def _record_event_contract(state: dict[str, Any], event: dict[str, Any]) -> list
         segment_id = str(event.get("source_segment_id") or "")
         if segment_id:
             status_ids.append(segment_id)
+    elif event_type == "transcript_timing_update":
+        segment_id = str(event.get("source_segment_id") or "")
+        if not segment_id:
+            issues.append("transcript_timing_update is missing source_segment_id")
+        elif segment_id not in state.setdefault("seen_source_stable_segment_ids", set()):
+            issues.append(f"transcript_timing_update references unknown source segment: {segment_id}")
+        status = str(event.get("timing_status") or "")
+        if status not in {"aligned", "failed"}:
+            issues.append(f"transcript_timing_update has invalid timing_status: {status}")
     return issues
 
 
@@ -206,6 +238,173 @@ def _compute_reference_cer(
         "cer": round(_cer(hyp_text, ref_text), 6),
         "hyp_chars": len(_normalize_for_cer(hyp_text)),
         "ref_chars": len(_normalize_for_cer(ref_text)),
+    }
+
+
+def _normalized_chars(text: str) -> list[str]:
+    import unicodedata
+
+    chars: list[str] = []
+    for ch in str(text or ""):
+        if ch.isspace():
+            continue
+        category = unicodedata.category(ch)
+        if category.startswith("P") or category.startswith("S"):
+            continue
+        chars.append(ch.lower())
+    return chars
+
+
+def _build_reference_char_timeline(
+    *,
+    reference_srt: str,
+    start_sec: float,
+    duration_sec: float,
+    strip_ruby: bool,
+) -> tuple[list[str], list[tuple[float, float]]]:
+    from tools.sweep_cer_vs_srt import load_srt
+
+    window_start = float(start_sec)
+    window_end = window_start + float(duration_sec)
+    chars: list[str] = []
+    times: list[tuple[float, float]] = []
+    for entry in load_srt(reference_srt, strip_ruby=strip_ruby):
+        entry_start = float(entry["start"])
+        entry_end = float(entry["end"])
+        if entry_end <= window_start or entry_start >= window_end:
+            continue
+        entry_chars = _normalized_chars(str(entry.get("text") or ""))
+        if not entry_chars:
+            continue
+        clipped_start = max(entry_start, window_start) - window_start
+        clipped_end = min(entry_end, window_end) - window_start
+        duration = max(0.0, clipped_end - clipped_start)
+        for idx, ch in enumerate(entry_chars):
+            char_start = clipped_start + duration * idx / len(entry_chars)
+            char_end = clipped_start + duration * (idx + 1) / len(entry_chars)
+            chars.append(ch)
+            times.append((char_start, char_end))
+    return chars, times
+
+
+def _summarize_ms(values: list[float]) -> dict[str, float | None]:
+    if not values:
+        return {"mean": None, "p50": None, "p90": None, "p95": None, "max": None}
+    return {
+        "mean": round(float(sum(values) / len(values)), 1),
+        "p50": round(float(_percentile(values, 0.50)), 1),
+        "p90": round(float(_percentile(values, 0.90)), 1),
+        "p95": round(float(_percentile(values, 0.95)), 1),
+        "max": round(float(max(values)), 1),
+    }
+
+
+def _compute_timestamp_quality(
+    *,
+    reference_srt: str | None,
+    final_event: dict[str, Any] | None,
+    start_sec: float,
+    duration_sec: float,
+    strip_ruby: bool,
+) -> dict[str, Any] | None:
+    if reference_srt is None or final_event is None:
+        return None
+
+    segments = [segment for segment in final_event.get("segments", []) if isinstance(segment, dict)]
+    if not segments:
+        return None
+
+    ref_chars, ref_times = _build_reference_char_timeline(
+        reference_srt=reference_srt,
+        start_sec=start_sec,
+        duration_sec=duration_sec,
+        strip_ruby=strip_ruby,
+    )
+    hyp_chars: list[str] = []
+    segment_ranges: list[tuple[dict[str, Any], int, int]] = []
+    for segment in segments:
+        segment_chars = _normalized_chars(str(segment.get("text") or ""))
+        begin = len(hyp_chars)
+        hyp_chars.extend(segment_chars)
+        segment_ranges.append((segment, begin, len(hyp_chars)))
+    if not hyp_chars or not ref_chars:
+        return None
+
+    matcher = SequenceMatcher(None, "".join(hyp_chars), "".join(ref_chars), autojunk=False)
+    hyp_to_ref: dict[int, int] = {}
+    for block in matcher.get_matching_blocks():
+        for offset in range(block.size):
+            hyp_to_ref[block.a + offset] = block.b + offset
+
+    rows: list[dict[str, Any]] = []
+    start_errors: list[float] = []
+    end_errors: list[float] = []
+    boundary_abs_errors: list[float] = []
+    matched_segments = 0
+    aligned_segments = 0
+    failed_segments = 0
+    pending_segments = 0
+    for segment, begin, end in segment_ranges:
+        status = str(segment.get("timing_status") or "")
+        if status == "aligned":
+            aligned_segments += 1
+        elif status == "failed":
+            failed_segments += 1
+        elif status == "pending":
+            pending_segments += 1
+        start_ms = segment.get("start_ms")
+        end_ms = segment.get("end_ms")
+        ref_indexes = [hyp_to_ref[idx] for idx in range(begin, end) if idx in hyp_to_ref]
+        hyp_len = max(0, end - begin)
+        match_ratio = len(ref_indexes) / hyp_len if hyp_len else 0.0
+        row: dict[str, Any] = {
+            "id": segment.get("id"),
+            "text": segment.get("text"),
+            "timing_status": status or None,
+            "match_ratio": round(match_ratio, 3),
+            "hyp_chars": hyp_len,
+            "matched_chars": len(ref_indexes),
+        }
+        if (
+            isinstance(start_ms, int)
+            and isinstance(end_ms, int)
+            and ref_indexes
+            and match_ratio >= 0.6
+        ):
+            ref_start_sec = ref_times[min(ref_indexes)][0]
+            ref_end_sec = ref_times[max(ref_indexes)][1]
+            start_error = float(start_ms) - ref_start_sec * 1000.0
+            end_error = float(end_ms) - ref_end_sec * 1000.0
+            row.update(
+                {
+                    "ref_start_ms": round(ref_start_sec * 1000.0),
+                    "ref_end_ms": round(ref_end_sec * 1000.0),
+                    "start_error_ms": round(start_error, 1),
+                    "end_error_ms": round(end_error, 1),
+                    "boundary_abs_error_ms": round((abs(start_error) + abs(end_error)) / 2.0, 1),
+                }
+            )
+            matched_segments += 1
+            start_errors.append(start_error)
+            end_errors.append(end_error)
+            boundary_abs_errors.append((abs(start_error) + abs(end_error)) / 2.0)
+        rows.append(row)
+
+    return {
+        "reference_srt": reference_srt,
+        "method": "global normalized text match to SRT cue char timeline",
+        "segment_count": len(segments),
+        "aligned_segments": aligned_segments,
+        "failed_segments": failed_segments,
+        "pending_segments": pending_segments,
+        "matched_segments": matched_segments,
+        "matched_segment_ratio": round(matched_segments / len(segments), 3) if segments else None,
+        "start_error_ms": _summarize_ms(start_errors),
+        "end_error_ms": _summarize_ms(end_errors),
+        "start_bias_ms": round(float(sum(start_errors) / len(start_errors)), 1) if start_errors else None,
+        "end_bias_ms": round(float(sum(end_errors) / len(end_errors)), 1) if end_errors else None,
+        "boundary_abs_error_ms": _summarize_ms(boundary_abs_errors),
+        "segments": rows,
     }
 
 
@@ -289,6 +488,15 @@ async def _recv_events(
             "wall_sec": round(event_wall_sec, 6),
             "audio_sent_sec": round(audio_sent[0], 6),
         }
+        if event_type == "transcript_update":
+            timing["stable_segment_ids"] = [
+                str(segment.get("id") or "")
+                for segment in event.get("stable_appends") or []
+                if isinstance(segment, dict) and str(segment.get("id") or "")
+            ]
+        elif event_type == "transcript_timing_update":
+            timing["source_segment_id"] = str(event.get("source_segment_id") or "")
+            timing["timing_status"] = str(event.get("timing_status") or "")
         event_times.append(timing)
         counters[event_type] = counters.get(event_type, 0) + 1
         contract_issues.extend(_record_event_contract(contract_state, event))
@@ -514,6 +722,13 @@ async def run_check(args: argparse.Namespace) -> dict[str, Any]:
             audio_sent_sec=audio_sent_sec,
         ),
         "cer": _compute_reference_cer(
+            reference_srt=args.reference_srt,
+            final_event=final_event[0],
+            start_sec=args.start_sec,
+            duration_sec=args.max_audio_sec,
+            strip_ruby=args.strip_ruby,
+        ),
+        "timestamp_quality": _compute_timestamp_quality(
             reference_srt=args.reference_srt,
             final_event=final_event[0],
             start_sec=args.start_sec,

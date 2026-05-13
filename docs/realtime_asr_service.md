@@ -27,12 +27,64 @@ Events:
 
 - `ready`
 - `transcript_update`
+- `transcript_timing_update` when forced-aligner timestamps are enabled
 - `transcript_final`
 - `error`
 
 `transcript_update` is the only normal caption update. The frontend appends
 `stable_appends`, replaces `partial`, and requires `stable_base` to match local
 `stable_count`.
+
+## Timestamp Mode
+
+By default, stable segments use sample-clock `start_ms` / `end_ms` values.
+Starting the service with `--timestamp-model <model>` enables forced-aligner
+timestamps. In that mode, stable-segment public timing is one forced-aligned
+`start_ms` / `end_ms` pair, filled asynchronously.
+
+New stable segments are emitted immediately with pending timing:
+
+```json
+{
+  "type": "transcript_update",
+  "revision": 7,
+  "stable_base": 2,
+  "stable_count": 3,
+  "stable_appends": [
+    {
+      "id": "seg_000003",
+      "index": 3,
+      "start_ms": null,
+      "end_ms": null,
+      "timing_status": "pending",
+      "text": "现在开始",
+      "language": "Chinese"
+    }
+  ],
+  "partial": null
+}
+```
+
+When alignment finishes, the service patches the same stable segment:
+
+```json
+{
+  "type": "transcript_timing_update",
+  "source_segment_id": "seg_000003",
+  "start_ms": 120,
+  "end_ms": 860,
+  "timing_status": "aligned"
+}
+```
+
+`transcript_timing_update` only patches timing metadata for an existing stable
+segment identified by `source_segment_id`. It must not create, remove, reorder,
+or rewrite transcript text. Clients that do not need timestamps can ignore it.
+
+For `finish`, timestamp-enabled sessions wait up to the configured
+`--timestamp-finish-timeout-ms` for queued stable-segment timing before
+`transcript_final`. Segments that still cannot be aligned keep `start_ms=null`,
+`end_ms=null`, and use `timing_status="failed"` in the final snapshot.
 
 ## Transcript State
 
@@ -52,6 +104,8 @@ divergent transcript states.
 - `RealtimeASRSession`: lossless PCM ingestion, ASR cadence, sample clock, text
   stabilization, `TranscriptStore` writes, final flush.
 - `TranscriptStore`: in-memory append-only source transcript.
+- `RealtimeTimestampRuntime`: optional stable-segment forced alignment and
+  `transcript_timing_update` patches.
 
 Model windowing, prompt rollback, carried text prefixes, and spec decode belong
 to the streaming runtime design in `@docs/streaming_runtime.md`. The session
@@ -88,6 +142,10 @@ Service entrypoint defaults:
 - `fused_rmsnorm=True`, `fused_linears=True`
 - `w8a16=True` for qkv/gate_up
 - `live_stability_delay_ms=12000`
+- forced-aligner timestamps are disabled unless `--timestamp-model` is set
+- timestamp mode defaults: `--timestamp-pad-ms=500`,
+  `--timestamp-finish-timeout-ms=30000`,
+  `--timestamp-local-files-only`
 
 Disable flags only for debugging, fallback, or comparison.
 When translation is enabled, HY-MT is prewarmed on the same single model actor
