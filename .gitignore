@@ -11,6 +11,11 @@ htmlcov/
 
 build/
 dist/
+node_modules/
+target/
+desktop/ui/dist/
+desktop/ui/test-dist/
+desktop/src-tauri/gen/
 *.egg-info/
 
 .idea/

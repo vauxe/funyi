@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Funyi Live Captions</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="toolbar" aria-label="Session controls">
+        <div class="field field-wide">
+          <label for="server-url">ASR service</label>
+          <input id="server-url" value="ws://127.0.0.1:8000/ws/asr" spellcheck="false" />
+        </div>
+        <div class="field">
+          <label for="language">Language</label>
+          <input id="language" value="Chinese" spellcheck="false" />
+        </div>
+        <div class="field">
+          <label for="audio-source">Audio source</label>
+          <select id="audio-source"></select>
+        </div>
+        <label class="switch">
+          <input id="translation-enabled" type="checkbox" checked />
+          <span>Translation</span>
+        </label>
+        <button id="start-button" type="button">Start</button>
+        <button id="stop-button" type="button" disabled>Stop</button>
+      </section>
+
+      <section class="context-row" aria-label="Prompt context">
+        <label for="context">Context</label>
+        <input id="context" placeholder="Optional vocabulary, names, or meeting context" />
+      </section>
+
+      <section class="status-line" aria-live="polite">
+        <span id="connection-status">Idle</span>
+        <span id="ready-status"></span>
+        <span id="capture-status"></span>
+        <span id="audio-stats"></span>
+      </section>
+
+      <section class="caption-window" aria-label="Live caption window">
+        <div class="caption-line previous">
+          <div id="previous-source" class="caption-source"></div>
+          <div id="previous-translation" class="caption-translation"></div>
+        </div>
+        <div class="caption-line current">
+          <div id="current-source" class="caption-source"></div>
+          <div id="current-translation" class="caption-translation"></div>
+        </div>
+      </section>
+
+      <section class="history-header">
+        <h1>Stable History</h1>
+        <div class="history-actions">
+          <button id="flush-button" type="button" disabled>Flush</button>
+          <button id="export-srt-button" type="button" disabled>Export SRT</button>
+        </div>
+      </section>
+
+      <section id="history-list" class="history-list" aria-label="Stable subtitle history"></section>
+    </main>
+
+    <script type="module" src="./dist/app.js"></script>
+  </body>
+</html>

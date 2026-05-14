@@ -1,0 +1,19 @@
+{
+  "name": "funyi-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.28.2",
+  "type": "module",
+  "scripts": {
+    "build:ui": "node scripts/build-ui.mjs",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "test": "pnpm run build:ui && node scripts/build-ui-tests.mjs && node scripts/run-ui-tests.mjs",
+    "typecheck": "tsc -p ui/tsconfig.test.json --noEmit"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.1",
+    "@types/node": "24.12.2",
+    "typescript": "5.9.3"
+  }
+}

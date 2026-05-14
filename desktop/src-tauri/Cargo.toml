@@ -1,0 +1,16 @@
+[package]
+name = "funyi-desktop"
+version = "0.1.0"
+description = "Lightweight desktop client for the local Funyi realtime ASR service"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }
+
+[target.'cfg(windows)'.dependencies]
+wasapi = "0.23"

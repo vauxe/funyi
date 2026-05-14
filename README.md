@@ -10,6 +10,7 @@ validated low-latency single-user GPU profile.
 
 - `qwen3_asr_runtime/`: runtime package and optimized transformers backend
 - `realtime_server.py`: local WebSocket ASR service
+- `desktop/`: lightweight Tauri desktop client for system-audio captions
 - `tools/`: validation, benchmark, and regression commands
 - `docs/`: design notes and validation workflow
 

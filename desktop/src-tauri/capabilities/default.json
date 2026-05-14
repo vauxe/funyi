@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Main desktop client permissions.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
