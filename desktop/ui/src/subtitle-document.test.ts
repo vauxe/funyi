@@ -88,6 +88,93 @@ test("translation annotates matching lines and stale preview is ignored", () => 
   );
 });
 
+test("current translation preview survives repeated partial revisions", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 0,
+    stable_appends: [],
+    partial: partialSegment("current", { startMs: 1000, endMs: 1800 }),
+  });
+  document.applyEvent({ type: "translation_preview", source_revision: 1, text: "current line" });
+
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 2,
+    stable_base: 0,
+    stable_count: 0,
+    stable_appends: [],
+    partial: partialSegment("current", { startMs: 1000, endMs: 1800 }),
+  });
+  assert.equal(document.window().current?.translation, "current line");
+
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 3,
+    stable_base: 0,
+    stable_count: 0,
+    stable_appends: [],
+    partial: partialSegment("current text", { startMs: 1000, endMs: 2200 }),
+  });
+  assert.equal(document.window().current?.translation, "current line");
+
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 4,
+    stable_base: 0,
+    stable_count: 0,
+    stable_appends: [],
+    partial: partialSegment("current text extended", { startMs: 1000, endMs: 3000 }),
+  });
+  assert.equal(document.window().current?.translation, "current line");
+
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 5,
+    stable_base: 0,
+    stable_count: 1,
+    stable_appends: [stableSegment(1, "current text", { startMs: 1000, endMs: 2200 })],
+    partial: partialSegment("next line", { startMs: 2200, endMs: 3000 }),
+  });
+  assert.equal(document.window().previous?.translation, "current line");
+  assert.equal(document.window().current?.translation, null);
+
+  document.applyEvent({ type: "translation_preview", source_revision: 4, text: "late old line" });
+  assert.equal(document.window().current?.translation, null);
+
+  document.applyEvent({ type: "translation_preview", source_revision: 5, text: "next translation" });
+  assert.equal(document.window().current?.translation, "next translation");
+});
+
+test("current translation preview is not carried to a different partial", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 0,
+    stable_appends: [],
+    partial: partialSegment("first topic", { startMs: 0, endMs: 1000 }),
+  });
+  document.applyEvent({ type: "translation_preview", source_revision: 1, text: "first translation" });
+
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 2,
+    stable_base: 0,
+    stable_count: 0,
+    stable_appends: [],
+    partial: partialSegment("different sentence", { startMs: 1000, endMs: 2000 }),
+  });
+
+  assert.equal(document.window().current?.text, "different sentence");
+  assert.equal(document.window().current?.translation, null);
+  document.applyEvent({ type: "translation_preview", source_revision: 1, text: "late first translation" });
+  assert.equal(document.window().current?.translation, null);
+});
+
 test("stale stable base is rejected", () => {
   const document = new SubtitleDocument();
   document.applyEvent({

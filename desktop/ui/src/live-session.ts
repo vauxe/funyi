@@ -1,4 +1,5 @@
 const DEFAULT_FINISH_TIMEOUT_MS = 120_000;
+const SILENT_FRAME_WARNING_THRESHOLD = 30;
 const DEFAULT_CLOCK: Clock = {
   clearTimeout: (handle) => globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>),
   setTimeout: (callback, delay) => globalThis.setTimeout(callback, delay),
@@ -22,7 +23,6 @@ export interface LiveSessionClient {
   close(): void;
   connect(startPayload: Record<string, unknown>): Promise<void>;
   finish(): void;
-  flush(): void;
   sendPcm(bytes: Uint8Array): boolean;
 }
 
@@ -78,8 +78,9 @@ export class LiveSession {
   private audioSourceId = "";
   private client: LiveSessionClient | null = null;
   private finishTimeout: unknown = null;
-  private framesDropped = 0;
-  private framesSent = 0;
+  private lastAudioLevelDb: number | null = null;
+  private silentFrameWarningActive = false;
+  private silentFrames = 0;
   private state: SessionState = "idle";
   private unlistenCaptureError: Unlisten | null = null;
   private unlistenFrame: Unlisten | null = null;
@@ -119,9 +120,10 @@ export class LiveSession {
 
   resetStats(): void {
     this.clearFinishTimeout();
-    this.framesSent = 0;
-    this.framesDropped = 0;
-    this.updateAudioStats();
+    this.lastAudioLevelDb = null;
+    this.silentFrameWarningActive = false;
+    this.silentFrames = 0;
+    this.setStatus("audioStats", "");
   }
 
   async start({ url, startPayload, audioSourceId }: StartOptions): Promise<boolean> {
@@ -135,7 +137,7 @@ export class LiveSession {
 
     this.audioSourceId = audioSourceId;
     this.setState("connecting");
-    this.setStatus("connectionStatus", "Connecting");
+    this.setStatus("connectionStatus", "WS...");
 
     const client = this.createClient({
       url,
@@ -165,10 +167,6 @@ export class LiveSession {
     }
   }
 
-  flush(): void {
-    this.client?.flush();
-  }
-
   async stop({ sendFinish = true }: { sendFinish?: boolean } = {}): Promise<void> {
     if (this.state === "finishing") {
       await this.abort("Final transcript cancelled.");
@@ -192,7 +190,7 @@ export class LiveSession {
 
     this.setState("finishing");
     await this.stopCaptureOnly();
-    this.setStatus("captureStatus", "Waiting for final transcript");
+    this.setStatus("captureStatus", "Final");
     this.client?.finish();
     this.scheduleFinishTimeout();
   }
@@ -221,7 +219,7 @@ export class LiveSession {
     this.setState("idle");
     this.clearFinishTimeout();
     await this.stopCaptureOnly();
-    this.setStatus("captureStatus", "Finished");
+    this.setStatus("captureStatus", "Done");
     client?.close();
   }
 
@@ -288,7 +286,7 @@ export class LiveSession {
       void this.abort(message);
     });
     await this.audio.startCapture(this.audioSourceId);
-    this.setStatus("captureStatus", "Capturing system audio");
+    this.setStatus("captureStatus", this.captureSourceLabel());
   }
 
   private async stopCaptureOnly(): Promise<void> {
@@ -305,17 +303,13 @@ export class LiveSession {
 
   private handleAudioFrame(frame: AudioFrame): void {
     if (frame?.sampleRate !== 16000 || frame?.format !== "pcm_s16le") {
-      this.framesDropped += 1;
-      this.updateAudioStats();
       return;
     }
 
-    const sent = this.client?.sendPcm(this.audio.decodePcm(frame.dataBase64));
-    if (sent) {
-      this.framesSent += 1;
-    } else {
-      this.framesDropped += 1;
-    }
+    const bytes = this.audio.decodePcm(frame.dataBase64);
+    this.lastAudioLevelDb = pcmLevelDb(bytes);
+    this.updateSilentCaptureStatus(this.lastAudioLevelDb);
+    this.client?.sendPcm(bytes);
     this.updateAudioStats();
   }
 
@@ -348,10 +342,80 @@ export class LiveSession {
   }
 
   private updateAudioStats(): void {
-    this.setStatus("audioStats", `frames sent ${this.framesSent}, dropped ${this.framesDropped}`);
+    this.setStatus("audioStats", formatAudioLevel(this.lastAudioLevelDb));
+  }
+
+  private updateSilentCaptureStatus(levelDb: number | null): void {
+    if (isAudible(levelDb)) {
+      this.silentFrames = 0;
+      if (this.silentFrameWarningActive) {
+        this.silentFrameWarningActive = false;
+        this.setStatus("captureStatus", this.captureSourceLabel());
+      }
+      return;
+    }
+
+    this.silentFrames += 1;
+    if (
+      !this.silentFrameWarningActive
+      && this.silentFrames >= SILENT_FRAME_WARNING_THRESHOLD
+    ) {
+      this.silentFrameWarningActive = true;
+      this.setStatus("captureStatus", this.silentCaptureMessage());
+    }
+  }
+
+  private captureSourceLabel(): string {
+    return isMicrophoneSource(this.audioSourceId) ? "Mic" : "Sys";
+  }
+
+  private silentCaptureMessage(): string {
+    if (isMicrophoneSource(this.audioSourceId)) {
+      return "Mic silent";
+    }
+    return "Sys silent";
   }
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function pcmLevelDb(bytes: Uint8Array): number | null {
+  if (bytes.length < 2) {
+    return null;
+  }
+
+  let sumSquares = 0;
+  let samples = 0;
+  for (let offset = 0; offset + 1 < bytes.length; offset += 2) {
+    const low = bytes[offset] ?? 0;
+    const high = bytes[offset + 1] ?? 0;
+    let sample = low | (high << 8);
+    if (sample >= 0x8000) {
+      sample -= 0x10000;
+    }
+    const normalized = sample / 32768;
+    sumSquares += normalized * normalized;
+    samples += 1;
+  }
+  if (samples === 0 || sumSquares === 0) {
+    return null;
+  }
+  return 20 * Math.log10(Math.sqrt(sumSquares / samples));
+}
+
+function formatAudioLevel(levelDb: number | null): string {
+  if (!isAudible(levelDb)) {
+    return "Silent";
+  }
+  return `${Math.round(levelDb)}dB`;
+}
+
+function isAudible(levelDb: number | null): levelDb is number {
+  return levelDb !== null && levelDb >= -80;
+}
+
+function isMicrophoneSource(sourceId: string): boolean {
+  return /microphone|mic/i.test(sourceId);
 }

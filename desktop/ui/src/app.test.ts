@@ -2,9 +2,32 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 class FakeElement {
+  attributes = new Map<string, string>();
   checked = false;
   children: FakeElement[] = [];
+  classList = {
+    add: (name: string): void => {
+      const classes = new Set(this.className.split(/\s+/).filter(Boolean));
+      classes.add(name);
+      this.className = [...classes].join(" ");
+    },
+    remove: (name: string): void => {
+      const classes = new Set(this.className.split(/\s+/).filter(Boolean));
+      classes.delete(name);
+      this.className = [...classes].join(" ");
+    },
+    toggle: (name: string, enabled: boolean): void => {
+      const classes = new Set(this.className.split(/\s+/).filter(Boolean));
+      if (enabled) {
+        classes.add(name);
+      } else {
+        classes.delete(name);
+      }
+      this.className = [...classes].join(" ");
+    },
+  };
   className = "";
+  dataset: Record<string, string> = {};
   disabled = false;
   listeners = new Map<string, Array<() => void>>();
   textContent = "";
@@ -37,6 +60,10 @@ class FakeElement {
     if (this.tagName === "select") {
       this.value = "";
     }
+  }
+
+  setAttribute(name: string, value: string): void {
+    this.attributes.set(name, value);
   }
 }
 
@@ -98,16 +125,28 @@ test.afterEach(() => {
   Reflect.deleteProperty(globalThis, "window");
 });
 
-test("start button sends the selected UI options as the ASR start payload", async () => {
+test("history button switches overlay mode and inline settings drive start payload", async () => {
   const elements = installDocument();
-  installTauriRuntime();
+  const invocations = installTauriRuntime();
 
   await import("./app.js");
   await nextTick();
 
-  elements["context"]!.value = "product names";
+  elements["history-button"]!.click();
+  await nextTick();
+
+  assert.equal(elements["app-shell"]!.attributes.get("data-overlay-mode"), "history");
+  assert.equal(elements["history-button"]!.className, "is-expanded");
+  assert.equal(elements["history-button"]!.attributes.get("aria-expanded"), "true");
+  assert.deepEqual(invocations.at(-1), {
+    command: "set_overlay_mode",
+    args: { mode: "history" },
+  });
+  assert.equal(elements["connection-status"]!.textContent, "");
+  assert.equal(elements["audio-source"]!.children[0]?.textContent, "Sys · Audio");
+
   elements["translation-enabled"]!.checked = false;
-  elements["start-button"]!.click();
+  elements["session-button"]!.click();
 
   const socket = FakeWebSocket.instances[0];
   assert.ok(socket);
@@ -121,7 +160,7 @@ test("start button sends the selected UI options as the ASR start payload", asyn
   assert.equal(payload.sample_rate, 16000);
   assert.equal(payload.audio_format, "pcm_s16le");
   assert.equal(payload.language, "Chinese");
-  assert.equal(payload.context, "product names");
+  assert.equal("context" in payload, false);
   assert.equal(payload.translation, false);
 });
 
@@ -129,14 +168,14 @@ function installDocument(): Record<string, FakeElement> {
   const elements = Object.fromEntries(
     [
       "server-url",
+      "app-shell",
+      "caption-strip",
       "language",
-      "context",
       "audio-source",
       "translation-enabled",
-      "start-button",
-      "stop-button",
-      "flush-button",
-      "export-srt-button",
+      "session-button",
+      "history-button",
+      "close-button",
       "connection-status",
       "ready-status",
       "capture-status",
@@ -161,13 +200,15 @@ function installDocument(): Record<string, FakeElement> {
   return elements;
 }
 
-function installTauriRuntime(): void {
+function installTauriRuntime(): Array<{ command: string; args?: Record<string, unknown> }> {
+  const invocations: Array<{ command: string; args?: Record<string, unknown> }> = [];
   Object.defineProperty(globalThis, "window", {
     configurable: true,
     value: {
       __TAURI__: {
         core: {
-          async invoke<TResult>(command: string): Promise<TResult> {
+          async invoke<TResult>(command: string, args?: Record<string, unknown>): Promise<TResult> {
+            invocations.push({ command, args });
             if (command === "list_audio_sources") {
               return [
                 {
@@ -178,6 +219,17 @@ function installTauriRuntime(): void {
                   detail: "available",
                 },
               ] as unknown as TResult;
+            }
+            if (command === "set_overlay_mode") {
+              return undefined as TResult;
+            }
+            if (
+              command === "start_overlay_drag"
+              || command === "update_overlay_drag"
+              || command === "end_overlay_drag"
+              || command === "close_overlay"
+            ) {
+              return undefined as TResult;
             }
             return undefined as TResult;
           },
@@ -191,11 +243,15 @@ function installTauriRuntime(): void {
     },
     writable: true,
   });
+  return invocations;
 }
 
 function elementTag(id: string): string {
   if (id === "audio-source") {
     return "select";
+  }
+  if (id === "app-shell" || id === "caption-strip") {
+    return "main";
   }
   if (id.endsWith("button")) {
     return "button";

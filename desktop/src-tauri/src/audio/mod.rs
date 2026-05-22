@@ -54,7 +54,7 @@ pub struct CaptureHandle {
 }
 
 impl CaptureHandle {
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     fn new(stop: Arc<AtomicBool>, join: JoinHandle<()>) -> Self {
         Self {
             stop,
@@ -131,7 +131,7 @@ pub fn stop_audio_capture(state: &AudioCaptureState) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 pub fn make_handle(stop: Arc<AtomicBool>, join: JoinHandle<()>) -> CaptureHandle {
     CaptureHandle::new(stop, join)
 }

@@ -9,15 +9,25 @@
     "frontendDist": "../ui/dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "withGlobalTauri": true,
     "windows": [
       {
         "label": "main",
         "title": "Funyi Live Captions",
-        "width": 980,
-        "height": 720,
-        "minWidth": 760,
-        "minHeight": 560
+        "width": 960,
+        "height": 180,
+        "minWidth": 520,
+        "minHeight": 128,
+        "maxWidth": 1120,
+        "maxHeight": 760,
+        "resizable": true,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "visibleOnAllWorkspaces": true,
+        "shadow": false,
+        "center": false
       }
     ],
     "security": {

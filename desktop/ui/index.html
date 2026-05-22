@@ -7,60 +7,71 @@
     <link rel="stylesheet" href="./src/styles.css" />
   </head>
   <body>
-    <main class="app-shell">
-      <section class="toolbar" aria-label="Session controls">
-        <div class="field field-wide">
-          <label for="server-url">ASR service</label>
-          <input id="server-url" value="ws://127.0.0.1:8000/ws/asr" spellcheck="false" />
-        </div>
-        <div class="field">
-          <label for="language">Language</label>
-          <input id="language" value="Chinese" spellcheck="false" />
-        </div>
-        <div class="field">
-          <label for="audio-source">Audio source</label>
-          <select id="audio-source"></select>
-        </div>
-        <label class="switch">
-          <input id="translation-enabled" type="checkbox" checked />
-          <span>Translation</span>
-        </label>
-        <button id="start-button" type="button">Start</button>
-        <button id="stop-button" type="button" disabled>Stop</button>
-      </section>
+    <main id="app-shell" class="app-shell" data-overlay-mode="compact">
+      <section id="caption-strip" class="caption-strip drag-surface" aria-label="Live caption window">
+        <section class="history-panel" aria-label="Subtitle history">
+          <section id="history-list" class="history-list" aria-label="Stable subtitle history"></section>
+        </section>
 
-      <section class="context-row" aria-label="Prompt context">
-        <label for="context">Context</label>
-        <input id="context" placeholder="Optional vocabulary, names, or meeting context" />
-      </section>
+        <section class="caption-window" aria-label="Current subtitles">
+          <div class="caption-line previous">
+            <div id="previous-source" class="caption-source"></div>
+            <div id="previous-translation" class="caption-translation"></div>
+          </div>
+          <div class="caption-line current">
+            <div id="current-source" class="caption-source"></div>
+            <div id="current-translation" class="caption-translation"></div>
+          </div>
+        </section>
 
-      <section class="status-line" aria-live="polite">
-        <span id="connection-status">Idle</span>
-        <span id="ready-status"></span>
-        <span id="capture-status"></span>
-        <span id="audio-stats"></span>
-      </section>
-
-      <section class="caption-window" aria-label="Live caption window">
-        <div class="caption-line previous">
-          <div id="previous-source" class="caption-source"></div>
-          <div id="previous-translation" class="caption-translation"></div>
+        <div class="caption-controls" aria-label="Session controls">
+          <button
+            id="session-button"
+            class="icon-button session-control"
+            type="button"
+            aria-label="Start"
+            title="Start"
+          ></button>
+          <button
+            id="history-button"
+            class="icon-button history-control"
+            type="button"
+            aria-label="Show history"
+            title="Show history"
+            aria-expanded="false"
+          ></button>
+          <button
+            id="close-button"
+            class="icon-button close-control"
+            type="button"
+            aria-label="Close"
+            title="Close"
+          ></button>
         </div>
-        <div class="caption-line current">
-          <div id="current-source" class="caption-source"></div>
-          <div id="current-translation" class="caption-translation"></div>
-        </div>
-      </section>
 
-      <section class="history-header">
-        <h1>Stable History</h1>
-        <div class="history-actions">
-          <button id="flush-button" type="button" disabled>Flush</button>
-          <button id="export-srt-button" type="button" disabled>Export SRT</button>
-        </div>
+        <section class="status-line" aria-live="polite">
+          <label class="status-field status-field-service">
+            <span>服务</span>
+            <input id="server-url" value="ws://127.0.0.1:8000/ws/asr" spellcheck="false" />
+          </label>
+          <label class="status-field">
+            <span>语言</span>
+            <input id="language" value="Chinese" spellcheck="false" />
+          </label>
+          <label class="status-field status-field-source">
+            <span>音源</span>
+            <select id="audio-source"></select>
+          </label>
+          <label class="status-toggle">
+            <input id="translation-enabled" type="checkbox" checked />
+            <span>译</span>
+          </label>
+          <span id="connection-status"></span>
+          <span id="ready-status"></span>
+          <span id="capture-status"></span>
+          <span id="audio-stats"></span>
+        </section>
       </section>
-
-      <section id="history-list" class="history-list" aria-label="Stable subtitle history"></section>
     </main>
 
     <script type="module" src="./dist/app.js"></script>

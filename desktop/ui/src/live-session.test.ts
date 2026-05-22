@@ -32,7 +32,7 @@ class FakeAsrClient implements LiveSessionClient {
 
   async connect(startPayload: Record<string, unknown>): Promise<void> {
     this.startPayload = startPayload;
-    this.onStatus?.("connected", this);
+    this.onStatus?.("WS OK", this);
   }
 
   close(): void {
@@ -41,10 +41,6 @@ class FakeAsrClient implements LiveSessionClient {
 
   finish(): void {
     this.commands.push("finish");
-  }
-
-  flush(): void {
-    this.commands.push("flush");
   }
 
   sendPcm(bytes: Uint8Array): boolean {
@@ -128,10 +124,13 @@ function createHarness({ onTranscriptEvent }: HarnessOptions = {}) {
   return { audio, clients, clock, session, statuses };
 }
 
-async function startRunningSession(harness: ReturnType<typeof createHarness>): Promise<void> {
+async function startRunningSession(
+  harness: ReturnType<typeof createHarness>,
+  audioSourceId = "system_default",
+): Promise<void> {
   harness.session.setAudioAvailable(true);
   await harness.session.start({
-    audioSourceId: "system_default",
+    audioSourceId,
     startPayload: { type: "start", sample_rate: 16000 },
     url: "ws://127.0.0.1:8000/ws/asr",
   });
@@ -151,13 +150,42 @@ test("starts capture after ready and forwards only valid pcm frames", async () =
   assert.equal(harness.session.getState(), "running");
   assert.deepEqual(harness.audio.startCalls, ["system_default"]);
   assert.deepEqual(harness.clients[0]!.startPayload, { type: "start", sample_rate: 16000 });
-  assert.equal(harness.statuses.get("captureStatus"), "Capturing system audio");
+  assert.equal(harness.statuses.get("captureStatus"), "Sys");
 
   harness.audio.frameHandler?.({ sampleRate: 16000, format: "pcm_s16le", dataBase64: "abcd" });
   harness.audio.frameHandler?.({ sampleRate: 48000, format: "pcm_s16le", dataBase64: "abcd" });
 
   assert.deepEqual([...harness.clients[0]!.sentPcm[0]!], [4]);
-  assert.equal(harness.statuses.get("audioStats"), "frames sent 1, dropped 1");
+  assert.equal(harness.statuses.get("audioStats"), "Silent");
+});
+
+test("warns when macOS capture keeps delivering silent pcm", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness);
+
+  for (let index = 0; index < 30; index += 1) {
+    harness.audio.frameHandler?.({ sampleRate: 16000, format: "pcm_s16le", dataBase64: "abcd" });
+  }
+
+  assert.match(
+    harness.statuses.get("captureStatus") || "",
+    /Sys silent/,
+  );
+});
+
+test("uses microphone-specific capture status and silent warning", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness, "macos_microphone:built-in");
+
+  assert.equal(harness.statuses.get("captureStatus"), "Mic");
+  for (let index = 0; index < 30; index += 1) {
+    harness.audio.frameHandler?.({ sampleRate: 16000, format: "pcm_s16le", dataBase64: "abcd" });
+  }
+
+  assert.match(
+    harness.statuses.get("captureStatus") || "",
+    /Mic silent/,
+  );
 });
 
 test("finish sends final command, times out cleanly, and restores idle state", async () => {
@@ -218,5 +246,5 @@ test("replay errors abort final handling without marking the session finished", 
   assert.equal(harness.session.getState(), "idle");
   assert.equal(harness.clients[0]!.closed, true);
   assert.equal(harness.statuses.get("connectionStatus"), "stable cursor mismatch");
-  assert.notEqual(harness.statuses.get("captureStatus"), "Finished");
+  assert.notEqual(harness.statuses.get("captureStatus"), "Done");
 });

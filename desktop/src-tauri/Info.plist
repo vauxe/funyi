@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>Funyi captures system audio to generate live captions on this Mac.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Funyi captures microphone audio to generate live captions from your speech.</string>
+</dict>
+</plist>

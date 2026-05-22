@@ -43,13 +43,13 @@ export class AsrClient {
       this.ws = ws;
 
       ws.onopen = () => {
-        this.emitStatus("connected");
+        this.emitStatus("WS OK");
         ws.send(JSON.stringify(startPayload));
         settled = true;
         resolve();
       };
       ws.onerror = (event) => {
-        this.emitStatus("websocket error");
+        this.emitStatus("WS error");
         this.onError?.(event, this);
         if (!settled) {
           settled = true;
@@ -57,7 +57,7 @@ export class AsrClient {
         }
       };
       ws.onclose = (event) => {
-        this.emitStatus("closed");
+        this.emitStatus("WS closed");
         if (!settled) {
           settled = true;
           reject(new Error(`WebSocket closed before start: ${event.code}`));
@@ -87,10 +87,6 @@ export class AsrClient {
     }
     this.ws.send(bytes);
     return true;
-  }
-
-  flush(): void {
-    this.sendCommand("flush");
   }
 
   finish(): void {

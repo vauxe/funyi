@@ -143,15 +143,20 @@ export class SubtitleDocument {
     }
 
     const revision = toInt(event.revision, this.revision);
+    const previousCurrent = this.current;
+    const resetCurrentPreview = stableAppends.length > 0;
     for (const segment of stableAppends) {
       if (isRecord(segment)) {
-        this.stableLines.push(lineFromSegment(segment, revision));
+        this.stableLines.push(preserveStableTranslation(lineFromSegment(segment, revision), previousCurrent));
       }
     }
 
-    this.current = isRecord(event.partial)
+    const nextCurrent = isRecord(event.partial)
       ? lineFromSegment(event.partial, revision)
       : null;
+    this.current = resetCurrentPreview
+      ? nextCurrent
+      : preserveCurrentTranslation(nextCurrent, previousCurrent);
     this.revision = revision;
   }
 
@@ -210,7 +215,7 @@ export class SubtitleDocument {
     }
     const sourceRevision = toInt(event.source_revision, 0);
     const text = String(event.text || "").trim();
-    if (this.current.sourceRevision === sourceRevision && text) {
+    if (text && this.current.sourceRevision === sourceRevision) {
       this.current = this.current.withPatch({ translation: text });
     }
   }
@@ -270,6 +275,48 @@ function renderLine(line: SubtitleLine | null, includeTranslation: boolean): Sub
     translationStatus: null,
     translationMessage: null,
   });
+}
+
+function preserveCurrentTranslation(
+  next: SubtitleLine | null,
+  previous: SubtitleLine | null,
+): SubtitleLine | null {
+  if (!next || !previous?.translation || !isSamePartialLine(next, previous)) {
+    return next;
+  }
+  return next.withPatch({
+    translation: previous.translation,
+    translationStatus: previous.translationStatus,
+    translationMessage: previous.translationMessage,
+  });
+}
+
+function preserveStableTranslation(
+  next: SubtitleLine,
+  previous: SubtitleLine | null,
+): SubtitleLine {
+  if (!previous?.translation || !isSamePartialLine(next, previous)) {
+    return next;
+  }
+  return next.withPatch({
+    translation: previous.translation,
+    translationStatus: previous.translationStatus,
+    translationMessage: previous.translationMessage,
+  });
+}
+
+function isSamePartialLine(left: SubtitleLine, right: SubtitleLine): boolean {
+  if (left.id && right.id) {
+    return left.id === right.id;
+  }
+  if (isInteger(left.index) && isInteger(right.index)) {
+    return left.index === right.index;
+  }
+
+  const leftText = left.text.trim();
+  const rightText = right.text.trim();
+  return Boolean(leftText && rightText)
+    && (leftText === rightText || leftText.startsWith(rightText) || rightText.startsWith(leftText));
 }
 
 function formatSrtTime(ms: number): string {

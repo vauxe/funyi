@@ -6,13 +6,18 @@ The UI owns the `/ws/asr` WebSocket. The native layer only captures system audio
 and emits `pcm_s16le` frames at 16 kHz. This keeps ASR, translation, and CUDA
 runtime behavior in the Python service.
 
+The default window is a compact, always-on-top caption strip near the bottom of
+the display. Detailed connection settings and stable subtitle history are shown
+only when the details control expands the window.
+
 ## Status
 
 - Windows: default system output capture via WASAPI loopback.
 - Linux: PipeWire/PulseAudio monitor source capture through `pactl` + `parec`.
-- macOS: interface is present, but system audio capture is intentionally disabled
-  until a ScreenCaptureKit or virtual-device adapter is implemented with the
-  required user approval and release entitlements.
+- macOS: system audio capture through ScreenCaptureKit. The first capture start
+  may require Screen & System Audio Recording permission in System Settings.
+- macOS: microphone input capture through ScreenCaptureKit on macOS 15+. The
+  first microphone start may require Microphone permission in System Settings.
 
 ## Run
 

@@ -30,7 +30,7 @@ supports it:
 |---|---|
 | Windows | WASAPI loopback from the default playback device |
 | Linux | PipeWire/PulseAudio monitor sources through `pactl` and `parec` |
-| macOS | Not enabled yet; the app exposes the limitation instead of falling back to microphone capture |
+| macOS | ScreenCaptureKit system audio capture, with Screen & System Audio Recording permission |
 
 ## Install
 

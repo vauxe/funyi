@@ -55,7 +55,7 @@ test("connect sends start payload after socket opens", async () => {
 
   assert.equal(socket.binaryType, "arraybuffer");
   assert.deepEqual(JSON.parse(String(socket.sent[0])), { type: "start", sample_rate: 16000 });
-  assert.deepEqual(statuses, [["connected", client]]);
+  assert.deepEqual(statuses, [["WS OK", client]]);
 });
 
 test("connect rejects if socket closes before open", async () => {
