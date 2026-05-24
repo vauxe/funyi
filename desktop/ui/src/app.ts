@@ -13,6 +13,24 @@ import {
 type StatusKey = "connectionStatus" | "readyStatus" | "captureStatus" | "audioStats";
 type OverlayMode = "compact" | "history";
 type StatusTone = "idle" | "active" | "ok" | "warn" | "error";
+type ResizeDirection = "East" | "North" | "NorthEast" | "NorthWest" | "South" | "SouthEast" | "SouthWest" | "West";
+
+interface ResizeHandle {
+  element: HTMLElement;
+  direction: ResizeDirection;
+}
+
+interface ActiveResize {
+  pointerId: number;
+  direction: ResizeDirection;
+  mode: OverlayMode;
+  startY: number;
+  startHeight: number;
+  surface: HTMLElement;
+}
+
+const DEFAULT_COMPACT_HEIGHT = 180;
+const MIN_COMPACT_HEIGHT = 128;
 
 const dom = {
   appShell: requireElement<HTMLElement>("#app-shell"),
@@ -23,6 +41,7 @@ const dom = {
   translationEnabled: requireElement<HTMLInputElement>("#translation-enabled"),
   sessionButton: requireElement<HTMLButtonElement>("#session-button"),
   historyButton: requireElement<HTMLButtonElement>("#history-button"),
+  minimizeButton: requireElement<HTMLButtonElement>("#minimize-button"),
   closeButton: requireElement<HTMLButtonElement>("#close-button"),
   connectionStatus: requireElement<HTMLSpanElement>("#connection-status"),
   readyStatus: requireElement<HTMLSpanElement>("#ready-status"),
@@ -33,6 +52,16 @@ const dom = {
   currentSource: requireElement<HTMLDivElement>("#current-source"),
   currentTranslation: requireElement<HTMLDivElement>("#current-translation"),
   historyList: requireElement<HTMLElement>("#history-list"),
+  resizeHandles: [
+    { element: requireElement<HTMLElement>("#resize-north"), direction: "North" },
+    { element: requireElement<HTMLElement>("#resize-east"), direction: "East" },
+    { element: requireElement<HTMLElement>("#resize-south"), direction: "South" },
+    { element: requireElement<HTMLElement>("#resize-west"), direction: "West" },
+    { element: requireElement<HTMLElement>("#resize-north-east"), direction: "NorthEast" },
+    { element: requireElement<HTMLElement>("#resize-north-west"), direction: "NorthWest" },
+    { element: requireElement<HTMLElement>("#resize-south-east"), direction: "SouthEast" },
+    { element: requireElement<HTMLElement>("#resize-south-west"), direction: "SouthWest" },
+  ] satisfies ResizeHandle[],
 };
 
 let subtitleDocument = new SubtitleDocument();
@@ -46,6 +75,10 @@ let connectionStatusOwner: "overlay" | "session" | null = null;
 let renderedHistoryLines: SubtitleLine[] = [];
 let renderedHistoryTranslationEnabled = subtitleDocument.translationEnabled;
 let overlayModeChanging = false;
+let overlayTransitionSequence = 0;
+let compactOverlayHeight = DEFAULT_COMPACT_HEIGHT;
+let activeResize: ActiveResize | null = null;
+let pendingResizeFrame: number | null = null;
 const statusValues: Record<StatusKey, string> = {
   connectionStatus: "",
   readyStatus: "",
@@ -73,8 +106,12 @@ const liveSession = new LiveSession({
 async function boot(): Promise<void> {
   await populateAudioSources();
   dom.captionStrip.addEventListener("pointerdown", (event) => void handleDragPointerDown(event, dom.captionStrip));
+  for (const handle of dom.resizeHandles) {
+    handle.element.addEventListener("pointerdown", (event) => void handleResizePointerDown(event, handle.direction));
+  }
   dom.sessionButton.addEventListener("click", () => void toggleSession());
   dom.historyButton.addEventListener("click", () => void setOverlayMode(overlayMode === "history" ? "compact" : "history"));
+  dom.minimizeButton.addEventListener("click", () => void minimizeOverlay());
   dom.closeButton.addEventListener("click", () => void closeOverlay());
   dom.translationEnabled.addEventListener("change", () => {
     subtitleDocument.setTranslationEnabled(dom.translationEnabled.checked);
@@ -181,6 +218,151 @@ function cancelScheduledDragUpdate(): void {
   pendingDragFrame = null;
 }
 
+async function handleResizePointerDown(event: PointerEvent, direction: ResizeDirection): Promise<void> {
+  if (event.button !== 0) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+
+  await startOverlayResize(event, direction);
+}
+
+async function startOverlayResize(event: PointerEvent, direction: ResizeDirection): Promise<void> {
+  const surface = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  if (!surface) {
+    return;
+  }
+  activeResize = {
+    pointerId: event.pointerId,
+    direction,
+    mode: overlayMode,
+    startY: event.clientY,
+    startHeight: compactOverlayHeight,
+    surface,
+  };
+  dom.appShell.classList.add("is-resizing");
+  surface.setPointerCapture(event.pointerId);
+  window.addEventListener("pointermove", handleOverlayResizeMove);
+  window.addEventListener("pointerup", handleOverlayResizeEnd);
+  window.addEventListener("pointercancel", handleOverlayResizeEnd);
+
+  try {
+    await invokeOverlayCommand("start_overlay_resize", { direction });
+    clearOverlayCommandError();
+  } catch (error) {
+    setOverlayCommandError(error);
+    clearActiveResize();
+  }
+}
+
+function handleOverlayResizeMove(event: PointerEvent): void {
+  const resize = activeResize;
+  if (!resize || event.pointerId !== resize.pointerId) {
+    return;
+  }
+  if (resize.mode === "compact") {
+    applyCompactResizeCssHeight(resize, event.clientY);
+  }
+  scheduleResizeUpdate();
+}
+
+function handleOverlayResizeEnd(event: PointerEvent): void {
+  if (!activeResize || event.pointerId !== activeResize.pointerId) {
+    return;
+  }
+  void finishOverlayResize();
+}
+
+async function finishOverlayResize(): Promise<void> {
+  try {
+    cancelScheduledResizeUpdate();
+    await invokeOverlayCommand("end_overlay_resize");
+    clearOverlayCommandError();
+  } catch (error) {
+    setOverlayCommandError(error);
+  } finally {
+    clearActiveResize();
+  }
+}
+
+function clearActiveResize(): void {
+  const resize = activeResize;
+  if (!resize) {
+    return;
+  }
+  if (resize.surface.hasPointerCapture(resize.pointerId)) {
+    resize.surface.releasePointerCapture(resize.pointerId);
+  }
+  activeResize = null;
+  cancelScheduledResizeUpdate();
+  dom.appShell.classList.remove("is-resizing");
+  window.removeEventListener("pointermove", handleOverlayResizeMove);
+  window.removeEventListener("pointerup", handleOverlayResizeEnd);
+  window.removeEventListener("pointercancel", handleOverlayResizeEnd);
+}
+
+function scheduleResizeUpdate(): void {
+  if (pendingResizeFrame !== null) {
+    return;
+  }
+
+  const run = (): void => {
+    pendingResizeFrame = null;
+    if (!activeResize) {
+      return;
+    }
+    void invokeOverlayCommand("update_overlay_resize").catch((error: unknown) => {
+      setOverlayCommandError(error);
+      clearActiveResize();
+    });
+  };
+
+  pendingResizeFrame = typeof requestAnimationFrame === "function"
+    ? requestAnimationFrame(run)
+    : window.setTimeout(run, 16);
+}
+
+function cancelScheduledResizeUpdate(): void {
+  if (pendingResizeFrame === null) {
+    return;
+  }
+  if (typeof cancelAnimationFrame === "function") {
+    cancelAnimationFrame(pendingResizeFrame);
+  } else {
+    window.clearTimeout(pendingResizeFrame);
+  }
+  pendingResizeFrame = null;
+}
+
+function applyCompactResizeCssHeight(resize: ActiveResize, currentY: number): void {
+  const verticalDirection = compactVerticalResizeDirection(resize.direction);
+  if (!verticalDirection) {
+    return;
+  }
+  const deltaY = currentY - resize.startY;
+  const height = resize.startHeight + (verticalDirection === "South" ? deltaY : -deltaY);
+  compactOverlayHeight = clampCompactHeight(height);
+  dom.appShell.style.setProperty("--compact-height", `${compactOverlayHeight}px`);
+}
+
+function compactVerticalResizeDirection(direction: ResizeDirection): "North" | "South" | null {
+  if (direction.includes("North")) {
+    return "North";
+  }
+  if (direction.includes("South")) {
+    return "South";
+  }
+  return null;
+}
+
+function clampCompactHeight(value: number): number {
+  if (!Number.isFinite(value)) {
+    return compactOverlayHeight;
+  }
+  return Math.round(Math.max(MIN_COMPACT_HEIGHT, value));
+}
+
 async function setOverlayMode(mode: OverlayMode): Promise<void> {
   const previousMode = overlayMode;
   if (mode === previousMode || overlayModeChanging) {
@@ -188,14 +370,20 @@ async function setOverlayMode(mode: OverlayMode): Promise<void> {
   }
 
   overlayModeChanging = true;
-  applyOverlayMode(mode);
+  const transitionSequence = beginOverlayTransition();
+  let modeApplied = false;
   try {
+    applyOverlayMode(mode);
+    modeApplied = true;
     await invokeOverlayCommand("set_overlay_mode", { mode });
     clearOverlayCommandError();
   } catch (error) {
-    applyOverlayMode(previousMode);
+    if (modeApplied && overlayMode !== previousMode) {
+      applyOverlayMode(previousMode);
+    }
     setOverlayCommandError(error);
   } finally {
+    scheduleOverlayTransitioningClear(transitionSequence);
     overlayModeChanging = false;
   }
 }
@@ -205,7 +393,7 @@ function applyOverlayMode(mode: OverlayMode): void {
   dom.appShell.setAttribute("data-overlay-mode", mode);
   syncModeButton(dom.historyButton, mode === "history", "Hide history", "Show history");
   if (mode === "history") {
-    scrollHistoryToLatest("smooth");
+    scrollHistoryToLatest("auto");
   }
 }
 
@@ -234,6 +422,15 @@ async function closeOverlay(): Promise<void> {
   }
 }
 
+async function minimizeOverlay(): Promise<void> {
+  try {
+    await invokeOverlayCommand("minimize_overlay");
+    clearOverlayCommandError();
+  } catch (error) {
+    setOverlayCommandError(error);
+  }
+}
+
 async function populateAudioSources(): Promise<void> {
   const sources = await listAudioSources();
   hasAvailableAudioSource = sources.some((source) => source.isAvailable);
@@ -241,7 +438,7 @@ async function populateAudioSources(): Promise<void> {
   for (const source of sources) {
     const option = document.createElement("option");
     option.value = source.id;
-    option.textContent = source.isAvailable ? audioSourceLabel(source) : `${audioSourceLabel(source)} off`;
+    option.textContent = source.isAvailable ? audioSourceLabel(source) : `${audioSourceLabel(source)} unavailable`;
     option.disabled = !source.isAvailable;
     option.title = source.detail || "";
     dom.audioSource.append(option);
@@ -505,7 +702,7 @@ function readySummary(event: RealtimeEvent): string {
   const sampleRate = Number(event.sample_rate || 0);
   const readyText = sampleRate > 0 ? `${sampleRate / 1000}k` : "Ready";
   return isRecord(event.translation) && event.translation.enabled
-    ? `${readyText} · 译`
+    ? `${readyText} · Translate`
     : readyText;
 }
 
@@ -552,4 +749,24 @@ async function invokeOverlayCommand(command: string, args?: Record<string, unkno
 function isInteractiveTarget(target: EventTarget | null): boolean {
   return target instanceof Element
     && Boolean(target.closest("button,input,select,textarea,a"));
+}
+
+function beginOverlayTransition(): number {
+  overlayTransitionSequence += 1;
+  dom.appShell.dataset.overlayTransitioning = "true";
+  return overlayTransitionSequence;
+}
+
+function scheduleOverlayTransitioningClear(sequence: number): void {
+  const clear = (): void => {
+    if (sequence !== overlayTransitionSequence) {
+      return;
+    }
+    delete dom.appShell.dataset.overlayTransitioning;
+  };
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(() => requestAnimationFrame(clear));
+    return;
+  }
+  globalThis.setTimeout(clear, 32);
 }

@@ -175,7 +175,16 @@ function installDocument(): Record<string, FakeElement> {
       "translation-enabled",
       "session-button",
       "history-button",
+      "minimize-button",
       "close-button",
+      "resize-north",
+      "resize-east",
+      "resize-south",
+      "resize-west",
+      "resize-north-east",
+      "resize-north-west",
+      "resize-south-east",
+      "resize-south-west",
       "connection-status",
       "ready-status",
       "capture-status",
@@ -227,6 +236,10 @@ function installTauriRuntime(): Array<{ command: string; args?: Record<string, u
               command === "start_overlay_drag"
               || command === "update_overlay_drag"
               || command === "end_overlay_drag"
+              || command === "start_overlay_resize"
+              || command === "update_overlay_resize"
+              || command === "end_overlay_resize"
+              || command === "minimize_overlay"
               || command === "close_overlay"
             ) {
               return undefined as TResult;

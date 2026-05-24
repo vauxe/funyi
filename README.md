@@ -20,8 +20,11 @@ is not a public multi-user ASR server.
 - `uv` for Python dependencies.
 - An NVIDIA CUDA GPU for the default realtime profile.
 - A local model path or access to download `Qwen/Qwen3-ASR-1.7B`.
-- For the desktop client: `pnpm`, Rust/Cargo, and the native WebView packages
-  required by your operating system.
+- For the desktop client: Node.js with Corepack-enabled `pnpm`, Rust/Cargo,
+  and the native WebView packages required by your operating system.
+- On Windows, Tauri also needs Visual Studio Build Tools 2022 with the
+  `Desktop development with C++` workload so `cl.exe` and `link.exe` are
+  available, plus a Windows 10/11 SDK.
 
 The desktop client captures system playback audio where the operating system
 supports it:
@@ -45,8 +48,11 @@ client:
 
 ```bash
 cd desktop
-pnpm install
+corepack pnpm install
 ```
+
+If your shell does not expose a `pnpm` command, use `corepack pnpm ...`
+directly instead of trying to install a separate global shim.
 
 On Ubuntu/Linux builds, Tauri also needs native system packages. A typical
 minimal set is:
@@ -83,7 +89,7 @@ Then start the desktop client:
 
 ```bash
 cd desktop
-pnpm run dev
+corepack pnpm run dev
 ```
 
 Use the desktop UI to connect to:
@@ -165,14 +171,14 @@ After installing desktop dependencies:
 
 ```bash
 cd desktop
-pnpm run build
+corepack pnpm run build
 ```
 
 On Linux, this repository defaults to `.deb` and `.rpm` bundles. AppImage
 bundling can be run explicitly on a real Linux desktop or CI environment:
 
 ```bash
-pnpm exec tauri build --bundles appimage
+corepack pnpm exec tauri build --bundles appimage
 ```
 
 ## Data And Privacy
@@ -193,6 +199,11 @@ If the service fails during startup, first check:
 - optional timestamp or translation models are present locally when
   local-files-only mode is enabled;
 - the desktop client is using `ws://127.0.0.1:8000/ws/asr`;
+- if the shell says `pnpm` is not recognized, run desktop commands as
+  `corepack pnpm ...`;
+- on Windows, `where cl` and `where link` both succeed after installing
+  Visual Studio Build Tools 2022 with `Desktop development with C++` and a
+  Windows SDK;
 - on Linux, `pactl list short sources` shows at least one source ending in
   `.monitor` for system playback capture.
 
@@ -201,7 +212,7 @@ If you only need to rebuild dependencies after a cleanup:
 ```bash
 uv sync --python 3.12
 cd desktop
-pnpm install
+corepack pnpm install
 ```
 
 ## More Documentation

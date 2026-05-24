@@ -41,6 +41,13 @@
             aria-expanded="false"
           ></button>
           <button
+            id="minimize-button"
+            class="icon-button minimize-control"
+            type="button"
+            aria-label="Minimize"
+            title="Minimize"
+          ></button>
+          <button
             id="close-button"
             class="icon-button close-control"
             type="button"
@@ -49,22 +56,31 @@
           ></button>
         </div>
 
+        <div id="resize-north" class="resize-handle resize-north" data-resize-direction="North" aria-hidden="true"></div>
+        <div id="resize-east" class="resize-handle resize-east" data-resize-direction="East" aria-hidden="true"></div>
+        <div id="resize-south" class="resize-handle resize-south" data-resize-direction="South" aria-hidden="true"></div>
+        <div id="resize-west" class="resize-handle resize-west" data-resize-direction="West" aria-hidden="true"></div>
+        <div id="resize-north-east" class="resize-handle resize-corner resize-north-east" data-resize-direction="NorthEast" aria-hidden="true"></div>
+        <div id="resize-north-west" class="resize-handle resize-corner resize-north-west" data-resize-direction="NorthWest" aria-hidden="true"></div>
+        <div id="resize-south-east" class="resize-handle resize-corner resize-south-east" data-resize-direction="SouthEast" aria-hidden="true"></div>
+        <div id="resize-south-west" class="resize-handle resize-corner resize-south-west" data-resize-direction="SouthWest" aria-hidden="true"></div>
+
         <section class="status-line" aria-live="polite">
           <label class="status-field status-field-service">
-            <span>服务</span>
+            <span>Service</span>
             <input id="server-url" value="ws://127.0.0.1:8000/ws/asr" spellcheck="false" />
           </label>
           <label class="status-field">
-            <span>语言</span>
+            <span>Lang</span>
             <input id="language" value="Chinese" spellcheck="false" />
           </label>
           <label class="status-field status-field-source">
-            <span>音源</span>
+            <span>Source</span>
             <select id="audio-source"></select>
           </label>
           <label class="status-toggle">
             <input id="translation-enabled" type="checkbox" checked />
-            <span>译</span>
+            <span>Translate</span>
           </label>
           <span id="connection-status"></span>
           <span id="ready-status"></span>

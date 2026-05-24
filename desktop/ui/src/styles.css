@@ -76,12 +76,15 @@ select:focus {
 }
 
 .app-shell {
+  --compact-height: 180px;
   position: relative;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   gap: 0;
   height: 100vh;
   padding: 0;
+  overflow: hidden;
+  border-radius: 10px;
   background: transparent;
 }
 
@@ -112,6 +115,8 @@ select:focus {
     border-color 150ms ease,
     box-shadow 150ms ease,
     filter 150ms ease;
+  align-self: end;
+  height: min(100vh, var(--compact-height));
 }
 
 .app-shell[data-overlay-mode="history"] .caption-strip {
@@ -148,6 +153,15 @@ select:focus {
   transform: translateY(0);
   visibility: visible;
   transition-delay: 0s;
+}
+
+.app-shell[data-overlay-transitioning="true"] .caption-strip,
+.app-shell[data-overlay-transitioning="true"] .history-panel {
+  transition: none;
+}
+
+.app-shell[data-overlay-transitioning="true"] .history-panel {
+  transform: none;
 }
 
 .caption-window {
@@ -245,7 +259,77 @@ select:focus {
   cursor: default;
   opacity: 0.72;
   transition: opacity 160ms ease;
-  z-index: 2;
+  z-index: 7;
+}
+
+.resize-handle {
+  position: absolute;
+  z-index: 4;
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+}
+
+.resize-north,
+.resize-south {
+  right: 18px;
+  left: 18px;
+  height: 10px;
+  cursor: ns-resize;
+}
+
+.resize-east,
+.resize-west {
+  top: 18px;
+  bottom: 18px;
+  width: 10px;
+  cursor: ew-resize;
+}
+
+.resize-north {
+  top: -5px;
+}
+
+.resize-east {
+  right: -5px;
+}
+
+.resize-south {
+  bottom: -5px;
+}
+
+.resize-west {
+  left: -5px;
+}
+
+.resize-corner {
+  z-index: 6;
+  width: 24px;
+  height: 24px;
+}
+
+.resize-north-east {
+  top: -5px;
+  right: -5px;
+  cursor: nesw-resize;
+}
+
+.resize-north-west {
+  top: -5px;
+  left: -5px;
+  cursor: nwse-resize;
+}
+
+.resize-south-east {
+  right: -5px;
+  bottom: -5px;
+  cursor: nwse-resize;
+}
+
+.resize-south-west {
+  bottom: -5px;
+  left: -5px;
+  cursor: nesw-resize;
 }
 
 .app-shell[data-overlay-mode="history"] .caption-controls {
@@ -341,20 +425,20 @@ select:focus {
 }
 
 .history-control::before {
-  top: 7px;
+  top: 50%;
   width: 12px;
   height: 2px;
-  transform: translateX(-50%);
+  transform: translate(-50%, -50%);
   box-shadow:
-    0 5px 0 currentColor,
-    0 10px 0 currentColor;
+    0 -5px 0 currentColor,
+    0 5px 0 currentColor;
 }
 
 .history-control::after {
-  bottom: 5px;
+  top: 50%;
   width: 5px;
   height: 2px;
-  transform: translateX(-50%);
+  transform: translate(-50%, 6px);
   opacity: 0;
   transition:
     opacity 150ms ease,
@@ -363,7 +447,16 @@ select:focus {
 
 .history-control.is-expanded::after {
   opacity: 1;
-  transform: translateX(-50%) translateY(2px);
+  transform: translate(-50%, 8px);
+}
+
+.minimize-control::before {
+  content: "";
+  width: 12px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+  transform: translateY(4px);
 }
 
 .close-control::before,
@@ -390,6 +483,7 @@ select:focus {
 }
 
 .status-line {
+  position: relative;
   display: flex;
   grid-column: 1;
   grid-row: 2;
@@ -402,6 +496,7 @@ select:focus {
   font-size: 11px;
   line-height: 1;
   white-space: nowrap;
+  z-index: 7;
 }
 
 .app-shell[data-overlay-mode="history"] .status-line {
@@ -437,9 +532,18 @@ select:focus {
   font-weight: 620;
 }
 
+.status-toggle {
+  flex: 0 0 auto;
+  padding-right: 4px;
+}
+
 .status-field span,
 .status-toggle span {
   flex: 0 0 auto;
+}
+
+.status-toggle span {
+  min-width: 56px;
 }
 
 .status-field input,
@@ -524,6 +628,10 @@ select:focus {
     0 0 26px rgba(57, 197, 187, 0.18),
     0 0 18px rgba(var(--miku-pink-rgb), 0.12);
   filter: saturate(1.12);
+}
+
+.app-shell.is-resizing .caption-strip {
+  transition: none;
 }
 
 .history-list {

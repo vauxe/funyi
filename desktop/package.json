@@ -8,7 +8,7 @@
     "build:ui": "node scripts/build-ui.mjs",
     "dev": "tauri dev",
     "build": "tauri build",
-    "test": "pnpm run build:ui && node scripts/build-ui-tests.mjs && node scripts/run-ui-tests.mjs",
+    "test": "node scripts/build-ui.mjs && node scripts/build-ui-tests.mjs && node scripts/run-ui-tests.mjs",
     "typecheck": "tsc -p ui/tsconfig.test.json --noEmit"
   },
   "devDependencies": {

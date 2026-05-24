@@ -34,13 +34,21 @@ uv run python realtime_server.py \
 Then run the desktop client from this directory:
 
 ```bash
-pnpm install
-pnpm run dev
+corepack pnpm install
+corepack pnpm run dev
 ```
+
+If your shell does not expose a `pnpm` command, keep using `corepack pnpm ...`
+rather than assuming a separate global `pnpm` install exists.
 
 For Windows plus WSL development, run the Tauri client in the Windows checkout
 and point it at the WSL service URL, for example `ws://127.0.0.1:8000/ws/asr`
 when the backend is exposed on localhost.
+
+Native Windows Tauri builds also require Visual Studio Build Tools 2022 with
+the `Desktop development with C++` workload and a Windows 10/11 SDK. `cargo`
+alone is not enough; `cl.exe` and `link.exe` must be available in the build
+environment.
 
 Linux/WSL Tauri builds need native WebView/DBus development packages. On Ubuntu
 the missing-package class usually starts with:

@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "local.funyi.desktop",
   "build": {
-    "beforeBuildCommand": "pnpm run build:ui",
-    "beforeDevCommand": "pnpm run build:ui",
+    "beforeBuildCommand": "node scripts/build-ui.mjs",
+    "beforeDevCommand": "node scripts/build-ui.mjs",
     "frontendDist": "../ui/dist"
   },
   "app": {
@@ -19,8 +19,6 @@
         "height": 180,
         "minWidth": 520,
         "minHeight": 128,
-        "maxWidth": 1120,
-        "maxHeight": 760,
         "resizable": true,
         "decorations": false,
         "transparent": true,
