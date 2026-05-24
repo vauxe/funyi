@@ -36,6 +36,7 @@ from qwen3_asr_runtime.utils import SAMPLE_RATE
 
 _SERVICE_SEND_TIMEOUT_SEC = 5.0
 _SERVICE_TRANSLATION_PREVIEW_DEBOUNCE_MS = 700
+_SERVICE_LIVE_STABILITY_DELAY_MS = 12_000
 _TRANSLATION_PREWARM_TEXTS = (
     "今天天气很好。",
     "实时字幕翻译需要在会议开始前完成模型编译和缓存初始化。",
@@ -58,6 +59,7 @@ def build_app(
     timestamp_config: RealtimeTimestampConfig | None = None,
     translation_actor: TranslationModelActor | None = None,
     translation_config: RealtimeTranslationConfig | None = None,
+    live_stability_delay_ms: int = _SERVICE_LIVE_STABILITY_DELAY_MS,
 ) -> Any:
     try:
         from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -111,7 +113,11 @@ def build_app(
             store = TranscriptStore(transcript_id=session_id)
             store_lock = asyncio.Lock()
             timestamps_enabled = timestamp_actor is not None and timestamp_config is not None
-            config = _build_session_config(start_payload, force_align_timestamps=timestamps_enabled)
+            config = _build_session_config(
+                start_payload,
+                force_align_timestamps=timestamps_enabled,
+                live_stability_delay_ms=live_stability_delay_ms,
+            )
             try:
                 session_translation_config = _session_translation_config(start_payload, translation_config)
             except ValueError as exc:
@@ -261,10 +267,16 @@ async def _run_store_write(store_lock: asyncio.Lock, func: Callable[..., Any], *
         return await asyncio.to_thread(func, *args)
 
 
-def _build_session_config(payload: dict[str, Any], *, force_align_timestamps: bool = False) -> RealtimeASRConfig:
+def _build_session_config(
+    payload: dict[str, Any],
+    *,
+    force_align_timestamps: bool = False,
+    live_stability_delay_ms: int = _SERVICE_LIVE_STABILITY_DELAY_MS,
+) -> RealtimeASRConfig:
     return RealtimeASRConfig(
         context=str(payload.get("context") or ""),
         language=payload.get("language"),
+        live_stability_delay_ms=int(live_stability_delay_ms),
         force_align_timestamps=bool(force_align_timestamps),
     )
 
@@ -316,6 +328,16 @@ def _coerce_bool(value: Any, *, default: bool) -> bool:
         if normalized in {"0", "false", "no", "off"}:
             return False
     return bool(value)
+
+
+def _arg_nonnegative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("value must be a non-negative integer.") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("value must be a non-negative integer.")
+    return parsed
 
 
 async def _receive_start(websocket: Any) -> dict[str, Any] | None:
@@ -508,6 +530,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--cuda-graph-prewarm-language", default="Chinese")
     parser.add_argument("--cuda-graph-prewarm-window-sec", type=float, default=20.0)
     parser.add_argument("--cuda-graph-prewarm-prefix-tokens", type=int, default=64)
+    parser.add_argument(
+        "--live-stability-delay-ms",
+        type=_arg_nonnegative_int,
+        default=_SERVICE_LIVE_STABILITY_DELAY_MS,
+        help=(
+            "Minimum repeated-prefix delay before live text becomes stable. "
+            "Lower values are more aggressive and can reduce transcript quality."
+        ),
+    )
     parser.add_argument("--timestamp-model", default=None, help="Enable forced-aligner timestamps with this model.")
     parser.add_argument("--timestamp-device-map", default=None, help="Forced-aligner device_map. Default: cuda:0.")
     parser.add_argument(
@@ -749,6 +780,7 @@ def main() -> None:
         timestamp_config=timestamp_config,
         translation_actor=translation_actor,
         translation_config=translation_config,
+        live_stability_delay_ms=args.live_stability_delay_ms,
     )
 
     try:

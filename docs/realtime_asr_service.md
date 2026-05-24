@@ -10,6 +10,11 @@ Start:
 {"type":"start","session_id":"local","language":"Chinese","context":""}
 ```
 
+The service default keeps stable history conservative:
+`live_stability_delay_ms=12000`. Use `partial` updates for low-latency live
+subtitle display. Lower `--live-stability-delay-ms` only when the service can
+tolerate more aggressive stable commits.
+
 If the service was started with translation enabled, a session can disable it:
 
 ```json
@@ -34,6 +39,9 @@ Events:
 `transcript_update` is the only normal caption update. The frontend appends
 `stable_appends`, replaces `partial`, and requires `stable_base` to match local
 `stable_count`.
+
+Long stable text is split into subtitle-sized stable segments without using
+punctuation as a boundary signal.
 
 ## Timestamp Mode
 
@@ -115,7 +123,7 @@ must not treat model-carried prefix text as user-visible stable history.
 
 - transport frames are not ASR chunks or transcript segments;
 - every accepted PCM sample must eventually be fed to the streaming ASR state;
-- VAD must not be the ASR input gate or reset model state;
+- clients should use replaceable `partial` text for the live subtitle line;
 - one WebSocket session owns one continuous ASR stream;
 - `flush` promotes the current tail but does not start a new model epoch;
 - long speech may stabilize repeated text after `live_stability_delay_ms`;

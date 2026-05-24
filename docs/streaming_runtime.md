@@ -58,7 +58,7 @@ The runtime keeps these responsibilities separate:
 | `RecognitionFrame` | explicit model/session data contract separating prompt text from generated evidence |
 | `TailSelector` | select the replaceable transcript tail from one recognition frame and the transcript cursor |
 | `TextStabilizer` | LocalAgreement-style stable prefix and replaceable partial text |
-| `RealtimeASRSession` | lossless PCM ingestion, sample clock, ASR cadence, TranscriptStore writes |
+| `RealtimeASRSession` | lossless PCM ingestion, ASR cadence, TranscriptStore writes |
 | `realtime_server.py` | WebSocket transport, one active local connection, JSON send policy |
 
 `ASRStreamingState`, `RecognitionFrame`, `TailSelector`, `TextStabilizer`, and
@@ -75,6 +75,10 @@ text that was dropped from the prompt or audio window, call it
 with the full user-visible history. It consumes explicit `RecognitionFrame`
 objects, asks `TailSelector` for the uncommitted tail, then
 writes stable or partial transcript updates.
+
+When a stable update contains a long run of text, `RealtimeASRSession` splits
+the already-stable text into subtitle-sized cue segments; this does not create
+new ASR chunks or change the model state.
 
 ## Non-Streaming Model To Infinite Stream
 
@@ -158,8 +162,8 @@ a tail the user has already seen.
 
 For realtime service sessions, the WebSocket session owns one continuous
 `ASRStreamingState`. `flush` and `finish` may promote the current tail into
-stable history, but they must not make VAD or silence an ASR input gate. Any
-accepted PCM sample that is dropped before it reaches the model is permanently
+stable history, but they must not use silence as an ASR input gate. Any accepted
+PCM sample that is dropped before it reaches the model is permanently
 unrecoverable.
 
 The trim policy is explicit:
@@ -269,7 +273,10 @@ returns `chunk_size_sec=0.5`, `unfixed_chunk_num=4`, `unfixed_token_num=5`,
 `max_window_sec=20.0`, `max_prefix_tokens=64`, and `spec_decode=True`.
 
 Service graph bucket is `cuda_graph_len_bucket=64`; library and tool defaults
-stay `1`.
+stay `1`. The local service default `live_stability_delay_ms` is `12000`, so
+stable history remains conservative while clients can render replaceable
+`partial` text for low-latency live subtitles. This is a service/session policy,
+not a model-window or library streaming default.
 
 ## Spec Decode
 

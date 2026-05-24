@@ -79,6 +79,11 @@ uv run python realtime_server.py \
   --port 8000
 ```
 
+The realtime service defaults to `--live-stability-delay-ms 12000` so stable
+history stays conservative. Use the replaceable `partial` line for low-latency
+live subtitle display; stable text is split into subtitle-sized cues after it is
+safe to commit.
+
 Check that the service is alive:
 
 ```bash

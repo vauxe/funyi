@@ -68,8 +68,8 @@ class TranscriptStore:
         language: str = "",
         timing_status: str | None = None,
     ) -> StableSegment:
-        normalized_text = str(text or "").strip()
-        if not normalized_text:
+        segment_text = str(text or "")
+        if not segment_text.strip():
             raise ValueError("segment text must not be empty")
 
         if (start_ms is None) != (end_ms is None):
@@ -88,7 +88,7 @@ class TranscriptStore:
             index=index,
             start_ms=start,
             end_ms=end,
-            text=normalized_text,
+            text=segment_text,
             language=str(language or ""),
             timing_status=str(timing_status or "") or None,
         )

@@ -170,6 +170,15 @@ class TranscriptStoreTest(unittest.TestCase):
         self.assertEqual(store.stable_segments[1].start_ms, first.end_ms)
         self.assertEqual(store.stable_count, 2)
 
+    def test_stable_segment_text_preserves_boundary_whitespace(self) -> None:
+        store = TranscriptStore(transcript_id="t1")
+        first = store.append_stable_segment(text="hello ", start_ms=0, end_ms=1000, language="English")
+        second = store.append_stable_segment(text="world", start_ms=1000, end_ms=2000, language="English")
+
+        self.assertEqual("".join(segment.text for segment in store.stable_segments), "hello world")
+        event = store.update_event(stable_base=0, stable_appends=[first, second])
+        self.assertEqual("".join(str(segment["text"]) for segment in event["stable_appends"]), "hello world")
+
     def test_update_event_uses_stable_cursor_and_replaceable_partial(self) -> None:
         store = TranscriptStore(transcript_id="t1")
         segment = store.append_stable_segment(text="稳定", start_ms=0, end_ms=1000, language="Chinese")
@@ -443,6 +452,15 @@ class RealtimeServerCliTest(unittest.TestCase):
         self.assertEqual(args.translation_preview_debounce_ms, 700)
         self.assertEqual(args.translation_stable_batch_size, 1)
         self.assertFalse(args.translation_sample)
+        self.assertEqual(args.live_stability_delay_ms, 12_000)
+
+    def test_live_stability_delay_can_be_configured(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            ["realtime_server.py", "--model", "model", "--live-stability-delay-ms", "5000"],
+        ):
+            self.assertEqual(_parse_args().live_stability_delay_ms, 5_000)
 
     def test_translation_sampling_can_be_enabled(self) -> None:
         with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--translation-sample"]):
@@ -928,6 +946,21 @@ class RealtimeServerTranslationOrderingTest(unittest.IsolatedAsyncioTestCase):
 
 
 class RealtimeASRSessionTest(unittest.TestCase):
+    def test_service_default_keeps_stable_history_conservative(self) -> None:
+        model = FakeStreamingModel(outputs=["第一秒", "前两秒", "前两秒第三秒"])
+        config = _build_session_config({"type": "start", "language": "Chinese"})
+        session = RealtimeASRSession(model, config=config)
+        speech = np.ones(16_000, dtype=np.float32) * 0.2
+
+        events: list[dict[str, object]] = []
+        events.extend(session.ingest_audio(speech))
+        events.extend(session.ingest_audio(speech))
+        events.extend(session.ingest_audio(speech))
+
+        self.assertEqual(stable_appends(events), [])
+        self.assertEqual(partial_texts(events)[-1], "前两秒第三秒")
+        assert_transcript_update_invariants(self, events)
+
     def test_force_align_timestamp_mode_emits_pending_stable_segment_and_hidden_timing_job(self) -> None:
         model = FakeStreamingModel(outputs=["第一秒", "第一秒第二秒"])
         session = make_session(model, live_stability_delay_ms=0, force_align_timestamps=True)
@@ -1164,6 +1197,41 @@ class RealtimeASRSessionTest(unittest.TestCase):
         stable = stable_appends(events)
         self.assertEqual([segment["text"] for segment in stable], ["hello"])
         self.assertEqual(partial_texts(events)[-1], "world today")
+        assert_transcript_update_invariants(self, events)
+
+    def test_long_stable_text_is_split_into_subtitle_sized_cues(self) -> None:
+        stable_text = "一二三四五六七八九十甲乙丙丁戊己庚辛。后续文本"
+        model = FakeStreamingModel(outputs=[stable_text, stable_text + "后续"])
+        session = make_session(model, live_stability_delay_ms=0)
+        speech = np.ones(16_000, dtype=np.float32) * 0.2
+
+        events: list[dict[str, object]] = []
+        events.extend(session.ingest_audio(speech))
+        events.extend(session.ingest_audio(speech))
+
+        stable = stable_appends(events)
+        self.assertGreater(len(stable), 1)
+        self.assertEqual("".join(str(segment["text"]) for segment in stable), stable_text)
+        self.assertTrue(all(len(str(segment["text"])) <= 18 for segment in stable))
+        self.assertEqual(stable[0]["start_ms"], 0)
+        self.assertEqual(stable[-1]["end_ms"], 1_000)
+        self.assertEqual(partial_texts(events)[-1], "后续")
+        assert_transcript_update_invariants(self, events)
+
+    def test_long_ascii_stable_text_split_preserves_spaces(self) -> None:
+        stable_text = "hello world today again tomorrow"
+        model = FakeStreamingModel(outputs=[stable_text, stable_text + " next"])
+        session = make_session(model, live_stability_delay_ms=0)
+        speech = np.ones(16_000, dtype=np.float32) * 0.2
+
+        events: list[dict[str, object]] = []
+        events.extend(session.ingest_audio(speech))
+        events.extend(session.ingest_audio(speech))
+
+        stable = stable_appends(events)
+        self.assertGreater(len(stable), 1)
+        self.assertEqual("".join(str(segment["text"]) for segment in stable), stable_text)
+        self.assertEqual(partial_texts(events)[-1], "next")
         assert_transcript_update_invariants(self, events)
 
     def test_flush_after_stable_cursor_stabilizes_only_tail_without_resetting_asr(self) -> None:
