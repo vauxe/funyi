@@ -1,7 +1,10 @@
 # coding=utf-8
 from __future__ import annotations
 
+import ast
 import asyncio
+from pathlib import Path
+import re
 import sys
 import unittest
 from types import SimpleNamespace
@@ -11,27 +14,44 @@ import numpy as np
 
 from realtime_server import (
     CUDA_GRAPH_CAPTURE_LOCK,
+    TranslationServiceConfig,
     WebSocketSendTimeout,
     _build_model_load,
     _build_session_config,
+    _build_translation,
     _close_websocket,
     _parse_args,
     _prepare_cuda_graph_runtime,
-    _prewarm_translation,
     _publish_finish_events,
+    _receive_start,
     _publish_session_events,
     _receive_or_sender_failed,
     _run_store_write,
     _send_queued_events,
     _session_translation_config,
-    _translation_prewarm_texts,
     _translation_capture_lock,
+    _validate_timestamp_start_language,
+)
+from qwen3_asr_runtime.language_support import (
+    HYMT_MODEL_CARD_LANGUAGES,
+    QWEN3_ASR_MODEL_CARD_LANGUAGES,
+    QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES,
 )
 from qwen3_asr_runtime.realtime_session import RealtimeASRConfig, RealtimeASRSession
 from qwen3_asr_runtime.streaming import RecognitionFrame, TailSelector, TextStabilizer
-from qwen3_asr_runtime.realtime_translation import RealtimeTranslationConfig, TranslationModelActor
 from qwen3_asr_runtime.transcript_store import TranscriptStore
+from qwen3_asr_runtime.utils import SUPPORTED_LANGUAGES
 from qwen3_asr_runtime.vad import SileroVadAdapter, SileroVadConfig
+
+
+def _desktop_language_options(name: str) -> tuple[str, ...]:
+    path = Path(__file__).resolve().parents[1] / "desktop/ui/src/languages.ts"
+    text = path.read_text(encoding="utf-8")
+    match = re.search(rf"export const {re.escape(name)} = \[(.*?)\] as const;", text, re.DOTALL)
+    if match is None:
+        raise AssertionError(f"missing desktop language constant: {name}")
+    values = ast.literal_eval(f"[{match.group(1)}]")
+    return tuple(values)
 
 
 class FakeStreamingModel:
@@ -448,7 +468,7 @@ class RealtimeServerCliTest(unittest.TestCase):
         self.assertTrue(args.timestamp_local_files_only)
         self.assertEqual(args.timestamp_pad_ms, 500)
         self.assertEqual(args.timestamp_finish_timeout_ms, 30_000)
-        self.assertTrue(args.translation_prewarm)
+        self.assertIsNone(args.translation_model)
         self.assertEqual(args.translation_preview_debounce_ms, 700)
         self.assertEqual(args.translation_stable_batch_size, 1)
         self.assertFalse(args.translation_sample)
@@ -478,9 +498,32 @@ class RealtimeServerCliTest(unittest.TestCase):
         with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--no-w8a16"]):
             self.assertFalse(_parse_args().w8a16)
 
-    def test_translation_prewarm_can_be_disabled(self) -> None:
-        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--no-translation-prewarm"]):
-            self.assertFalse(_parse_args().translation_prewarm)
+    def test_translation_model_flag_uses_default_model_when_value_is_omitted(self) -> None:
+        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--translation-model"]):
+            self.assertEqual(_parse_args().translation_model, "tencent/HY-MT1.5-1.8B")
+
+    def test_translation_model_can_be_configured(self) -> None:
+        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--translation-model", "local/hymt"]):
+            self.assertEqual(_parse_args().translation_model, "local/hymt")
+
+    def test_translation_model_enables_translation_without_default_target(self) -> None:
+        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--translation-model", "local/hymt"]):
+            args = _parse_args()
+
+        translator = object()
+        with patch("realtime_server.HYMTTranslator", return_value=translator) as translator_class:
+            built_translator, config = _build_translation(args)
+
+        self.assertIs(built_translator, translator)
+        self.assertIsNotNone(config)
+        self.assertEqual(translator_class.call_args.args[0], "local/hymt")
+
+    def test_asr_supported_languages_follow_qwen_model_card(self) -> None:
+        self.assertEqual(tuple(SUPPORTED_LANGUAGES), QWEN3_ASR_MODEL_CARD_LANGUAGES)
+
+    def test_desktop_language_options_follow_backend_model_card_lists(self) -> None:
+        self.assertEqual(_desktop_language_options("ASR_LANGUAGE_OPTIONS"), QWEN3_ASR_MODEL_CARD_LANGUAGES)
+        self.assertEqual(_desktop_language_options("TRANSLATION_TARGET_LANGUAGE_OPTIONS"), HYMT_MODEL_CARD_LANGUAGES)
 
     def test_transformers_load_kwargs_are_default(self) -> None:
         with patch.object(sys, "argv", ["realtime_server.py", "--model", "model"]):
@@ -527,7 +570,7 @@ class RealtimeServerCliTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             _prepare_cuda_graph_runtime(FakeModel(), args)
 
-    def test_translation_uses_capture_lock_when_prewarm_is_disabled(self) -> None:
+    def test_translation_uses_capture_lock_when_asr_prewarm_is_disabled(self) -> None:
         class FakeModel:
             def prewarm_realtime_cuda_graph(self, **kwargs: object) -> bool:
                 raise AssertionError("prewarm should not run")
@@ -543,7 +586,7 @@ class RealtimeServerCliTest(unittest.TestCase):
 
         self.assertIs(lock, CUDA_GRAPH_CAPTURE_LOCK)
 
-    def test_translation_actor_needs_no_capture_lock_after_default_cuda_graph_prewarm(self) -> None:
+    def test_translation_actor_needs_no_capture_lock_after_default_asr_cuda_graph_prewarm(self) -> None:
         class FakeModel:
             def __init__(self) -> None:
                 self.calls = 0
@@ -563,101 +606,49 @@ class RealtimeServerCliTest(unittest.TestCase):
         self.assertEqual(model.calls, 1)
         self.assertIsNone(lock)
 
-    def test_translation_prewarm_runs_before_serving(self) -> None:
-        class FakeTranslator:
-            def __init__(self) -> None:
-                self.calls: list[dict[str, object]] = []
+    def test_start_payload_without_target_disables_session_translation(self) -> None:
+        config = TranslationServiceConfig()
 
-            def warmup(self, texts: object, **kwargs: object) -> list[object]:
-                text_list = list(texts)  # type: ignore[arg-type]
-                self.calls.append({"texts": text_list, **kwargs})
-                return [object() for _ in text_list]
+        self.assertIsNone(_session_translation_config({"type": "start"}, config))
 
-        translator = FakeTranslator()
-        actor = TranslationModelActor(translator)
-        config = RealtimeTranslationConfig(target_language="English", max_new_tokens=16)
+    def test_start_payload_rejects_empty_translation_target(self) -> None:
+        config = TranslationServiceConfig()
 
-        try:
-            _prewarm_translation(actor, config)
-        finally:
-            actor.close(wait=True)
+        with self.assertRaisesRegex(ValueError, "target_language must not be empty"):
+            _session_translation_config({"type": "start", "target_language": ""}, config)
 
-        self.assertEqual(len(translator.calls), 1)
-        self.assertEqual(translator.calls[0]["target_language"], "English")
-        self.assertEqual(translator.calls[0]["max_new_tokens"], 16)
-        self.assertTrue(translator.calls[0]["sync_cuda"])
-        self.assertEqual(translator.calls[0]["batch_size"], 1)
-        texts = translator.calls[0]["texts"]  # type: ignore[assignment]
-        self.assertEqual(len(texts), 3)
-        self.assertLess(len(texts[0]), len(texts[1]))  # type: ignore[index]
-        self.assertLess(len(texts[1]), len(texts[2]))  # type: ignore[index]
+    def test_start_payload_rejects_translation_target_when_translation_is_not_configured(self) -> None:
+        self.assertIsNone(_session_translation_config({"type": "start"}, None))
 
-    def test_translation_prewarm_covers_configured_stable_batch_shape(self) -> None:
-        class FakeTranslator:
-            def __init__(self) -> None:
-                self.calls: list[dict[str, object]] = []
+        with self.assertRaisesRegex(ValueError, "translation model to be configured"):
+            _session_translation_config({"type": "start", "target_language": "English"}, None)
 
-            def warmup(self, texts: object, **kwargs: object) -> list[object]:
-                text_list = list(texts)  # type: ignore[arg-type]
-                self.calls.append({"texts": text_list, **kwargs})
-                return [object() for _ in text_list]
+    def test_start_payload_can_enable_session_translation_target(self) -> None:
+        config = TranslationServiceConfig(
+            max_new_tokens=16,
+        )
 
-        translator = FakeTranslator()
-        actor = TranslationModelActor(translator)
-        config = RealtimeTranslationConfig(target_language="English", max_new_tokens=16, stable_batch_size=4)
-
-        try:
-            _prewarm_translation(actor, config)
-        finally:
-            actor.close(wait=True)
-
-        self.assertEqual([call["batch_size"] for call in translator.calls], [1, 4])
-        self.assertEqual([len(call["texts"]) for call in translator.calls], [3, 4])
-        self.assertEqual(translator.calls[1]["texts"][:3], translator.calls[0]["texts"])
-        self.assertEqual(translator.calls[1]["texts"][3], translator.calls[0]["texts"][2])
-
-    def test_translation_prewarm_texts_expand_to_requested_batch_size(self) -> None:
-        pair = _translation_prewarm_texts(2)
-        texts = _translation_prewarm_texts(5)
-
-        self.assertEqual(len(pair), 2)
-        self.assertLess(len(pair[0]), len(pair[1]))
-        self.assertEqual(pair[1], texts[2])
-        self.assertEqual(len(texts), 5)
-        self.assertLess(len(texts[0]), len(texts[1]))
-        self.assertLess(len(texts[1]), len(texts[2]))
-        self.assertEqual(texts[3:], (texts[2], texts[2]))
-
-    def test_translation_prewarm_failure_is_startup_error(self) -> None:
-        class FakeTranslator:
-            def warmup(self, texts: object, **kwargs: object) -> list[object]:
-                del texts, kwargs
-                return []
-
-        with self.assertRaises(RuntimeError):
-            actor = TranslationModelActor(FakeTranslator())
-            try:
-                _prewarm_translation(actor, RealtimeTranslationConfig(target_language="English"))
-            finally:
-                actor.close(wait=True)
-
-    def test_start_payload_can_disable_configured_translation(self) -> None:
-        config = RealtimeTranslationConfig(target_language="English")
-
-        self.assertIs(_session_translation_config({"type": "start"}, config), config)
-        self.assertIsNone(_session_translation_config({"type": "start", "target_language": "none"}, config))
-        self.assertIsNone(_session_translation_config({"type": "start", "target_language": "None"}, config))
-
-    def test_start_payload_can_override_translation_target(self) -> None:
-        config = RealtimeTranslationConfig(target_language="English", max_new_tokens=16)
-
-        override = _session_translation_config(
+        session_config = _session_translation_config(
             {"type": "start", "target_language": "Japanese"},
             config,
         )
-        self.assertIsNot(override, config)
-        self.assertEqual(override.target_language, "Japanese")
-        self.assertEqual(override.max_new_tokens, 16)
+        self.assertIsNotNone(session_config)
+        self.assertEqual(session_config.target_language, "Japanese")
+        self.assertEqual(session_config.max_new_tokens, 16)
+
+    def test_start_payload_rejects_translation_target_outside_hymt_model_card(self) -> None:
+        config = TranslationServiceConfig()
+
+        with self.assertRaisesRegex(ValueError, "Unsupported target_language"):
+            _session_translation_config({"type": "start", "target_language": "Swedish"}, config)
+
+    def test_start_payload_normalizes_translation_target(self) -> None:
+        config = TranslationServiceConfig()
+
+        session_config = _session_translation_config({"type": "start", "target_language": "traditional chinese"}, config)
+
+        self.assertIsNotNone(session_config)
+        self.assertEqual(session_config.target_language, "Traditional Chinese")
 
     def test_service_session_config_uses_start_payload_context(self) -> None:
         config = _build_session_config({"type": "start", "context": "meeting", "language": "Chinese"})
@@ -665,8 +656,75 @@ class RealtimeServerCliTest(unittest.TestCase):
         self.assertEqual(config.context, "meeting")
         self.assertEqual(config.language, "Chinese")
 
+    def test_timestamp_start_language_follows_forced_aligner_model_card(self) -> None:
+        _validate_timestamp_start_language({"type": "start", "language": "Japanese"}, timestamps_enabled=True)
+        _validate_timestamp_start_language({"type": "start"}, timestamps_enabled=True)
+
+        with self.assertRaisesRegex(ValueError, "forced-aligner timestamps"):
+            _validate_timestamp_start_language({"type": "start", "language": "Arabic"}, timestamps_enabled=True)
+
+        self.assertIn("Japanese", QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES)
+        self.assertNotIn("Arabic", QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES)
+
 
 class RealtimeServerTranslationOrderingTest(unittest.IsolatedAsyncioTestCase):
+    async def test_receive_start_normalizes_supported_language(self) -> None:
+        class FakeWebSocket:
+            async def receive(self) -> dict[str, object]:
+                return {"text": '{"type":"start","language":"japanese"}'}
+
+        payload = await _receive_start(FakeWebSocket())
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["language"], "Japanese")  # type: ignore[index]
+
+    async def test_receive_start_rejects_unsupported_language(self) -> None:
+        class FakeWebSocket:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+                self.closed_code: int | None = None
+
+            async def receive(self) -> dict[str, object]:
+                return {"text": '{"type":"start","language":"Klingon"}'}
+
+            async def send_text(self, text: str) -> None:
+                self.sent.append(text)
+
+            async def close(self, code: int) -> None:
+                self.closed_code = code
+
+        websocket = FakeWebSocket()
+
+        payload = await _receive_start(websocket)
+
+        self.assertIsNone(payload)
+        self.assertEqual(websocket.closed_code, 1003)
+        self.assertIn("Unsupported language", websocket.sent[0])
+
+    async def test_receive_start_rejects_unknown_field(self) -> None:
+        class FakeWebSocket:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+                self.closed_code: int | None = None
+
+            async def receive(self) -> dict[str, object]:
+                return {"text": '{"type":"start","unsupported":true}'}
+
+            async def send_text(self, text: str) -> None:
+                self.sent.append(text)
+
+            async def close(self, code: int) -> None:
+                self.closed_code = code
+
+        websocket = FakeWebSocket()
+
+        payload = await _receive_start(websocket)
+
+        self.assertIsNone(payload)
+        self.assertEqual(websocket.closed_code, 1003)
+        self.assertIn("Unsupported start command field", websocket.sent[0])
+        self.assertIn("unsupported", websocket.sent[0])
+
     async def test_sender_times_out_when_client_stops_consuming_output(self) -> None:
         class HangingSendWebSocket:
             def __init__(self) -> None:

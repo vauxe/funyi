@@ -28,7 +28,7 @@ uv run python realtime_server.py \
   --model Qwen/Qwen3-ASR-1.7B \
   --host 127.0.0.1 \
   --port 8000 \
-  --translation-target-language English
+  --translation-model tencent/HY-MT1.5-1.8B
 ```
 
 Then run the desktop client from this directory:

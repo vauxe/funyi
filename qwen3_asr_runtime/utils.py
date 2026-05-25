@@ -24,6 +24,8 @@ import librosa
 import numpy as np
 import soundfile as sf
 
+from .language_support import QWEN3_ASR_MODEL_CARD_LANGUAGES
+
 AudioLike = Union[
     str,                      # wav path / URL / base64
     Tuple[np.ndarray, int],   # (waveform, sr)
@@ -34,38 +36,7 @@ SAMPLE_RATE = 16000
 MAX_ASR_INPUT_SECONDS = 1200
 MAX_FORCE_ALIGN_INPUT_SECONDS = 180
 MIN_ASR_INPUT_SECONDS = 0.5
-SUPPORTED_LANGUAGES: List[str] = [
-    "Chinese",
-    "English",
-    "Cantonese",
-    "Arabic",
-    "German",
-    "French",
-    "Spanish",
-    "Portuguese",
-    "Indonesian",
-    "Italian",
-    "Korean",
-    "Russian",
-    "Thai",
-    "Vietnamese",
-    "Japanese",
-    "Turkish",
-    "Hindi",
-    "Malay",
-    "Dutch",
-    "Swedish",
-    "Danish",
-    "Finnish",
-    "Polish",
-    "Czech",
-    "Filipino",
-    "Persian",
-    "Greek",
-    "Romanian",
-    "Hungarian",
-    "Macedonian"
-]
+SUPPORTED_LANGUAGES: List[str] = list(QWEN3_ASR_MODEL_CARD_LANGUAGES)
 _ASR_TEXT_TAG = "<asr_text>"
 _LANG_PREFIX = "language "
 

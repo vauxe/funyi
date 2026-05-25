@@ -62,25 +62,19 @@ generate concurrently. If a request exceeds the prewarmed graph shape, ASR falls
 back to non-graph decode for that call instead of capturing a new graph next to
 HY-MT.
 
-When translation is enabled, the service also prewarms HY-MT after the ASR
-prewarm and before accepting WebSocket sessions. HY-MT warmup covers short,
-medium, and long subtitle-shaped texts on the same single model actor executor
-thread used at runtime. HY-MT warmup failure is a startup failure.
-
 ## Protocol
 
-Session start uses service defaults. If the service has translation configured,
-the client can override the target language for one session:
+The service has translation capability only when it is started with
+`--translation-model`. Session start enables translation by providing an
+explicit `target_language` from the HY-MT model-card language list:
 
 ```json
 {"type":"start","session_id":"local","target_language":"English"}
 ```
 
-Use `target_language:"none"` to disable translation for one session:
+Omit `target_language` to run transcription only. The service has no default
+translation target, and empty `target_language` values are rejected.
 
-```json
-{"type":"start","session_id":"local","target_language":"none"}
-```
 
 `ready.translation` when enabled:
 
@@ -91,17 +85,6 @@ Use `target_language:"none"` to disable translation for one session:
   "model": "tencent/HY-MT1.5-1.8B",
   "stable": { "enabled": true, "reliable": true, "queue_size": null, "timeout_ms": null },
   "preview": { "enabled": true, "debounce_ms": 700, "timeout_ms": 30000 }
-}
-```
-
-`ready.translation` when the service has translation capability but the session
-disabled it:
-
-```json
-{
-  "enabled": false,
-  "available": true,
-  "target_language": "English"
 }
 ```
 
@@ -195,7 +178,6 @@ Scheduling:
 
 - audio ingest and source event sending never wait for translation;
 - service startup prewarms ASR graph capture before accepting sessions;
-- translation startup prewarms HY-MT before accepting sessions;
 - runtime ASR graph replay can overlap HY-MT generation;
 - runtime ASR does not capture a new graph next to HY-MT; oversize requests
   fall back to non-graph decode;

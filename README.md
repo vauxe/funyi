@@ -110,19 +110,19 @@ capture.
 
 ## Enable Translation
 
-Realtime translation is optional. Start the service with a target language:
+Realtime translation is optional. Start the service with a translation model,
+then choose a target language in the desktop UI:
 
 ```bash
 uv run python realtime_server.py \
   --model Qwen/Qwen3-ASR-1.7B \
   --host 127.0.0.1 \
   --port 8000 \
-  --translation-target-language English
+  --translation-model tencent/HY-MT1.5-1.8B
 ```
 
-The default translation model is `tencent/HY-MT1.5-1.8B`. Translation auxiliary
-models load with `local_files_only` by default, so put the model in the local
-Hugging Face cache or pass a local model path. Use
+Translation auxiliary models load with `local_files_only` by default, so put the
+model in the local Hugging Face cache or pass a local model path. Use
 `--no-translation-local-files-only` only when you intentionally want the service
 to download the translation model.
 

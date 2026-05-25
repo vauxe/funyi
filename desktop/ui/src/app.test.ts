@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ASR_LANGUAGE_OPTIONS } from "./languages.js";
+import { ASR_LANGUAGE_OPTIONS, TRANSLATION_TARGET_LANGUAGE_OPTIONS } from "./languages.js";
 
 type Listener = (event?: unknown) => void;
 type Invocation = { command: string; args?: Record<string, unknown> };
@@ -161,7 +161,12 @@ test("history button switches overlay mode and inline settings drive start paylo
   assert.equal(elements["connection-status"]!.textContent, "");
   assert.equal(elements["audio-source"]!.children[0]?.textContent, "Sys · Audio");
   assert.deepEqual(selectValues(elements["language"]!), ["", ...ASR_LANGUAGE_OPTIONS]);
-  assert.deepEqual(selectValues(elements["translation-target-language"]!), [...ASR_LANGUAGE_OPTIONS, "none"]);
+  assert.deepEqual(selectValues(elements["translation-target-language"]!), [
+    "",
+    ...TRANSLATION_TARGET_LANGUAGE_OPTIONS,
+  ]);
+  assert.ok(selectValues(elements["translation-target-language"]!).includes("Traditional Chinese"));
+  assert.equal(selectValues(elements["translation-target-language"]!).includes("Swedish"), false);
 
   elements["language"]!.value = "Chinese";
   elements["translation-target-language"]!.value = "Japanese";
@@ -181,26 +186,22 @@ test("history button switches overlay mode and inline settings drive start paylo
   assert.equal(payload.language, "Chinese");
   assert.equal("context" in payload, false);
   assert.equal(payload.target_language, "Japanese");
-  assert.equal("translation" in payload, false);
 });
 
-test("none translation target disables translation in start payload", async () => {
+test("empty translation target starts without translation request", async () => {
   const elements = installDocument();
   installTauriRuntime();
 
-  await importApp("none-translation-target");
+  await importApp("default-translation-target");
   await nextTick();
 
-  elements["translation-target-language"]!.value = "none";
   elements["session-button"]!.click();
   const socket = FakeWebSocket.instances[0];
   assert.ok(socket);
 
   socket.open();
   const payload = JSON.parse(String(socket.sent[0]));
-  assert.equal("language" in payload, false);
-  assert.equal(payload.target_language, "none");
-  assert.equal("translation" in payload, false);
+  assert.equal("target_language" in payload, false);
 });
 
 test("ready status includes the negotiated translation target", async () => {

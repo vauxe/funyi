@@ -3,7 +3,7 @@
 import argparse
 import asyncio
 from contextlib import asynccontextmanager, suppress
-from dataclasses import replace
+from dataclasses import dataclass
 import json
 import logging
 from typing import Any, Callable
@@ -23,6 +23,10 @@ from qwen3_asr_runtime.realtime_translation import (
     RealtimeTranslationRuntime,
     TranslationModelActor,
 )
+from qwen3_asr_runtime.language_support import (
+    HYMT_MODEL_CARD_LANGUAGES,
+    QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES,
+)
 from qwen3_asr_runtime.translation import (
     DEFAULT_HYMT_ATTN_IMPLEMENTATION,
     DEFAULT_HYMT_DECODE_BACKEND,
@@ -33,20 +37,40 @@ from qwen3_asr_runtime.translation import (
 )
 from qwen3_asr_runtime.realtime_session import RealtimeASRConfig, RealtimeASRSession
 from qwen3_asr_runtime.transcript_store import TranscriptStore
-from qwen3_asr_runtime.utils import SAMPLE_RATE
+from qwen3_asr_runtime.utils import SAMPLE_RATE, normalize_language_name, validate_language
 
 _SERVICE_SEND_TIMEOUT_SEC = 5.0
 _SERVICE_TRANSLATION_PREVIEW_DEBOUNCE_MS = 700
 _SERVICE_LIVE_STABILITY_DELAY_MS = 12_000
-_TRANSLATION_PREWARM_TEXTS = (
-    "今天天气很好。",
-    "实时字幕翻译需要在会议开始前完成模型编译和缓存初始化。",
-    (
-        "长句预热用于覆盖会议场景里更长的稳定字幕段：发言人可能在同一句话里连续解释背景、"
-        "补充条件、给出结论，并且包含数字、单位和专有名词，因此运行时不应该第一次遇到长文本才初始化。"
-    ),
+_START_COMMAND_FIELDS = frozenset(
+    {
+        "type",
+        "session_id",
+        "sample_rate",
+        "audio_format",
+        "language",
+        "context",
+        "target_language",
+    }
 )
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class TranslationServiceConfig:
+    preview_enabled: bool = True
+    preview_debounce_ms: int = _SERVICE_TRANSLATION_PREVIEW_DEBOUNCE_MS
+    preview_timeout_ms: int = 30_000
+    max_new_tokens: int | None = None
+    stable_batch_size: int = 1
+
+    def __post_init__(self) -> None:
+        if int(self.preview_debounce_ms) < 0:
+            raise ValueError("preview_debounce_ms must be >= 0")
+        if int(self.preview_timeout_ms) <= 0:
+            raise ValueError("preview_timeout_ms must be > 0")
+        if int(self.stable_batch_size) <= 0:
+            raise ValueError("stable_batch_size must be > 0")
 
 
 class WebSocketSendTimeout(RuntimeError):
@@ -59,7 +83,7 @@ def build_app(
     timestamp_actor: TimestampModelActor | None = None,
     timestamp_config: RealtimeTimestampConfig | None = None,
     translation_actor: TranslationModelActor | None = None,
-    translation_config: RealtimeTranslationConfig | None = None,
+    translation_service_config: TranslationServiceConfig | None = None,
     live_stability_delay_ms: int = _SERVICE_LIVE_STABILITY_DELAY_MS,
 ) -> Any:
     try:
@@ -114,13 +138,18 @@ def build_app(
             store = TranscriptStore(transcript_id=session_id)
             store_lock = asyncio.Lock()
             timestamps_enabled = timestamp_actor is not None and timestamp_config is not None
+            try:
+                _validate_timestamp_start_language(start_payload, timestamps_enabled=timestamps_enabled)
+            except ValueError as exc:
+                await _send_error_and_close(websocket, str(exc), code=1003)
+                return
             config = _build_session_config(
                 start_payload,
                 force_align_timestamps=timestamps_enabled,
                 live_stability_delay_ms=live_stability_delay_ms,
             )
             try:
-                session_translation_config = _session_translation_config(start_payload, translation_config)
+                session_translation_config = _session_translation_config(start_payload, translation_service_config)
             except ValueError as exc:
                 await _send_error_and_close(websocket, str(exc), code=1003)
                 return
@@ -162,8 +191,6 @@ def build_app(
                 ready["timestamps"] = timestamp_runtime.ready_payload()
             if translation is not None:
                 ready["translation"] = translation.ready_payload()
-            elif translation_actor is not None and translation_config is not None:
-                ready["translation"] = _disabled_translation_ready_payload(translation_config)
             await event_queue.put(ready)
 
             while True:
@@ -284,25 +311,60 @@ def _build_session_config(
 
 def _session_translation_config(
     payload: dict[str, Any],
-    base_config: RealtimeTranslationConfig | None,
+    service_config: TranslationServiceConfig | None,
 ) -> RealtimeTranslationConfig | None:
-    if base_config is None:
+    if "target_language" not in payload:
         return None
-
     requested_target = str(payload.get("target_language") or "").strip()
-    if requested_target.lower() == "none":
-        return None
-    if requested_target and requested_target != base_config.target_language:
-        return replace(base_config, target_language=requested_target)
-    return base_config
+    if not requested_target:
+        raise ValueError("target_language must not be empty")
+    if service_config is None:
+        raise ValueError("target_language requires translation model to be configured")
+
+    normalized_target = _normalize_translation_target_language(requested_target)
+    return RealtimeTranslationConfig(
+        target_language=normalized_target,
+        preview_enabled=service_config.preview_enabled,
+        preview_debounce_ms=service_config.preview_debounce_ms,
+        preview_timeout_ms=service_config.preview_timeout_ms,
+        max_new_tokens=service_config.max_new_tokens,
+        stable_batch_size=service_config.stable_batch_size,
+    )
 
 
-def _disabled_translation_ready_payload(config: RealtimeTranslationConfig) -> dict[str, Any]:
-    return {
-        "enabled": False,
-        "available": True,
-        "target_language": config.target_language,
-    }
+def _normalize_supported_language(language: str) -> str:
+    normalized = normalize_language_name(str(language))
+    validate_language(normalized)
+    return normalized
+
+
+def _normalize_language_choice(language: str, allowed: tuple[str, ...], *, field_name: str) -> str:
+    raw = str(language or "").strip()
+    if not raw:
+        raise ValueError(f"{field_name} is empty")
+    by_casefold = {item.casefold(): item for item in allowed}
+    normalized = by_casefold.get(raw.casefold())
+    if normalized is None:
+        raise ValueError(f"Unsupported {field_name}: {raw}. Supported: {list(allowed)}")
+    return normalized
+
+
+def _normalize_translation_target_language(language: str) -> str:
+    return _normalize_language_choice(language, HYMT_MODEL_CARD_LANGUAGES, field_name="target_language")
+
+
+def _validate_timestamp_start_language(payload: dict[str, Any], *, timestamps_enabled: bool) -> None:
+    if not timestamps_enabled:
+        return
+    language = str(payload.get("language") or "").strip()
+    if not language:
+        return
+    if language not in QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES:
+        raise ValueError(
+            "language must be one of "
+            f"{list(QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES)} when forced-aligner timestamps are enabled, "
+            f"got: {language}"
+        )
 
 
 def _arg_nonnegative_int(value: str) -> int:
@@ -333,6 +395,14 @@ async def _receive_start(websocket: Any) -> dict[str, Any] | None:
     if payload.get("type") != "start":
         await _send_error_and_close(websocket, "First command must be type=start.", code=1003)
         return None
+    unknown_fields = sorted(set(payload) - _START_COMMAND_FIELDS)
+    if unknown_fields:
+        await _send_error_and_close(
+            websocket,
+            f"Unsupported start command field(s): {', '.join(unknown_fields)}.",
+            code=1003,
+        )
+        return None
     try:
         sample_rate = int(payload.get("sample_rate", SAMPLE_RATE))
     except (TypeError, ValueError):
@@ -346,6 +416,13 @@ async def _receive_start(websocket: Any) -> dict[str, Any] | None:
             code=1003,
         )
         return None
+    raw_language = payload.get("language")
+    if raw_language is not None and str(raw_language).strip():
+        try:
+            payload["language"] = _normalize_supported_language(str(raw_language))
+        except ValueError as exc:
+            await _send_error_and_close(websocket, str(exc), code=1003)
+            return None
     return payload
 
 
@@ -526,8 +603,16 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--timestamp-local-files-only", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--timestamp-pad-ms", type=int, default=500)
     parser.add_argument("--timestamp-finish-timeout-ms", type=int, default=30_000)
-    parser.add_argument("--translation-target-language", default=None, help="Enable realtime translation to this language.")
-    parser.add_argument("--translation-model", default=DEFAULT_HYMT_MODEL)
+    parser.add_argument(
+        "--translation-model",
+        nargs="?",
+        const=DEFAULT_HYMT_MODEL,
+        default=None,
+        help=(
+            "Enable realtime translation with this model path or Hugging Face id. "
+            f"If no value is provided, uses {DEFAULT_HYMT_MODEL}."
+        ),
+    )
     parser.add_argument("--translation-device", default="cuda:0")
     parser.add_argument("--translation-dtype", default=None, choices=["auto", "float16", "bfloat16", "float32"])
     parser.add_argument("--translation-preview", action=argparse.BooleanOptionalAction, default=True)
@@ -540,7 +625,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--translation-attn-implementation", default=DEFAULT_HYMT_ATTN_IMPLEMENTATION)
     parser.add_argument("--translation-local-files-only", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--translation-trust-remote-code", action="store_true")
-    parser.add_argument("--translation-prewarm", action=argparse.BooleanOptionalAction, default=True)
     return parser.parse_args()
 
 
@@ -572,13 +656,12 @@ def _build_model_load(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
     return "transformers", load_kwargs
 
 
-def _build_translation(args: argparse.Namespace) -> tuple[Any | None, RealtimeTranslationConfig | None]:
-    target_language = str(args.translation_target_language or "").strip()
-    if not target_language:
+def _build_translation(args: argparse.Namespace) -> tuple[Any | None, TranslationServiceConfig | None]:
+    model_path = str(args.translation_model or "").strip()
+    if not model_path:
         return None, None
     dtype = None if args.translation_dtype in {None, "auto"} else args.translation_dtype
-    config = RealtimeTranslationConfig(
-        target_language=target_language,
+    config = TranslationServiceConfig(
         preview_enabled=bool(args.translation_preview),
         preview_debounce_ms=int(args.translation_preview_debounce_ms),
         preview_timeout_ms=int(args.translation_preview_timeout_ms),
@@ -590,7 +673,7 @@ def _build_translation(args: argparse.Namespace) -> tuple[Any | None, RealtimeTr
         do_sample=bool(args.translation_sample),
     )
     translator = HYMTTranslator(
-        args.translation_model,
+        model_path,
         device=str(args.translation_device),
         dtype=dtype,
         local_files_only=bool(args.translation_local_files_only),
@@ -638,53 +721,6 @@ def _build_timestamp_actor(args: argparse.Namespace) -> tuple[TimestampModelActo
     return TimestampModelActor(aligner), config
 
 
-def _translation_prewarm_texts(batch_size: int) -> tuple[str, ...]:
-    target_count = max(1, int(batch_size))
-    texts = list(_TRANSLATION_PREWARM_TEXTS[:target_count])
-    if target_count < len(_TRANSLATION_PREWARM_TEXTS):
-        texts[-1] = _TRANSLATION_PREWARM_TEXTS[-1]
-    while len(texts) < target_count:
-        texts.append(_TRANSLATION_PREWARM_TEXTS[-1])
-    return tuple(texts)
-
-
-def _prewarm_translation(
-    translation_actor: TranslationModelActor,
-    config: RealtimeTranslationConfig,
-) -> None:
-    _run_translation_prewarm_batch(translation_actor, config, texts=_TRANSLATION_PREWARM_TEXTS, batch_size=1)
-    stable_batch_size = max(1, int(config.stable_batch_size))
-    if stable_batch_size > 1:
-        _run_translation_prewarm_batch(
-            translation_actor,
-            config,
-            texts=_translation_prewarm_texts(stable_batch_size),
-            batch_size=stable_batch_size,
-        )
-
-
-def _run_translation_prewarm_batch(
-    translation_actor: TranslationModelActor,
-    config: RealtimeTranslationConfig,
-    *,
-    texts: tuple[str, ...],
-    batch_size: int,
-) -> None:
-    try:
-        results = translation_actor.warmup(
-            texts,
-            target_language=config.target_language,
-            source_language=config.source_language,
-            max_new_tokens=config.max_new_tokens,
-            sync_cuda=True,
-            batch_size=batch_size,
-        )
-    except Exception as exc:
-        raise RuntimeError("translation prewarm failed") from exc
-    if len(results) != len(texts):
-        raise RuntimeError("translation prewarm did not run all warmup cases")
-
-
 def _cuda_graph_enabled(args: argparse.Namespace) -> bool:
     return True if args.cuda_graph is None else bool(args.cuda_graph)
 
@@ -730,10 +766,10 @@ def main() -> None:
         backend=backend,
         **load_kwargs,
     )
-    translation_enabled = bool(str(args.translation_target_language or "").strip())
+    translation_enabled = bool(str(args.translation_model or "").strip())
     _prepare_cuda_graph_runtime(model, args)
     translation_capture_lock = _translation_capture_lock(args, translation_enabled=translation_enabled)
-    translator, translation_config = _build_translation(args)
+    translator, translation_service_config = _build_translation(args)
     translation_actor = (
         TranslationModelActor(translator, capture_lock=translation_capture_lock) if translator is not None else None
     )
@@ -741,8 +777,6 @@ def main() -> None:
     timestamp_config: RealtimeTimestampConfig | None = None
     try:
         timestamp_actor, timestamp_config = _build_timestamp_actor(args)
-        if translation_actor is not None and translation_config is not None and args.translation_prewarm:
-            _prewarm_translation(translation_actor, translation_config)
     except Exception:
         if translation_actor is not None:
             translation_actor.close(wait=True)
@@ -754,7 +788,7 @@ def main() -> None:
         timestamp_actor=timestamp_actor,
         timestamp_config=timestamp_config,
         translation_actor=translation_actor,
-        translation_config=translation_config,
+        translation_service_config=translation_service_config,
         live_stability_delay_ms=args.live_stability_delay_ms,
     )
 

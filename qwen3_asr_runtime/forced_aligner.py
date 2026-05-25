@@ -17,6 +17,7 @@ from .hf_qwen3_asr import (
     Qwen3ASRForConditionalGeneration,
     Qwen3ASRProcessor,
 )
+from .language_support import QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES
 from .utils import (
     AudioLike,
     MAX_FORCE_ALIGN_INPUT_SECONDS,
@@ -27,19 +28,7 @@ from .utils import (
 )
 
 
-FORCED_ALIGNER_SUPPORTED_LANGUAGES: List[str] = [
-    "Chinese",
-    "Cantonese",
-    "English",
-    "German",
-    "Spanish",
-    "French",
-    "Italian",
-    "Portuguese",
-    "Russian",
-    "Korean",
-    "Japanese",
-]
+FORCED_ALIGNER_SUPPORTED_LANGUAGES: List[str] = list(QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES)
 
 
 @dataclass(frozen=True)

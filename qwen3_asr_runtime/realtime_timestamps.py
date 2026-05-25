@@ -12,6 +12,7 @@ from typing import Any, Deque
 import numpy as np
 
 from .transcript_store import TranscriptStore
+from .language_support import QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES
 from .utils import SAMPLE_RATE
 from .vad import normalize_pcm
 
@@ -198,6 +199,7 @@ class RealtimeTimestampRuntime:
             "enabled": True,
             "model": self.model_actor.model_path,
             "source": "forced_aligner",
+            "allowed_source_languages": list(QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES),
             "stable": {
                 "initial_status": "pending",
                 "patch_event": "transcript_timing_update",
@@ -271,6 +273,12 @@ class RealtimeTimestampRuntime:
         publish: bool,
         timeout_sec: float,
     ) -> dict[str, Any]:
+        if job.source_language not in QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES:
+            event = await self._timing_event(job, start_ms=None, end_ms=None, timing_status="failed")
+            if publish:
+                await self.event_queue.put(event)
+            return event
+
         audio, crop_start_sample = self.audio_buffer.crop(
             start_sample=job.start_sample,
             end_sample=job.end_sample,

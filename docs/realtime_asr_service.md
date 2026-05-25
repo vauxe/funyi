@@ -10,26 +10,24 @@ Start:
 {"type":"start","session_id":"local","language":"Chinese","context":""}
 ```
 
+`language`, when present, must be one of the supported Qwen3-ASR language
+names. Invalid languages are rejected before `ready`.
+
 The service default keeps stable history conservative:
 `live_stability_delay_ms=12000`. Use `partial` updates for low-latency live
 subtitle display. Lower `--live-stability-delay-ms` only when the service can
 tolerate more aggressive stable commits.
 
-If the service was started with translation enabled, `target_language` selects
-the per-session translation target:
+If the service was started with `--translation-model`, `target_language`
+selects the per-session translation target. Targets must be in the HY-MT
+model-card language list:
 
 ```json
 {"type":"start","session_id":"local","language":"Chinese","target_language":"English"}
 ```
 
-Use `target_language:"none"` to disable translation for one session:
-
-```json
-{"type":"start","session_id":"local","target_language":"none"}
-```
-
-The service must still be started with translation enabled so the translation
-model actor exists.
+Omit `target_language` to run transcription only. The service has no default
+translation target, and empty `target_language` values are rejected.
 
 Then send mono little-endian `pcm_s16le` at 16 kHz. For low-latency captioning,
 send about 100 ms per WebSocket audio frame. Frame size is transport cadence;
@@ -59,6 +57,13 @@ By default, stable segments use sample-clock `start_ms` / `end_ms` values.
 Starting the service with `--timestamp-model <model>` enables forced-aligner
 timestamps. In that mode, stable-segment public timing is one forced-aligned
 `start_ms` / `end_ms` pair, filled asynchronously.
+
+Forced-aligner timestamps use the ForcedAligner model-card language list. When
+`language` is explicitly set in `start`, the service rejects values outside that
+list before `ready`. Auto-language sessions may still transcribe ASR-supported
+languages outside the ForcedAligner list, but their timestamp patches are marked
+`timing_status="failed"`. `ready.timestamps.allowed_source_languages` exposes
+the accepted ForcedAligner source-language list.
 
 New stable segments are emitted immediately with pending timing:
 
@@ -166,13 +171,13 @@ Service entrypoint defaults:
   `--timestamp-local-files-only`
 
 Disable flags only for debugging, fallback, or comparison.
-When translation is enabled, HY-MT is prewarmed on the same single model actor
-thread used at runtime before serving; failure is a startup failure.
+When translation is enabled with `--translation-model`, each translated session
+must provide `target_language` in the start command. Targets are accepted only
+when they are in the HY-MT model-card language list.
 Stable translation batching is opt-in with `--translation-stable-batch-size`.
 The default is `1` so preview latency and existing single-item runtime behavior
 stay unchanged; larger values only batch queued stable segments with the same
-source language. Prewarm covers the singleton path and the configured max
-stable batch shape.
+source language.
 
 ## Validation
 

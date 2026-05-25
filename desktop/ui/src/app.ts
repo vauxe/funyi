@@ -9,7 +9,7 @@ import {
   startAudioCapture,
   stopAudioCapture,
 } from "./native-audio.js";
-import { ASR_LANGUAGE_OPTIONS } from "./languages.js";
+import { ASR_LANGUAGE_OPTIONS, TRANSLATION_TARGET_LANGUAGE_OPTIONS } from "./languages.js";
 
 type StatusKey = "connectionStatus" | "readyStatus" | "captureStatus" | "audioStats";
 type OverlayMode = "compact" | "history";
@@ -96,7 +96,11 @@ const liveSession = new LiveSession({
     startCapture: startAudioCapture,
     stopCapture: stopAudioCapture,
   },
-  onReady: (event) => setStatus("readyStatus", readySummary(event)),
+  onReady: (event) => {
+    subtitleDocument.setTranslationEnabled(readyTranslationEnabled(event));
+    setStatus("readyStatus", readySummary(event));
+    render();
+  },
   onStateChange: setControlsState,
   onStatus: (key, value) => setStatus(key as StatusKey, value),
   onTranscriptEvent: (event) => {
@@ -126,6 +130,10 @@ async function boot(): Promise<void> {
 
 function populateLanguageControls(): void {
   const languageOptions = ASR_LANGUAGE_OPTIONS.map((language) => ({ value: language, label: language }));
+  const translationTargetOptions = TRANSLATION_TARGET_LANGUAGE_OPTIONS.map((language) => ({
+    value: language,
+    label: language,
+  }));
   populateSelect(
     dom.language,
     [{ value: "", label: "Auto" }, ...languageOptions],
@@ -133,8 +141,8 @@ function populateLanguageControls(): void {
   );
   populateSelect(
     dom.translationTargetLanguage,
-    [...languageOptions, { value: "none", label: "None" }],
-    "English",
+    [{ value: "", label: "Off" }, ...translationTargetOptions],
+    "",
   );
 }
 
@@ -540,17 +548,20 @@ async function startSession(): Promise<void> {
   }
   resetSessionState();
   const targetLanguage = translationTargetLanguage();
+  const startPayload: Record<string, unknown> = {
+    type: "start",
+    session_id: `desktop-${Date.now()}`,
+    sample_rate: 16000,
+    audio_format: "pcm_s16le",
+    language: dom.language.value.trim() || undefined,
+  };
+  if (targetLanguage) {
+    startPayload.target_language = targetLanguage;
+  }
   await liveSession.start({
     url: dom.serverUrl.value.trim(),
     audioSourceId: dom.audioSource.value,
-    startPayload: {
-      type: "start",
-      session_id: `desktop-${Date.now()}`,
-      sample_rate: 16000,
-      audio_format: "pcm_s16le",
-      language: dom.language.value.trim() || undefined,
-      target_language: targetLanguage,
-    },
+    startPayload,
   });
 }
 
@@ -781,7 +792,12 @@ function translationTargetLanguage(): string {
 }
 
 function translationEnabled(): boolean {
-  return translationTargetLanguage().toLowerCase() !== "none";
+  return translationTargetLanguage() !== "";
+}
+
+function readyTranslationEnabled(event: RealtimeEvent): boolean {
+  const translation = event.translation;
+  return isRecord(translation) && translation.enabled === true;
 }
 
 function statusTextHasError(value: string): boolean {
