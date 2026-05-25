@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 from contextlib import asynccontextmanager, suppress
+from dataclasses import replace
 import json
 import logging
 from typing import Any, Callable
@@ -288,23 +289,11 @@ def _session_translation_config(
     if base_config is None:
         return None
 
-    raw_translation = payload.get("translation")
-    if raw_translation is None:
-        enabled = _coerce_bool(payload.get("translation_enabled"), default=True)
-        requested_target = str(payload.get("translation_target_language") or "").strip()
-    elif isinstance(raw_translation, dict):
-        enabled = _coerce_bool(raw_translation.get("enabled"), default=True)
-        requested_target = str(raw_translation.get("target_language") or "").strip()
-    else:
-        enabled = _coerce_bool(raw_translation, default=True)
-        requested_target = ""
-
-    if not enabled:
+    requested_target = str(payload.get("target_language") or "").strip()
+    if requested_target.lower() == "none":
         return None
     if requested_target and requested_target != base_config.target_language:
-        raise ValueError(
-            f"translation target_language must be {base_config.target_language!r} for this service"
-        )
+        return replace(base_config, target_language=requested_target)
     return base_config
 
 
@@ -314,20 +303,6 @@ def _disabled_translation_ready_payload(config: RealtimeTranslationConfig) -> di
         "available": True,
         "target_language": config.target_language,
     }
-
-
-def _coerce_bool(value: Any, *, default: bool) -> bool:
-    if value is None:
-        return bool(default)
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off"}:
-            return False
-    return bool(value)
 
 
 def _arg_nonnegative_int(value: str) -> int:

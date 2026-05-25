@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="./src/styles.css" />
   </head>
   <body>
-    <main id="app-shell" class="app-shell" data-overlay-mode="compact">
+    <main id="app-shell" class="app-shell" data-overlay-mode="compact" data-window-model="direct">
       <section id="caption-strip" class="caption-strip drag-surface" aria-label="Live caption window">
         <section class="history-panel" aria-label="Subtitle history">
           <section id="history-list" class="history-list" aria-label="Stable subtitle history"></section>
@@ -56,38 +56,44 @@
           ></button>
         </div>
 
-        <div id="resize-north" class="resize-handle resize-north" data-resize-direction="North" aria-hidden="true"></div>
-        <div id="resize-east" class="resize-handle resize-east" data-resize-direction="East" aria-hidden="true"></div>
-        <div id="resize-south" class="resize-handle resize-south" data-resize-direction="South" aria-hidden="true"></div>
-        <div id="resize-west" class="resize-handle resize-west" data-resize-direction="West" aria-hidden="true"></div>
-        <div id="resize-north-east" class="resize-handle resize-corner resize-north-east" data-resize-direction="NorthEast" aria-hidden="true"></div>
-        <div id="resize-north-west" class="resize-handle resize-corner resize-north-west" data-resize-direction="NorthWest" aria-hidden="true"></div>
-        <div id="resize-south-east" class="resize-handle resize-corner resize-south-east" data-resize-direction="SouthEast" aria-hidden="true"></div>
-        <div id="resize-south-west" class="resize-handle resize-corner resize-south-west" data-resize-direction="SouthWest" aria-hidden="true"></div>
-
         <section class="status-line" aria-live="polite">
-          <label class="status-field status-field-service">
-            <span>Service</span>
-            <input id="server-url" value="ws://127.0.0.1:8000/ws/asr" spellcheck="false" />
-          </label>
-          <label class="status-field">
-            <span>Lang</span>
-            <input id="language" value="Chinese" spellcheck="false" />
-          </label>
-          <label class="status-field status-field-source">
-            <span>Source</span>
-            <select id="audio-source"></select>
-          </label>
-          <label class="status-toggle">
-            <input id="translation-enabled" type="checkbox" checked />
-            <span>Translate</span>
-          </label>
-          <span id="connection-status"></span>
-          <span id="ready-status"></span>
-          <span id="capture-status"></span>
-          <span id="audio-stats"></span>
+          <div class="status-controls">
+            <label class="status-field status-field-service">
+              <span>Service</span>
+              <input id="server-url" value="ws://127.0.0.1:8000/ws/asr" spellcheck="false" />
+            </label>
+            <div class="language-settings" role="group" aria-label="Language settings">
+              <label class="language-control">
+                <span>ASR</span>
+                <select id="language"></select>
+              </label>
+              <label class="language-control">
+                <span>To</span>
+                <select id="translation-target-language"></select>
+              </label>
+            </div>
+            <label class="status-field status-field-source">
+              <span>Source</span>
+              <select id="audio-source"></select>
+            </label>
+          </div>
+          <div class="status-indicators">
+            <span id="connection-status"></span>
+            <span id="ready-status"></span>
+            <span id="capture-status"></span>
+            <span id="audio-stats"></span>
+          </div>
         </section>
       </section>
+
+      <div id="resize-north" class="resize-handle resize-north" data-resize-direction="North" aria-hidden="true"></div>
+      <div id="resize-east" class="resize-handle resize-east" data-resize-direction="East" aria-hidden="true"></div>
+      <div id="resize-south" class="resize-handle resize-south" data-resize-direction="South" aria-hidden="true"></div>
+      <div id="resize-west" class="resize-handle resize-west" data-resize-direction="West" aria-hidden="true"></div>
+      <div id="resize-north-east" class="resize-handle resize-corner resize-north-east" data-resize-direction="NorthEast" aria-hidden="true"></div>
+      <div id="resize-north-west" class="resize-handle resize-corner resize-north-west" data-resize-direction="NorthWest" aria-hidden="true"></div>
+      <div id="resize-south-east" class="resize-handle resize-corner resize-south-east" data-resize-direction="SouthEast" aria-hidden="true"></div>
+      <div id="resize-south-west" class="resize-handle resize-corner resize-south-west" data-resize-direction="SouthWest" aria-hidden="true"></div>
     </main>
 
     <script type="module" src="./dist/app.js"></script>

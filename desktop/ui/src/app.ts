@@ -9,6 +9,7 @@ import {
   startAudioCapture,
   stopAudioCapture,
 } from "./native-audio.js";
+import { ASR_LANGUAGE_OPTIONS } from "./languages.js";
 
 type StatusKey = "connectionStatus" | "readyStatus" | "captureStatus" | "audioStats";
 type OverlayMode = "compact" | "history";
@@ -36,9 +37,9 @@ const dom = {
   appShell: requireElement<HTMLElement>("#app-shell"),
   captionStrip: requireElement<HTMLElement>("#caption-strip"),
   serverUrl: requireElement<HTMLInputElement>("#server-url"),
-  language: requireElement<HTMLInputElement>("#language"),
+  language: requireElement<HTMLSelectElement>("#language"),
+  translationTargetLanguage: requireElement<HTMLSelectElement>("#translation-target-language"),
   audioSource: requireElement<HTMLSelectElement>("#audio-source"),
-  translationEnabled: requireElement<HTMLInputElement>("#translation-enabled"),
   sessionButton: requireElement<HTMLButtonElement>("#session-button"),
   historyButton: requireElement<HTMLButtonElement>("#history-button"),
   minimizeButton: requireElement<HTMLButtonElement>("#minimize-button"),
@@ -68,6 +69,7 @@ let subtitleDocument = new SubtitleDocument();
 let hasAvailableAudioSource = false;
 let overlayMode: OverlayMode = "compact";
 let sessionState: SessionState = "idle";
+let usesNativeWindowDrag = false;
 let activeDragPointerId: number | null = null;
 let activeDragSurface: HTMLElement | null = null;
 let pendingDragFrame: number | null = null;
@@ -104,6 +106,8 @@ const liveSession = new LiveSession({
 });
 
 async function boot(): Promise<void> {
+  await syncWindowModel();
+  populateLanguageControls();
   await populateAudioSources();
   dom.captionStrip.addEventListener("pointerdown", (event) => void handleDragPointerDown(event, dom.captionStrip));
   for (const handle of dom.resizeHandles) {
@@ -113,11 +117,47 @@ async function boot(): Promise<void> {
   dom.historyButton.addEventListener("click", () => void setOverlayMode(overlayMode === "history" ? "compact" : "history"));
   dom.minimizeButton.addEventListener("click", () => void minimizeOverlay());
   dom.closeButton.addEventListener("click", () => void closeOverlay());
-  dom.translationEnabled.addEventListener("change", () => {
-    subtitleDocument.setTranslationEnabled(dom.translationEnabled.checked);
+  dom.translationTargetLanguage.addEventListener("change", () => {
+    subtitleDocument.setTranslationEnabled(translationEnabled());
     render();
   });
   render();
+}
+
+function populateLanguageControls(): void {
+  const languageOptions = ASR_LANGUAGE_OPTIONS.map((language) => ({ value: language, label: language }));
+  populateSelect(
+    dom.language,
+    [{ value: "", label: "Auto" }, ...languageOptions],
+    "",
+  );
+  populateSelect(
+    dom.translationTargetLanguage,
+    [...languageOptions, { value: "none", label: "None" }],
+    "English",
+  );
+}
+
+function populateSelect(
+  select: HTMLSelectElement,
+  options: Array<{ value: string; label: string }>,
+  value: string,
+): void {
+  select.replaceChildren(
+    ...options.map(({ value: optionValue, label }) => {
+      const option = document.createElement("option");
+      option.value = optionValue;
+      option.textContent = label;
+      return option;
+    }),
+  );
+  select.value = value;
+}
+
+async function syncWindowModel(): Promise<void> {
+  const platform = await invokeTauriCommand<string>("desktop_platform").catch(() => undefined);
+  usesNativeWindowDrag = platform === "macos";
+  dom.appShell.dataset.windowModel = platform === "windows" ? "region" : "direct";
 }
 
 async function handleDragPointerDown(event: PointerEvent, surface: HTMLElement): Promise<void> {
@@ -125,6 +165,10 @@ async function handleDragPointerDown(event: PointerEvent, surface: HTMLElement):
     return;
   }
   event.preventDefault();
+  if (usesNativeWindowDrag) {
+    await startNativeOverlayDrag(event.pointerId);
+    return;
+  }
   activeDragPointerId = event.pointerId;
   activeDragSurface = surface;
   dom.appShell.classList.add("is-dragging");
@@ -138,6 +182,41 @@ async function handleDragPointerDown(event: PointerEvent, surface: HTMLElement):
     clearOverlayCommandError();
   } catch (error) {
     setOverlayCommandError(error);
+    clearActiveDrag();
+  }
+}
+
+async function startNativeOverlayDrag(pointerId: number): Promise<void> {
+  if (activeDragPointerId !== null) {
+    return;
+  }
+  activeDragPointerId = pointerId;
+  dom.appShell.classList.add("is-dragging");
+  window.addEventListener("pointerup", handleNativeDragPointerEnd);
+  window.addEventListener("pointercancel", handleNativeDragPointerEnd);
+  try {
+    await invokeOverlayCommand("start_overlay_drag");
+    clearOverlayCommandError();
+  } catch (error) {
+    setOverlayCommandError(error);
+    clearActiveDrag();
+  }
+}
+
+function handleNativeDragPointerEnd(event: PointerEvent): void {
+  if (event.pointerId !== activeDragPointerId) {
+    return;
+  }
+  void finishNativeOverlayDrag();
+}
+
+async function finishNativeOverlayDrag(): Promise<void> {
+  try {
+    await invokeOverlayCommand("finish_native_overlay_drag");
+    clearOverlayCommandError();
+  } catch (error) {
+    setOverlayCommandError(error);
+  } finally {
     clearActiveDrag();
   }
 }
@@ -183,6 +262,8 @@ function clearActiveDrag(): void {
   window.removeEventListener("pointermove", handleDragPointerMove);
   window.removeEventListener("pointerup", handleDragPointerEnd);
   window.removeEventListener("pointercancel", handleDragPointerEnd);
+  window.removeEventListener("pointerup", handleNativeDragPointerEnd);
+  window.removeEventListener("pointercancel", handleNativeDragPointerEnd);
 }
 
 function scheduleDragUpdate(): void {
@@ -458,6 +539,7 @@ async function startSession(): Promise<void> {
     return;
   }
   resetSessionState();
+  const targetLanguage = translationTargetLanguage();
   await liveSession.start({
     url: dom.serverUrl.value.trim(),
     audioSourceId: dom.audioSource.value,
@@ -467,13 +549,13 @@ async function startSession(): Promise<void> {
       sample_rate: 16000,
       audio_format: "pcm_s16le",
       language: dom.language.value.trim() || undefined,
-      translation: dom.translationEnabled.checked,
+      target_language: targetLanguage,
     },
   });
 }
 
 function resetSessionState(): void {
-  subtitleDocument = new SubtitleDocument({ translationEnabled: dom.translationEnabled.checked });
+  subtitleDocument = new SubtitleDocument({ translationEnabled: translationEnabled() });
   resetRenderedHistory();
   setStatus("readyStatus", "");
   setStatus("captureStatus", "");
@@ -603,8 +685,8 @@ function setControlsState(state: SessionState, { canStart }: { canStart: boolean
   );
   dom.serverUrl.disabled = active;
   dom.language.disabled = active;
+  dom.translationTargetLanguage.disabled = active;
   dom.audioSource.disabled = active;
-  dom.translationEnabled.disabled = active;
 }
 
 function setStatus(key: StatusKey, value: string): void {
@@ -694,6 +776,14 @@ function audioSourceLabel(source: { kind?: string; name: string }): string {
   return `${prefix} · ${name}`;
 }
 
+function translationTargetLanguage(): string {
+  return dom.translationTargetLanguage.value.trim();
+}
+
+function translationEnabled(): boolean {
+  return translationTargetLanguage().toLowerCase() !== "none";
+}
+
 function statusTextHasError(value: string): boolean {
   return /error|failed|closed|timeout|timed out|lost|unavailable|no native|no audio/i.test(value);
 }
@@ -701,9 +791,14 @@ function statusTextHasError(value: string): boolean {
 function readySummary(event: RealtimeEvent): string {
   const sampleRate = Number(event.sample_rate || 0);
   const readyText = sampleRate > 0 ? `${sampleRate / 1000}k` : "Ready";
-  return isRecord(event.translation) && event.translation.enabled
-    ? `${readyText} · Translate`
-    : readyText;
+  const translation = event.translation;
+  if (!isRecord(translation) || !translation.enabled) {
+    return readyText;
+  }
+  const targetLanguage = typeof translation.target_language === "string"
+    ? translation.target_language.trim()
+    : "";
+  return targetLanguage ? `${readyText} · Translate ${targetLanguage}` : `${readyText} · Translate`;
 }
 
 function formatRange(startMs: number | null, endMs: number | null, status: string | null): string {
@@ -743,7 +838,11 @@ function errorMessage(error: unknown): string {
 }
 
 async function invokeOverlayCommand(command: string, args?: Record<string, unknown>): Promise<void> {
-  await window.__TAURI__?.core.invoke(command, args);
+  await invokeTauriCommand<void>(command, args);
+}
+
+async function invokeTauriCommand<TResult>(command: string, args?: Record<string, unknown>): Promise<TResult | undefined> {
+  return await window.__TAURI__?.core.invoke<TResult>(command, args);
 }
 
 function isInteractiveTarget(target: EventTarget | null): boolean {

@@ -119,6 +119,10 @@ select:focus {
   height: min(100vh, var(--compact-height));
 }
 
+.app-shell[data-window-model="direct"] .caption-strip {
+  height: 100vh;
+}
+
 .app-shell[data-overlay-mode="history"] .caption-strip {
   height: 100vh;
   grid-template-rows: minmax(0, 1fr) 156px auto;
@@ -252,6 +256,7 @@ select:focus {
   grid-column: 2;
   grid-row: 2;
   justify-self: end;
+  align-self: end;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -330,6 +335,17 @@ select:focus {
   bottom: -5px;
   left: -5px;
   cursor: nesw-resize;
+}
+
+.app-shell[data-window-model="region"][data-overlay-mode="compact"] .resize-north,
+.app-shell[data-window-model="region"][data-overlay-mode="compact"] .resize-north-east,
+.app-shell[data-window-model="region"][data-overlay-mode="compact"] .resize-north-west {
+  top: calc(100vh - var(--compact-height) - 5px);
+}
+
+.app-shell[data-window-model="region"][data-overlay-mode="compact"] .resize-east,
+.app-shell[data-window-model="region"][data-overlay-mode="compact"] .resize-west {
+  top: calc(100vh - var(--compact-height) + 18px);
 }
 
 .app-shell[data-overlay-mode="history"] .caption-controls {
@@ -484,18 +500,19 @@ select:focus {
 
 .status-line {
   position: relative;
-  display: flex;
+  display: grid;
   grid-column: 1;
   grid-row: 2;
-  align-items: center;
-  gap: 6px;
+  align-self: end;
+  grid-template-rows: auto auto;
+  align-content: end;
+  gap: 4px;
   min-width: 0;
   min-height: 24px;
   overflow: hidden;
   color: rgba(234, 255, 251, 0.52);
   font-size: 11px;
   line-height: 1;
-  white-space: nowrap;
   z-index: 7;
 }
 
@@ -503,13 +520,31 @@ select:focus {
   grid-row: 3;
 }
 
-.status-line > span {
+.status-controls,
+.status-indicators {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.status-controls {
+  flex-wrap: wrap;
+  align-content: center;
+  overflow: hidden;
+}
+
+.status-indicators {
+  overflow: hidden;
+}
+
+.status-indicators > span {
   --status-color: rgba(234, 255, 251, 0.36);
   display: none;
   max-width: 178px;
   min-width: 0;
   height: 22px;
-  flex: 0 1 auto;
+  flex: 1 1 72px;
   align-items: center;
   overflow: hidden;
   border: 1px solid rgba(234, 255, 251, 0.12);
@@ -517,11 +552,13 @@ select:focus {
   padding: 0 8px;
   background: var(--ui-surface);
   text-overflow: ellipsis;
+  white-space: nowrap;
   color: rgba(234, 255, 251, 0.68);
 }
 
 .status-field,
-.status-toggle {
+.language-settings,
+.language-control {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -532,22 +569,15 @@ select:focus {
   font-weight: 620;
 }
 
-.status-toggle {
-  flex: 0 0 auto;
-  padding-right: 4px;
-}
-
 .status-field span,
-.status-toggle span {
+.language-control span {
   flex: 0 0 auto;
-}
-
-.status-toggle span {
-  min-width: 56px;
+  white-space: nowrap;
 }
 
 .status-field input,
-.status-field select {
+.status-field select,
+.language-control select {
   flex: 1 1 auto;
   min-height: 22px;
   height: 22px;
@@ -559,53 +589,59 @@ select:focus {
 }
 
 .status-field-service {
-  flex: 0 1 230px;
+  flex: 1 1 220px;
+  min-width: 168px;
+  max-width: 280px;
 }
 
 .status-field-service input {
-  width: 190px;
+  width: 100%;
 }
 
-.status-field:not(.status-field-service):not(.status-field-source) {
-  flex: 0 1 104px;
+.language-settings {
+  display: grid;
+  grid-template-columns: minmax(86px, 1fr) minmax(86px, 1fr);
+  flex: 1 1 230px;
+  min-width: 190px;
+  max-width: 280px;
 }
 
-.status-field:not(.status-field-service):not(.status-field-source) input {
-  width: 70px;
+.language-control {
+  min-width: 0;
+}
+
+.language-control select {
+  width: 100%;
 }
 
 .status-field-source {
-  flex: 0 1 170px;
+  flex: 1 1 160px;
+  min-width: 132px;
+  max-width: 220px;
 }
 
 .status-field-source select {
-  width: 136px;
+  width: 100%;
 }
 
-.status-toggle input {
-  width: 13px;
-  min-height: 0;
-  accent-color: var(--miku-cyan);
-}
-
-.status-line > span[data-active="true"] {
+.status-indicators > span[data-active="true"] {
   display: inline-flex;
 }
 
-.status-line > span[data-tone="active"],
-.status-line > span[data-tone="ok"] {
+.status-indicators > span[data-tone="active"],
+.status-indicators > span[data-tone="ok"] {
   --status-color: var(--miku-aqua);
   border-color: rgba(118, 255, 240, 0.2);
   color: rgba(183, 255, 248, 0.9);
 }
 
-.status-line > span[data-tone="warn"] {
+.status-indicators > span[data-tone="warn"] {
   --status-color: var(--miku-pink-soft);
   border-color: rgba(var(--miku-pink-rgb), 0.22);
   color: var(--miku-pink-soft);
 }
 
-.status-line > span[data-tone="error"] {
+.status-indicators > span[data-tone="error"] {
   --status-color: var(--miku-pink);
   border-color: rgba(var(--miku-pink-rgb), 0.32);
   color: var(--miku-pink);

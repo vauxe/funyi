@@ -15,11 +15,21 @@ The service default keeps stable history conservative:
 subtitle display. Lower `--live-stability-delay-ms` only when the service can
 tolerate more aggressive stable commits.
 
-If the service was started with translation enabled, a session can disable it:
+If the service was started with translation enabled, `target_language` selects
+the per-session translation target:
 
 ```json
-{"type":"start","session_id":"local","translation":false}
+{"type":"start","session_id":"local","language":"Chinese","target_language":"English"}
 ```
+
+Use `target_language:"none"` to disable translation for one session:
+
+```json
+{"type":"start","session_id":"local","target_language":"none"}
+```
+
+The service must still be started with translation enabled so the translation
+model actor exists.
 
 Then send mono little-endian `pcm_s16le` at 16 kHz. For low-latency captioning,
 send about 100 ms per WebSocket audio frame. Frame size is transport cadence;

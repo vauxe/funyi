@@ -70,20 +70,17 @@ thread used at runtime. HY-MT warmup failure is a startup failure.
 ## Protocol
 
 Session start uses service defaults. If the service has translation configured,
-the client can disable translation for one session:
+the client can override the target language for one session:
 
 ```json
-{"type":"start","session_id":"local","translation":false}
+{"type":"start","session_id":"local","target_language":"English"}
 ```
 
-Equivalent object form:
+Use `target_language:"none"` to disable translation for one session:
 
 ```json
-{"type":"start","session_id":"local","translation":{"enabled":false}}
+{"type":"start","session_id":"local","target_language":"none"}
 ```
-
-If `translation.target_language` is provided, it must match the service target
-language for this single-model service.
 
 `ready.translation` when enabled:
 

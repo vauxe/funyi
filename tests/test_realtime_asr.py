@@ -645,19 +645,19 @@ class RealtimeServerCliTest(unittest.TestCase):
         config = RealtimeTranslationConfig(target_language="English")
 
         self.assertIs(_session_translation_config({"type": "start"}, config), config)
-        self.assertIsNone(_session_translation_config({"type": "start", "translation": False}, config))
-        self.assertIsNone(
-            _session_translation_config({"type": "start", "translation": {"enabled": False}}, config)
+        self.assertIsNone(_session_translation_config({"type": "start", "target_language": "none"}, config))
+        self.assertIsNone(_session_translation_config({"type": "start", "target_language": "None"}, config))
+
+    def test_start_payload_can_override_translation_target(self) -> None:
+        config = RealtimeTranslationConfig(target_language="English", max_new_tokens=16)
+
+        override = _session_translation_config(
+            {"type": "start", "target_language": "Japanese"},
+            config,
         )
-
-    def test_start_payload_rejects_mismatched_translation_target(self) -> None:
-        config = RealtimeTranslationConfig(target_language="English")
-
-        with self.assertRaises(ValueError):
-            _session_translation_config(
-                {"type": "start", "translation": {"enabled": True, "target_language": "Japanese"}},
-                config,
-            )
+        self.assertIsNot(override, config)
+        self.assertEqual(override.target_language, "Japanese")
+        self.assertEqual(override.max_new_tokens, 16)
 
     def test_service_session_config_uses_start_payload_context(self) -> None:
         config = _build_session_config({"type": "start", "context": "meeting", "language": "Chinese"})
