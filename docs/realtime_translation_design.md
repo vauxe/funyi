@@ -29,7 +29,6 @@ Out of scope:
 
 - token-level HY-MT streaming;
 - cross-request prefix cache;
-- translation batching;
 - ASR backend or stabilization changes.
 
 ## Flow
@@ -43,7 +42,7 @@ audio frames
 
 TranslationRuntime
   -> TranslationModelActor
-  -> HYMTTranslator.translate(...)
+  -> HYMTTranslator.translate(...) / translate_batch(...)
   -> event_queue
 
 sender task
@@ -83,7 +82,7 @@ translation target, and empty `target_language` values are rejected.
   "enabled": true,
   "target_language": "English",
   "model": "tencent/HY-MT1.5-1.8B",
-  "stable": { "enabled": true, "reliable": true, "queue_size": null, "timeout_ms": null },
+  "stable": { "enabled": true, "reliable": true, "queue_size": null, "timeout_ms": null, "batch_size": 1 },
   "preview": { "enabled": true, "debounce_ms": 700, "timeout_ms": 30000 }
 }
 ```
@@ -146,7 +145,10 @@ Stable:
 
 - stable history is reliable: every source stable segment gets exactly one
   `translation_stable` before `transcript_final`, unless the translator fails;
-- stable generation runs one job at a time through the model actor;
+- stable generation runs through one model actor; when
+  `--translation-stable-batch-size` is greater than `1`, adjacent queued stable
+  jobs with the same source language and target language may share one
+  `translate_batch` call;
 - stable jobs are not dropped for backlog pressure and are not timed out by the
   service;
 - translator failures emit `translation_status` for the affected segment.
@@ -187,6 +189,8 @@ Scheduling:
 - a preview model call that already entered HY-MT cannot be preempted and may
   delay later stable history or `finish`;
 - stable backlog runs when no preview is ready and is drained during `finish`;
+- stable batching preserves output event order and never batches across source
+  language or target language;
 - finish-created stable jobs have priority during `finish`;
 - if a stable job is already running when preview arrives, do not cancel the
   model actor call; drop the preview if it is stale by completion time;
@@ -226,9 +230,10 @@ Preview results after finish are ignored. ASR-only mode keeps the current
 ## Translator
 
 `HYMTTranslator.translate(text, *, target_language, source_language="",
-max_new_tokens=512) -> str` remains synchronous. Runtime calls it through the
-single `TranslationModelActor` thread. Load the model once at startup and never
-download weights from request handling.
+max_new_tokens=512) -> str` remains synchronous. `translate_batch(...)` is an
+optional stable-batching path with the same target/source language contract.
+Runtime calls both through the single `TranslationModelActor` thread. Load the
+model once at startup and never download weights from request handling.
 
 Default runtime path:
 

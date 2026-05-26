@@ -4,14 +4,27 @@ Local single-user transcription service. It is not a public multi-user service.
 
 ## Protocol
 
-Start:
+The service exposes:
+
+- `GET /healthz` -> `{"status":"ok"}`
+- `WS /ws/asr` for one active local realtime session.
+
+The first WebSocket frame must be a JSON `start` command:
 
 ```json
-{"type":"start","session_id":"local","language":"Chinese","context":""}
+{"type":"start","session_id":"local","sample_rate":16000,"audio_format":"pcm_s16le","language":"Chinese","context":""}
 ```
 
-`language`, when present, must be one of the supported Qwen3-ASR language
-names. Invalid languages are rejected before `ready`.
+Accepted `start` fields are `type`, `session_id`, `sample_rate`,
+`audio_format`, `language`, `context`, and `target_language`. Unknown fields are
+rejected before `ready`. `sample_rate` defaults to `16000`; `audio_format`
+defaults to `pcm_s16le`. The only accepted audio stream is mono little-endian
+`pcm_s16le` at 16 kHz.
+
+`language`, when non-empty, must be one of the supported Qwen3-ASR language
+names and is normalized case-insensitively. Omit it, set it to `null`, or set it
+to an empty string for auto language detection. Invalid languages are rejected
+before `ready`.
 
 The service default keeps stable history conservative:
 `live_stability_delay_ms=12000`. Use `partial` updates for low-latency live
@@ -27,14 +40,23 @@ model-card language list:
 ```
 
 Omit `target_language` to run transcription only. The service has no default
-translation target, and empty `target_language` values are rejected.
+translation target, and empty `target_language` values are rejected in `start`.
 
-Then send mono little-endian `pcm_s16le` at 16 kHz. For low-latency captioning,
-send about 100 ms per WebSocket audio frame. Frame size is transport cadence;
-the service accepts each frame directly and ASR runs on the model streaming
-cadence.
+After `ready`, send binary WebSocket frames containing 16 kHz mono
+little-endian `pcm_s16le`. For low-latency captioning, send about 100 ms per
+WebSocket audio frame. Frame size is transport cadence; the service accepts
+each frame directly and ASR runs on the model streaming cadence.
 
-Commands: `flush`, `finish`, `set_language`.
+Commands after `ready`:
+
+```json
+{"type":"flush"}
+{"type":"finish"}
+```
+
+`flush` promotes the current ASR tail when possible and keeps the session open.
+`finish` promotes the final tail, emits `transcript_final`, then closes the
+WebSocket with close code `1000`.
 
 `set_language` changes future transcription and translation settings:
 
@@ -53,12 +75,83 @@ Events:
 - `ready`
 - `transcript_update`
 - `transcript_timing_update` when forced-aligner timestamps are enabled
+- `translation_preview` when translation preview is enabled
+- `translation_stable` when stable translation succeeds
+- `translation_status` when stable translation fails
 - `transcript_final`
 - `error`
 
-`transcript_update` is the only normal caption update. The frontend appends
-`stable_appends`, replaces `partial`, and requires `stable_base` to match local
-`stable_count`.
+`ready`:
+
+```json
+{
+  "type": "ready",
+  "session_id": "local",
+  "sample_rate": 16000,
+  "audio_format": "pcm_s16le"
+}
+```
+
+When enabled, `ready.timestamps` and `ready.translation` describe timestamp and
+translation capability for this session.
+
+`transcript_update` is the normal source-caption update:
+
+```json
+{
+  "type": "transcript_update",
+  "revision": 7,
+  "stable_base": 2,
+  "stable_count": 3,
+  "stable_appends": [
+    {
+      "id": "seg_000003",
+      "index": 3,
+      "start_ms": 1200,
+      "end_ms": 2100,
+      "text": "caption text",
+      "language": "English"
+    }
+  ],
+  "partial": {
+    "start_ms": 2100,
+    "end_ms": 2600,
+    "text": "current",
+    "language": "English"
+  }
+}
+```
+
+The frontend appends `stable_appends`, replaces `partial`, and requires
+`stable_base` to match local `stable_count`.
+
+`transcript_final` is the final stable snapshot:
+
+```json
+{
+  "type": "transcript_final",
+  "revision": 8,
+  "stable_count": 3,
+  "segments": []
+}
+```
+
+Translation events are emitted on the same `/ws/asr` stream when the session has
+a `target_language`. `translation_preview` annotates the current `partial` by
+`source_revision`. `translation_stable` and `translation_status` annotate stable
+segments by `source_segment_id` / `source_segment_index`. See
+`@docs/realtime_translation_design.md` for payloads and scheduler rules.
+
+`error`:
+
+```json
+{"type":"error","error":"message"}
+```
+
+Startup validation failures send `error` and close the WebSocket, usually with
+code `1003`. A second concurrent session is rejected with code `1013`. Internal
+session failures close with code `1011`. Command errors after `ready` are sent
+as `error` events and do not automatically close the session.
 
 Long stable text is split into subtitle-sized stable segments without using
 punctuation as a boundary signal.
@@ -129,8 +222,9 @@ partial                           replace-only current tail, or null
 revision                          monotonic event version
 ```
 
-If the base check fails, reconnect or request a fresh snapshot. Do not merge
-divergent transcript states.
+If the base check fails, reconnect and start a fresh session. The protocol does
+not expose an in-session snapshot command. Do not merge divergent transcript
+states.
 
 ## Boundaries
 
@@ -141,6 +235,9 @@ divergent transcript states.
 - `TranscriptStore`: in-memory append-only source transcript.
 - `RealtimeTimestampRuntime`: optional stable-segment forced alignment and
   `transcript_timing_update` patches.
+- `RealtimeTranslationRuntime`: optional source-event consumer that emits
+  translation preview/stable/status events without rewriting source transcript
+  history.
 
 Model windowing, prompt rollback, carried text prefixes, and spec decode belong
 to the streaming runtime design in `@docs/streaming_runtime.md`. The session

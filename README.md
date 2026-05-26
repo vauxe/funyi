@@ -155,6 +155,21 @@ If you pass a Hugging Face model id, the model loads through Transformers and
 may download weights into the Hugging Face cache. Pass a local path when you
 need fully offline startup.
 
+Python API boundary:
+
+- `Qwen3ASRModel.from_pretrained(path_or_id, backend="transformers", **kwargs)`
+  is the supported loader. Other backend names are rejected.
+- `transcribe(audio, context="", language=None)` accepts one audio input or a
+  list of inputs and returns a list of `ASRTranscription(language, text,
+  time_stamps=None)`.
+- `return_time_stamps=True` is not supported by `transcribe`; use the realtime
+  service with `--timestamp-model` or `Qwen3ForcedAlignerBackend` directly when
+  forced-aligned timestamps are required.
+- Streaming callers use `init_streaming_state(...)`,
+  `streaming_transcribe(pcm16k, state)`, and
+  `finish_streaming_transcribe(state)`. Library streaming defaults stay
+  upstream-compatible; the local service applies the live20 low-latency preset.
+
 ## Build The Desktop App
 
 After installing desktop dependencies:
