@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-import unittest
 
 import numpy as np
 import torch
@@ -38,7 +37,15 @@ class FakeBackend:
     def decode_text(self, token_ids) -> str:
         return "".join("G" if int(tok) == 9001 else chr(int(tok)) for tok in token_ids)
 
-    def infer_streaming_with_draft(self, prompt: str, wav: np.ndarray, draft_ids, *, max_new_tokens: int, stats=None) -> str:
+    def infer_streaming_with_draft(
+        self,
+        prompt: str,
+        wav: np.ndarray,
+        draft_ids,
+        *,
+        max_new_tokens: int,
+        stats=None,
+    ) -> str:
         del wav, max_new_tokens
         self.draft_calls.append({"prompt": prompt, "draft_ids": list(draft_ids)})
         if stats is not None:
@@ -46,21 +53,28 @@ class FakeBackend:
             stats["accepted_tokens"] = 1
         return "G"
 
-    def infer_with_prompts(self, prompts: list[str], wavs: list[np.ndarray], *, max_inference_batch_size: int, max_new_tokens: int) -> list[str]:
+    def infer_with_prompts(
+        self,
+        prompts: list[str],
+        wavs: list[np.ndarray],
+        *,
+        max_inference_batch_size: int,
+        max_new_tokens: int,
+    ) -> list[str]:
         del wavs, max_inference_batch_size, max_new_tokens
         self.prompt_calls.extend(prompts)
         return ["F" for _ in prompts]
 
 
-class StreamingSpecDraftTest(unittest.TestCase):
+class TestStreamingSpecDraft:
     def test_low_latency_preset_uses_half_second_cadence(self) -> None:
         kwargs = Qwen3ASRModel.low_latency_preset_kwargs()
 
-        self.assertEqual(kwargs["chunk_size_sec"], 0.5)
-        self.assertEqual(kwargs["unfixed_chunk_num"], 4)
-        self.assertEqual(kwargs["max_window_sec"], 20.0)
-        self.assertEqual(kwargs["max_prefix_tokens"], 64)
-        self.assertTrue(kwargs["spec_decode"])
+        assert kwargs['chunk_size_sec'] == 0.5
+        assert kwargs['unfixed_chunk_num'] == 4
+        assert kwargs['max_window_sec'] == 20.0
+        assert kwargs['max_prefix_tokens'] == 64
+        assert kwargs['spec_decode']
 
     def test_trimmed_prefix_still_reuses_rollback_token_ids(self) -> None:
         backend = FakeBackend()
@@ -77,20 +91,20 @@ class StreamingSpecDraftTest(unittest.TestCase):
 
         model._run_streaming_decode_step(state)
 
-        self.assertEqual(len(backend.draft_calls), 1)
-        self.assertEqual(backend.draft_calls[0]["prompt"], state.prompt_raw + "bcd")
-        self.assertEqual(backend.draft_calls[0]["draft_ids"], [ord("e"), ord("f")])
-        self.assertEqual(backend.prompt_calls, [])
-        self.assertEqual(state.carried_text_prefix, "a")
-        self.assertEqual(state.committed_text, "a")
-        self.assertEqual(state._raw_decoded, "bcdG")
-        self.assertEqual(state.text, "abcdG")
-        self.assertIsNotNone(state.recognition_frame)
-        self.assertEqual(state.recognition_frame.full_text, "abcdG")
-        self.assertEqual(state.recognition_frame.generated_text, "G")
-        self.assertEqual(state.spec_decode_stats["spec_attempt_steps"], 1)
-        self.assertEqual(state.spec_decode_stats["spec_trimmed_attempt_steps"], 1)
-        self.assertEqual(state.spec_decode_stats["spec_accepted_tokens"], 1)
+        assert len(backend.draft_calls) == 1
+        assert backend.draft_calls[0]['prompt'] == state.prompt_raw + 'bcd'
+        assert backend.draft_calls[0]['draft_ids'] == [ord('e'), ord('f')]
+        assert backend.prompt_calls == []
+        assert state.carried_text_prefix == 'a'
+        assert state.committed_text == 'a'
+        assert state._raw_decoded == 'bcdG'
+        assert state.text == 'abcdG'
+        assert state.recognition_frame is not None
+        assert state.recognition_frame.full_text == 'abcdG'
+        assert state.recognition_frame.generated_text == 'G'
+        assert state.spec_decode_stats['spec_attempt_steps'] == 1
+        assert state.spec_decode_stats['spec_trimmed_attempt_steps'] == 1
+        assert state.spec_decode_stats['spec_accepted_tokens'] == 1
 
     def test_rolling_window_advances_audio_trim_cursor(self) -> None:
         backend = FakeBackend()
@@ -104,13 +118,13 @@ class StreamingSpecDraftTest(unittest.TestCase):
         model.streaming_transcribe(np.ones(16_000, dtype=np.float32), state)
         model.streaming_transcribe(np.ones(16_000, dtype=np.float32), state)
 
-        self.assertEqual(state.audio_seen_samples, 32_000)
-        self.assertEqual(state.audio_trim_cursor, 16_000)
-        self.assertEqual(state.audio_dropped_samples, 16_000)
-        self.assertEqual(state.audio_accum.shape[0], 16_000)
-        self.assertIsNotNone(state.recognition_frame)
-        self.assertEqual(state.recognition_frame.window_start_sample, 16_000)
-        self.assertEqual(state.recognition_frame.audio_end_sample, 32_000)
+        assert state.audio_seen_samples == 32000
+        assert state.audio_trim_cursor == 16000
+        assert state.audio_dropped_samples == 16000
+        assert state.audio_accum.shape[0] == 16000
+        assert state.recognition_frame is not None
+        assert state.recognition_frame.window_start_sample == 16000
+        assert state.recognition_frame.audio_end_sample == 32000
 
 
 class FakeSpecThinker:
@@ -131,7 +145,7 @@ class FakeSpecThinker:
         return SimpleNamespace(logits=logits)
 
 
-class SpecDecodeBudgetTest(unittest.TestCase):
+class TestSpecDecodeBudget:
     def test_draft_is_clipped_to_max_new_tokens_before_acceptance(self) -> None:
         thinker = FakeSpecThinker(preds=[3, 4, 99])
         out = spec_decode_generate(
@@ -144,8 +158,4 @@ class SpecDecodeBudgetTest(unittest.TestCase):
             max_new_tokens=2,
         )
 
-        self.assertEqual(out.tolist(), [[1, 2, 3, 4]])
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert out.tolist() == [[1, 2, 3, 4]]

@@ -4,7 +4,8 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-import unittest
+
+import pytest
 
 from qwen3_asr_runtime.realtime_translation import (
     RealtimeTranslationConfig,
@@ -118,6 +119,11 @@ async def get_event(queue: asyncio.Queue[dict[str, object]], *, timeout: float =
     return event
 
 
+async def assert_no_event(queue: asyncio.Queue[dict[str, object]], *, timeout: float = 0.05) -> None:
+    with pytest.raises(asyncio.TimeoutError):
+        await get_event(queue, timeout=timeout)
+
+
 async def wait_for_thread_event(event: threading.Event, *, timeout: float = 0.5) -> None:
     deadline = time.monotonic() + timeout
     while not event.is_set() and time.monotonic() < deadline:
@@ -126,18 +132,27 @@ async def wait_for_thread_event(event: threading.Event, *, timeout: float = 0.5)
         raise AssertionError("timed out waiting for translator thread")
 
 
-class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
-    async def asyncTearDown(self) -> None:
-        runtime = getattr(self, "runtime", None)
-        if runtime is not None:
-            await runtime.close()
-        actor = getattr(self, "actor", None)
-        if actor is not None:
-            actor.close(wait=False)
+@pytest.fixture
+def translation_actor():
+    actors: list[TranslationModelActor] = []
 
-    async def make_runtime(
-        self,
-        translator: FakeTranslator,
+    def make(translator: object) -> TranslationModelActor:
+        actor = TranslationModelActor(translator)
+        actors.append(actor)
+        return actor
+
+    yield make
+
+    for actor in reversed(actors):
+        actor.close(wait=False)
+
+
+@pytest.fixture
+async def make_translation_runtime(translation_actor):
+    runtimes: list[RealtimeTranslationRuntime] = []
+
+    async def make(
+        translator: object,
         *,
         stable_enabled: bool = True,
         preview_enabled: bool = True,
@@ -146,9 +161,9 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
         stable_batch_size: int = 1,
     ) -> tuple[RealtimeTranslationRuntime, asyncio.Queue[dict[str, object]]]:
         queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
-        self.actor = TranslationModelActor(translator)
-        self.runtime = RealtimeTranslationRuntime(
-            self.actor,
+        actor = translation_actor(translator)
+        runtime = RealtimeTranslationRuntime(
+            actor,
             config=RealtimeTranslationConfig(
                 target_language="English",
                 stable_enabled=stable_enabled,
@@ -159,10 +174,34 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
             ),
             event_queue=queue,
         )
-        return self.runtime, queue
+        runtimes.append(runtime)
+        return runtime, queue
 
-    async def test_stable_history_never_drops_segments_under_backlog_pressure(self) -> None:
-        runtime, queue = await self.make_runtime(FakeTranslator(), preview_enabled=False)
+    yield make
+
+    for runtime in reversed(runtimes):
+        await runtime.close()
+
+
+@pytest.fixture
+async def track_translation_runtime(translation_actor):
+    del translation_actor
+    runtimes: list[RealtimeTranslationRuntime] = []
+
+    def track(runtime: RealtimeTranslationRuntime) -> RealtimeTranslationRuntime:
+        runtimes.append(runtime)
+        return runtime
+
+    yield track
+
+    for runtime in reversed(runtimes):
+        await runtime.close()
+
+
+class TestRealtimeTranslationRuntime:
+
+    async def test_stable_history_never_drops_segments_under_backlog_pressure(self, make_translation_runtime) -> None:
+        runtime, queue = await make_translation_runtime(FakeTranslator(), preview_enabled=False)
 
         expected_ids: list[str] = []
         expected_texts: list[str] = []
@@ -175,16 +214,16 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
         await runtime.start()
 
         events = [await get_event(queue) for _ in range(3)]
-        self.assertEqual([event["type"] for event in events], ["translation_stable"] * 3)
-        self.assertEqual([event["source_segment_id"] for event in events], expected_ids[:3])
-        self.assertEqual([event["text"] for event in events], expected_texts[:3])
+        assert [event['type'] for event in events] == ['translation_stable'] * 3
+        assert [event['source_segment_id'] for event in events] == expected_ids[:3]
+        assert [event['text'] for event in events] == expected_texts[:3]
         events.extend([await get_event(queue) for _ in range(2)])
-        self.assertEqual([event["source_segment_id"] for event in events], expected_ids)
-        self.assertEqual([event["text"] for event in events], expected_texts)
+        assert [event['source_segment_id'] for event in events] == expected_ids
+        assert [event['text'] for event in events] == expected_texts
 
-    async def test_stable_history_does_not_timeout_while_waiting_in_backlog(self) -> None:
+    async def test_stable_history_does_not_timeout_while_waiting_in_backlog(self, make_translation_runtime) -> None:
         translator = FakeTranslator(delays={"one": 0.05})
-        runtime, queue = await self.make_runtime(
+        runtime, queue = await make_translation_runtime(
             translator,
             preview_enabled=False,
             preview_timeout_ms=10,
@@ -195,12 +234,12 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
         await runtime.accept_source_event(transcript_update(2, stable_appends=[stable_segment(2, "two")]))
 
         events = [await get_event(queue), await get_event(queue)]
-        self.assertEqual([event["type"] for event in events], ["translation_stable", "translation_stable"])
-        self.assertEqual([event["source_segment_id"] for event in events], ["seg_000001", "seg_000002"])
+        assert [event['type'] for event in events] == ['translation_stable', 'translation_stable']
+        assert [event['source_segment_id'] for event in events] == ['seg_000001', 'seg_000002']
 
-    async def test_stable_batch_mode_preserves_order(self) -> None:
+    async def test_stable_batch_mode_preserves_order(self, make_translation_runtime) -> None:
         translator = FakeTranslator()
-        runtime, queue = await self.make_runtime(
+        runtime, queue = await make_translation_runtime(
             translator,
             preview_enabled=False,
             stable_batch_size=3,
@@ -219,16 +258,13 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
         events = [await get_event(queue), await get_event(queue), await get_event(queue)]
 
-        self.assertEqual(translator.batch_calls, [["one", "two", "three"]])
-        self.assertEqual(
-            [event["source_segment_id"] for event in events],
-            ["seg_000001", "seg_000002", "seg_000003"],
-        )
-        self.assertEqual([event["text"] for event in events], ["English:one", "English:two", "English:three"])
+        assert translator.batch_calls == [['one', 'two', 'three']]
+        assert [event['source_segment_id'] for event in events] == ['seg_000001', 'seg_000002', 'seg_000003']
+        assert [event['text'] for event in events] == ['English:one', 'English:two', 'English:three']
 
-    async def test_stable_batch_mode_reports_empty_items_individually(self) -> None:
+    async def test_stable_batch_mode_reports_empty_items_individually(self, make_translation_runtime) -> None:
         translator = FakeTranslator(empty_outputs={"two"})
-        runtime, queue = await self.make_runtime(
+        runtime, queue = await make_translation_runtime(
             translator,
             preview_enabled=False,
             stable_batch_size=2,
@@ -243,14 +279,14 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
         events = [await get_event(queue), await get_event(queue)]
 
-        self.assertEqual([event["type"] for event in events], ["translation_stable", "translation_status"])
-        self.assertEqual([event["source_segment_id"] for event in events], ["seg_000001", "seg_000002"])
-        self.assertEqual(events[0]["text"], "English:one")
-        self.assertEqual(events[1]["code"], "failed")
+        assert [event['type'] for event in events] == ['translation_stable', 'translation_status']
+        assert [event['source_segment_id'] for event in events] == ['seg_000001', 'seg_000002']
+        assert events[0]['text'] == 'English:one'
+        assert events[1]['code'] == 'failed'
 
-    async def test_stable_batch_mode_splits_source_languages(self) -> None:
+    async def test_stable_batch_mode_splits_source_languages(self, make_translation_runtime) -> None:
         translator = FakeTranslator()
-        runtime, queue = await self.make_runtime(
+        runtime, queue = await make_translation_runtime(
             translator,
             preview_enabled=False,
             stable_batch_size=3,
@@ -266,16 +302,13 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
         await runtime.start()
         events = [await get_event(queue), await get_event(queue), await get_event(queue)]
 
-        self.assertEqual(translator.batch_calls, [["two", "three"]])
-        self.assertEqual(translator.calls, ["one", "two", "three"])
-        self.assertEqual(
-            [event["source_segment_id"] for event in events],
-            ["seg_000001", "seg_000002", "seg_000003"],
-        )
+        assert translator.batch_calls == [['two', 'three']]
+        assert translator.calls == ['one', 'two', 'three']
+        assert [event['source_segment_id'] for event in events] == ['seg_000001', 'seg_000002', 'seg_000003']
 
-    async def test_target_switch_clears_pending_stable_queue(self) -> None:
+    async def test_target_switch_clears_pending_stable_queue(self, make_translation_runtime) -> None:
         translator = FakeTranslator()
-        runtime, queue = await self.make_runtime(
+        runtime, queue = await make_translation_runtime(
             translator,
             preview_enabled=False,
         )
@@ -286,17 +319,16 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
         await runtime.accept_source_event(transcript_update(2, stable_appends=[stable_segment(2, "new")]))
 
         event = await get_event(queue)
-        self.assertEqual(event["type"], "translation_stable")
-        self.assertEqual(event["source_segment_id"], "seg_000002")
-        self.assertEqual(event["target_language"], "Japanese")
-        self.assertEqual(event["text"], "Japanese:new")
-        await asyncio.sleep(0.02)
-        self.assertTrue(queue.empty())
-        self.assertEqual(translator.calls, ["new"])
+        assert event['type'] == 'translation_stable'
+        assert event['source_segment_id'] == 'seg_000002'
+        assert event['target_language'] == 'Japanese'
+        assert event['text'] == 'Japanese:new'
+        await assert_no_event(queue, timeout=0.02)
+        assert translator.calls == ['new']
 
-    async def test_target_switch_cancels_pending_preview_and_uses_new_target(self) -> None:
+    async def test_target_switch_cancels_pending_preview_and_uses_new_target(self, make_translation_runtime) -> None:
         translator = FakeTranslator()
-        runtime, queue = await self.make_runtime(
+        runtime, queue = await make_translation_runtime(
             translator,
             stable_enabled=False,
             preview_debounce_ms=25,
@@ -313,16 +345,15 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         event = await get_event(queue)
-        self.assertEqual(event["type"], "translation_preview")
-        self.assertEqual(event["source_revision"], 2)
-        self.assertEqual(event["target_language"], "Japanese")
-        self.assertEqual(event["text"], "Japanese:new")
-        await asyncio.sleep(0.05)
-        self.assertTrue(queue.empty())
+        assert event['type'] == 'translation_preview'
+        assert event['source_revision'] == 2
+        assert event['target_language'] == 'Japanese'
+        assert event['text'] == 'Japanese:new'
+        await assert_no_event(queue, timeout=0.05)
 
-    async def test_target_none_disables_future_translation(self) -> None:
+    async def test_target_none_disables_future_translation(self, make_translation_runtime) -> None:
         translator = FakeTranslator()
-        runtime, queue = await self.make_runtime(translator, preview_debounce_ms=0)
+        runtime, queue = await make_translation_runtime(translator, preview_debounce_ms=0)
         await runtime.start()
 
         await runtime.set_target_language(None)
@@ -334,12 +365,11 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        await asyncio.sleep(0.02)
-        self.assertTrue(queue.empty())
-        self.assertEqual(translator.calls, [])
+        await assert_no_event(queue, timeout=0.02)
+        assert translator.calls == []
 
-    async def test_finish_returns_every_queued_stable_translation_once(self) -> None:
-        runtime, _queue = await self.make_runtime(FakeTranslator(), preview_enabled=False)
+    async def test_finish_returns_every_queued_stable_translation_once(self, make_translation_runtime) -> None:
+        runtime, _queue = await make_translation_runtime(FakeTranslator(), preview_enabled=False)
         for index, text in [(1, "one"), (2, "two"), (3, "three")]:
             await runtime.accept_source_event(
                 transcript_update(index, stable_appends=[stable_segment(index, text)])
@@ -347,25 +377,22 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
         events = await runtime.finish([])
 
-        self.assertEqual([event["type"] for event in events], ["translation_stable"] * 3)
-        self.assertEqual(
-            [event["source_segment_id"] for event in events],
-            ["seg_000001", "seg_000002", "seg_000003"],
-        )
+        assert [event['type'] for event in events] == ['translation_stable'] * 3
+        assert [event['source_segment_id'] for event in events] == ['seg_000001', 'seg_000002', 'seg_000003']
 
-    async def test_late_stable_accept_after_finish_is_ignored(self) -> None:
-        runtime, queue = await self.make_runtime(FakeTranslator(), preview_enabled=False)
+    async def test_late_stable_accept_after_finish_is_ignored(self, make_translation_runtime) -> None:
+        runtime, queue = await make_translation_runtime(FakeTranslator(), preview_enabled=False)
 
-        self.assertEqual(await runtime.finish([]), [])
+        assert await runtime.finish([]) == []
         await runtime.accept_source_event(
             transcript_update(1, stable_appends=[stable_segment(1, "late")])
         )
 
-        self.assertTrue(queue.empty())
+        await assert_no_event(queue, timeout=0.02)
 
-    async def test_preview_keeps_only_latest_partial(self) -> None:
+    async def test_preview_keeps_only_latest_partial(self, make_translation_runtime) -> None:
         translator = FakeTranslator()
-        runtime, queue = await self.make_runtime(
+        runtime, queue = await make_translation_runtime(
             translator,
             stable_enabled=False,
             preview_debounce_ms=25,
@@ -381,14 +408,13 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         event = await get_event(queue)
-        self.assertEqual(event["type"], "translation_preview")
-        self.assertEqual(event["source_revision"], 2)
-        self.assertEqual(event["text"], "English:new")
-        await asyncio.sleep(0.05)
-        self.assertTrue(queue.empty())
+        assert event['type'] == 'translation_preview'
+        assert event['source_revision'] == 2
+        assert event['text'] == 'English:new'
+        await assert_no_event(queue, timeout=0.05)
 
-    async def test_preview_debounce_coalesces_continuous_partials(self) -> None:
-        runtime, queue = await self.make_runtime(
+    async def test_preview_debounce_coalesces_continuous_partials(self, make_translation_runtime) -> None:
+        runtime, queue = await make_translation_runtime(
             FakeTranslator(),
             stable_enabled=False,
             preview_debounce_ms=30,
@@ -414,12 +440,15 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
         event = await get_event(queue, timeout=0.2)
         await sender
 
-        self.assertEqual(event["type"], "translation_preview")
-        self.assertEqual(event["source_revision"], 8)
+        assert event['type'] == 'translation_preview'
+        assert event['source_revision'] == 8
 
-    async def test_preview_drops_result_if_new_partial_arrives_while_translating(self) -> None:
+    async def test_preview_drops_result_if_new_partial_arrives_while_translating(
+        self,
+        make_translation_runtime,
+    ) -> None:
         translator = FakeTranslator(delays={"old": 0.05})
-        runtime, queue = await self.make_runtime(
+        runtime, queue = await make_translation_runtime(
             translator,
             stable_enabled=False,
             preview_debounce_ms=0,
@@ -433,18 +462,18 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
             if translator.calls:
                 break
             await asyncio.sleep(0.001)
-        self.assertEqual(translator.calls, ["old"])
+        assert translator.calls == ['old']
         await runtime.accept_source_event(
             transcript_update(2, partial={"text": "new", "language": "Chinese", "start_ms": 0, "end_ms": 200})
         )
 
         event = await get_event(queue)
-        self.assertEqual(event["type"], "translation_preview")
-        self.assertEqual(event["source_revision"], 2)
-        self.assertEqual(event["text"], "English:new")
+        assert event['type'] == 'translation_preview'
+        assert event['source_revision'] == 2
+        assert event['text'] == 'English:new'
 
-    async def test_preview_cancel_drops_pending_preview(self) -> None:
-        runtime, queue = await self.make_runtime(
+    async def test_preview_cancel_drops_pending_preview(self, make_translation_runtime) -> None:
+        runtime, queue = await make_translation_runtime(
             FakeTranslator(),
             stable_enabled=False,
             preview_debounce_ms=25,
@@ -457,11 +486,13 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.005)
         await runtime.accept_source_event(transcript_update(2, partial=None))
 
-        await asyncio.sleep(0.05)
-        self.assertTrue(queue.empty())
+        await assert_no_event(queue, timeout=0.05)
 
-    async def test_preview_is_visible_before_normal_stable_backlog_and_history_still_drains(self) -> None:
-        runtime, queue = await self.make_runtime(FakeTranslator(), preview_debounce_ms=0)
+    async def test_preview_is_visible_before_normal_stable_backlog_and_history_still_drains(
+        self,
+        make_translation_runtime,
+    ) -> None:
+        runtime, queue = await make_translation_runtime(FakeTranslator(), preview_debounce_ms=0)
 
         await runtime.accept_source_event(transcript_update(1, stable_appends=[stable_segment(1, "stable")]))
         await runtime.accept_source_event(transcript_update(2, stable_appends=[stable_segment(2, "more stable")]))
@@ -471,15 +502,15 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
         await runtime.start()
 
         events = [await get_event(queue), await get_event(queue), await get_event(queue)]
-        self.assertEqual(events[0]["type"], "translation_preview")
-        self.assertEqual(events[0]["source_revision"], 3)
-        self.assertEqual(
-            [event["source_segment_id"] for event in events[1:]],
-            ["seg_000001", "seg_000002"],
-        )
+        assert events[0]['type'] == 'translation_preview'
+        assert events[0]['source_revision'] == 3
+        assert [event['source_segment_id'] for event in events[1:]] == ['seg_000001', 'seg_000002']
 
-    async def test_preview_from_same_update_is_visible_before_stable_translation(self) -> None:
-        runtime, queue = await self.make_runtime(FakeTranslator(), preview_debounce_ms=0)
+    async def test_preview_from_same_update_is_visible_before_stable_translation(
+        self,
+        make_translation_runtime,
+    ) -> None:
+        runtime, queue = await make_translation_runtime(FakeTranslator(), preview_debounce_ms=0)
         await runtime.start()
 
         await runtime.accept_source_event(
@@ -491,26 +522,26 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         events = [await get_event(queue), await get_event(queue)]
-        self.assertEqual(events[0]["type"], "translation_preview")
-        self.assertEqual(events[0]["source_revision"], 1)
-        self.assertEqual(events[1]["type"], "translation_stable")
-        self.assertEqual(events[1]["source_segment_id"], "seg_000001")
+        assert events[0]['type'] == 'translation_preview'
+        assert events[0]['source_revision'] == 1
+        assert events[1]['type'] == 'translation_stable'
+        assert events[1]['source_segment_id'] == 'seg_000001'
 
-    async def test_finish_translates_finish_segments_before_old_stable_backlog(self) -> None:
-        runtime, _queue = await self.make_runtime(FakeTranslator(), preview_enabled=False)
+    async def test_finish_translates_finish_segments_before_old_stable_backlog(self, make_translation_runtime) -> None:
+        runtime, _queue = await make_translation_runtime(FakeTranslator(), preview_enabled=False)
         await runtime.accept_source_event(transcript_update(1, stable_appends=[stable_segment(1, "old")]))
 
         events = await runtime.finish([transcript_update(2, stable_appends=[stable_segment(2, "tail")])])
 
-        self.assertEqual(events[0]["type"], "translation_stable")
-        self.assertEqual(events[0]["source_segment_id"], "seg_000002")
-        self.assertEqual(events[0]["text"], "English:tail")
-        self.assertEqual(events[1]["type"], "translation_stable")
-        self.assertEqual(events[1]["source_segment_id"], "seg_000001")
+        assert events[0]['type'] == 'translation_stable'
+        assert events[0]['source_segment_id'] == 'seg_000002'
+        assert events[0]['text'] == 'English:tail'
+        assert events[1]['type'] == 'translation_stable'
+        assert events[1]['source_segment_id'] == 'seg_000001'
 
-    async def test_finish_waits_for_running_stable_without_retranslating_it(self) -> None:
+    async def test_finish_waits_for_running_stable_without_retranslating_it(self, make_translation_runtime) -> None:
         translator = FakeTranslator(delays={"old": 0.03})
-        runtime, queue = await self.make_runtime(translator, preview_enabled=False)
+        runtime, queue = await make_translation_runtime(translator, preview_enabled=False)
         await runtime.start()
         await runtime.accept_source_event(transcript_update(1, stable_appends=[stable_segment(1, "old")]))
         await asyncio.sleep(0.01)
@@ -518,14 +549,14 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
         events = await runtime.finish([transcript_update(2, stable_appends=[stable_segment(2, "tail")])])
 
         running_event = await get_event(queue)
-        self.assertEqual(running_event["type"], "translation_stable")
-        self.assertEqual(running_event["source_segment_id"], "seg_000001")
-        self.assertEqual(events[0]["type"], "translation_stable")
-        self.assertEqual(events[0]["source_segment_id"], "seg_000002")
-        self.assertEqual(translator.calls.count("old"), 1)
-        self.assertEqual(translator.calls.count("tail"), 1)
+        assert running_event['type'] == 'translation_stable'
+        assert running_event['source_segment_id'] == 'seg_000001'
+        assert events[0]['type'] == 'translation_stable'
+        assert events[0]['source_segment_id'] == 'seg_000002'
+        assert translator.calls.count('old') == 1
+        assert translator.calls.count('tail') == 1
 
-    async def test_close_waits_for_running_stable_translation_thread(self) -> None:
+    async def test_close_waits_for_running_stable_translation_thread(self, make_translation_runtime) -> None:
         class BlockingTranslator:
             model_path = "blocking"
 
@@ -549,26 +580,25 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 return f"{target_language}:{text}"
 
         translator = BlockingTranslator()
-        runtime, queue = await self.make_runtime(translator, preview_enabled=False, preview_timeout_ms=10)
+        runtime, queue = await make_translation_runtime(translator, preview_enabled=False, preview_timeout_ms=10)
         await runtime.start()
         await runtime.accept_source_event(transcript_update(1, stable_appends=[stable_segment(1, "slow")]))
         for _ in range(100):
             if translator.started.is_set():
                 break
             await asyncio.sleep(0.01)
-        self.assertTrue(translator.started.is_set())
+        assert translator.started.is_set()
 
         close_task = asyncio.create_task(runtime.close())
         await asyncio.sleep(0.02)
-        self.assertFalse(close_task.done())
+        assert not close_task.done()
         translator.release.set()
         await asyncio.wait_for(close_task, timeout=1.0)
-        self.assertTrue(translator.finished.is_set())
-        self.assertTrue(queue.empty())
-        self.runtime = None
+        assert translator.finished.is_set()
+        await assert_no_event(queue, timeout=0.01)
 
-    async def test_preview_timeout_drops_preview_result(self) -> None:
-        runtime, queue = await self.make_runtime(
+    async def test_preview_timeout_drops_preview_result(self, make_translation_runtime) -> None:
+        runtime, queue = await make_translation_runtime(
             FakeTranslator(delays={"slow": 0.05}),
             stable_enabled=False,
             preview_timeout_ms=10,
@@ -578,13 +608,14 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
         await runtime.accept_source_event(
             transcript_update(1, partial={"text": "slow", "language": "Chinese", "start_ms": 0, "end_ms": 100})
         )
-        await asyncio.sleep(0.08)
+        await assert_no_event(queue, timeout=0.08)
 
-        self.assertTrue(queue.empty())
-
-    async def test_preview_timeout_drops_result_but_does_not_preempt_running_model_call(self) -> None:
+    async def test_preview_timeout_drops_result_but_does_not_preempt_running_model_call(
+        self,
+        make_translation_runtime,
+    ) -> None:
         translator = BlockingTextTranslator(blocked_text="draft")
-        runtime, queue = await self.make_runtime(translator, preview_timeout_ms=10)
+        runtime, queue = await make_translation_runtime(translator, preview_timeout_ms=10)
         await runtime.start()
 
         await runtime.accept_source_event(
@@ -593,15 +624,15 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
         await wait_for_thread_event(translator.started)
         await runtime.accept_source_event(transcript_update(2, stable_appends=[stable_segment(1, "stable")]))
 
-        with self.assertRaises(asyncio.TimeoutError):
+        with pytest.raises(asyncio.TimeoutError):
             await get_event(queue, timeout=0.05)
 
         translator.release.set()
         event = await get_event(queue, timeout=0.5)
-        self.assertEqual(event["type"], "translation_stable")
-        self.assertEqual(event["source_segment_id"], "seg_000001")
+        assert event['type'] == 'translation_stable'
+        assert event['source_segment_id'] == 'seg_000001'
 
-    async def test_model_actor_serializes_concurrent_translate_calls(self) -> None:
+    async def test_model_actor_serializes_concurrent_translate_calls(self, translation_actor) -> None:
         class ConcurrentDetectingTranslator(FakeTranslator):
             def __init__(self) -> None:
                 super().__init__(delays={"one": 0.03, "two": 0.03})
@@ -632,16 +663,16 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
                         self.active -= 1
 
         translator = ConcurrentDetectingTranslator()
-        self.actor = TranslationModelActor(translator)
+        actor = translation_actor(translator)
         results = await asyncio.gather(
-            self.actor.translate(
+            actor.translate(
                 "one",
                 target_language="English",
                 source_language="Chinese",
                 max_new_tokens=None,
                 timeout_sec=None,
             ),
-            self.actor.translate(
+            actor.translate(
                 "two",
                 target_language="English",
                 source_language="Chinese",
@@ -650,10 +681,14 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-        self.assertEqual(results, [("English:one", None), ("English:two", None)])
-        self.assertEqual(translator.max_active, 1)
+        assert results == [('English:one', None), ('English:two', None)]
+        assert translator.max_active == 1
 
-    async def test_model_actor_runs_prewarm_and_runtime_on_same_thread(self) -> None:
+    async def test_model_actor_runs_prewarm_and_runtime_on_same_thread(
+        self,
+        translation_actor,
+        track_translation_runtime,
+    ) -> None:
         class ThreadRecordingTranslator(FakeTranslator):
             def __init__(self) -> None:
                 super().__init__()
@@ -683,33 +718,37 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 )
 
         translator = ThreadRecordingTranslator()
-        self.actor = TranslationModelActor(translator)
-        results = self.actor.warmup(
+        actor = translation_actor(translator)
+        results = actor.warmup(
             ["short", "medium"],
             target_language="English",
             source_language="Chinese",
             max_new_tokens=16,
             sync_cuda=True,
         )
-        runtime = RealtimeTranslationRuntime(
-            self.actor,
-            config=RealtimeTranslationConfig(target_language="English", preview_enabled=False),
-            event_queue=asyncio.Queue(),
+        runtime = track_translation_runtime(
+            RealtimeTranslationRuntime(
+                actor,
+                config=RealtimeTranslationConfig(target_language="English", preview_enabled=False),
+                event_queue=asyncio.Queue(),
+            )
         )
-        self.runtime = runtime
         await runtime.start()
         await runtime.accept_source_event(transcript_update(1, stable_appends=[stable_segment(1, "stable")]))
 
-        self.assertEqual(len(results), 2)
+        assert len(results) == 2
         for _ in range(100):
             if translator.translate_threads:
                 break
             await asyncio.sleep(0.005)
-        self.assertEqual(translator.warmup_threads, translator.translate_threads)
+        assert translator.warmup_threads == translator.translate_threads
 
-    async def test_finish_waits_for_running_preview_model_call_before_stable_history(self) -> None:
+    async def test_finish_waits_for_running_preview_model_call_before_stable_history(
+        self,
+        make_translation_runtime,
+    ) -> None:
         translator = BlockingTextTranslator(blocked_text="draft")
-        runtime, _queue = await self.make_runtime(translator, preview_timeout_ms=1000)
+        runtime, _queue = await make_translation_runtime(translator, preview_timeout_ms=1000)
         await runtime.start()
 
         await runtime.accept_source_event(
@@ -721,36 +760,32 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
             runtime.finish([transcript_update(2, stable_appends=[stable_segment(1, "tail")])])
         )
         await asyncio.sleep(0.05)
-        self.assertFalse(finish_task.done())
+        assert not finish_task.done()
         translator.release.set()
         events = await asyncio.wait_for(finish_task, timeout=0.5)
 
-        self.assertEqual([event["type"] for event in events], ["translation_stable"])
-        self.assertEqual(events[0]["source_segment_id"], "seg_000001")
-        self.assertEqual(events[0]["text"], "English:tail")
+        assert [event['type'] for event in events] == ['translation_stable']
+        assert events[0]['source_segment_id'] == 'seg_000001'
+        assert events[0]['text'] == 'English:tail'
 
-    async def test_stable_translation_failure_emits_failed_status(self) -> None:
-        runtime, queue = await self.make_runtime(FakeTranslator(failures={"bad"}), preview_enabled=False)
+    async def test_stable_translation_failure_emits_failed_status(self, make_translation_runtime) -> None:
+        runtime, queue = await make_translation_runtime(FakeTranslator(failures={"bad"}), preview_enabled=False)
         await runtime.start()
 
         await runtime.accept_source_event(transcript_update(1, stable_appends=[stable_segment(1, "bad")]))
         event = await get_event(queue)
 
-        self.assertEqual(event["type"], "translation_status")
-        self.assertEqual(event["code"], "failed")
-        self.assertEqual(event["source_segment_id"], "seg_000001")
+        assert event['type'] == 'translation_status'
+        assert event['code'] == 'failed'
+        assert event['source_segment_id'] == 'seg_000001'
 
-    async def test_empty_stable_translation_emits_failed_status(self) -> None:
-        runtime, queue = await self.make_runtime(FakeTranslator(empty_outputs={"empty"}), preview_enabled=False)
+    async def test_empty_stable_translation_emits_failed_status(self, make_translation_runtime) -> None:
+        runtime, queue = await make_translation_runtime(FakeTranslator(empty_outputs={"empty"}), preview_enabled=False)
         await runtime.start()
 
         await runtime.accept_source_event(transcript_update(1, stable_appends=[stable_segment(1, "empty")]))
         event = await get_event(queue)
 
-        self.assertEqual(event["type"], "translation_status")
-        self.assertEqual(event["code"], "failed")
-        self.assertEqual(event["source_segment_id"], "seg_000001")
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert event['type'] == 'translation_status'
+        assert event['code'] == 'failed'
+        assert event['source_segment_id'] == 'seg_000001'

@@ -1,7 +1,7 @@
 # coding=utf-8
 from __future__ import annotations
 
-import unittest
+import pytest
 
 from qwen3_asr_runtime.subtitle_document import SubtitleDocument
 
@@ -36,7 +36,7 @@ def partial_segment(text: str, *, start_ms: int, end_ms: int) -> dict[str, objec
     }
 
 
-class SubtitleDocumentTest(unittest.TestCase):
+class TestSubtitleDocument:
     def test_window_scrolls_when_current_partial_becomes_stable(self) -> None:
         document = SubtitleDocument()
 
@@ -51,8 +51,8 @@ class SubtitleDocumentTest(unittest.TestCase):
             }
         )
         window = document.window()
-        self.assertIsNone(window.previous)
-        self.assertEqual(window.current.text, "正在处理")  # type: ignore[union-attr]
+        assert window.previous is None
+        assert window.current.text == '正在处理'  # type: ignore[union-attr]
 
         document.apply_event(
             {
@@ -66,8 +66,8 @@ class SubtitleDocumentTest(unittest.TestCase):
         )
 
         window = document.window()
-        self.assertEqual(window.previous.text, "正在处理")  # type: ignore[union-attr]
-        self.assertEqual(window.current.text, "下一句")  # type: ignore[union-attr]
+        assert window.previous.text == '正在处理'  # type: ignore[union-attr]
+        assert window.current.text == '下一句'  # type: ignore[union-attr]
 
     def test_srt_uses_stable_history_only(self) -> None:
         document = SubtitleDocument()
@@ -82,10 +82,7 @@ class SubtitleDocumentTest(unittest.TestCase):
             }
         )
 
-        self.assertEqual(
-            document.to_srt(),
-            "1\n00:00:00,000 --> 00:00:01,200\n第一句\n",
-        )
+        assert document.to_srt() == '1\n00:00:00,000 --> 00:00:01,200\n第一句\n'
 
     def test_timing_update_patches_pending_stable_line(self) -> None:
         document = SubtitleDocument()
@@ -109,9 +106,9 @@ class SubtitleDocumentTest(unittest.TestCase):
         )
 
         window = document.window()
-        self.assertIsNone(window.previous.start_ms)  # type: ignore[union-attr]
-        self.assertEqual(window.previous.timing_status, "pending")  # type: ignore[union-attr]
-        self.assertEqual(document.to_srt(), "")
+        assert window.previous.start_ms is None  # type: ignore[union-attr]
+        assert window.previous.timing_status == 'pending'  # type: ignore[union-attr]
+        assert document.to_srt() == ''
 
         document.apply_event(
             {
@@ -123,10 +120,10 @@ class SubtitleDocumentTest(unittest.TestCase):
             }
         )
 
-        self.assertEqual(document.stable_lines[0].start_ms, 120)
-        self.assertEqual(document.stable_lines[0].end_ms, 860)
-        self.assertEqual(document.stable_lines[0].timing_status, "aligned")
-        self.assertEqual(document.to_srt(), "1\n00:00:00,120 --> 00:00:00,860\n第一句\n")
+        assert document.stable_lines[0].start_ms == 120
+        assert document.stable_lines[0].end_ms == 860
+        assert document.stable_lines[0].timing_status == 'aligned'
+        assert document.to_srt() == '1\n00:00:00,120 --> 00:00:00,860\n第一句\n'
 
     def test_translation_events_are_annotations_not_scroll_inputs(self) -> None:
         document = SubtitleDocument()
@@ -168,14 +165,11 @@ class SubtitleDocumentTest(unittest.TestCase):
         )
 
         window = document.window()
-        self.assertEqual(window.previous.text, "稳定行")  # type: ignore[union-attr]
-        self.assertEqual(window.previous.translation, "stable line")  # type: ignore[union-attr]
-        self.assertEqual(window.current.text, "当前行")  # type: ignore[union-attr]
-        self.assertEqual(window.current.translation, "current line")  # type: ignore[union-attr]
-        self.assertEqual(
-            document.to_srt(),
-            "1\n00:00:00,000 --> 00:00:01,000\n稳定行\nstable line\n",
-        )
+        assert window.previous.text == '稳定行'  # type: ignore[union-attr]
+        assert window.previous.translation == 'stable line'  # type: ignore[union-attr]
+        assert window.current.text == '当前行'  # type: ignore[union-attr]
+        assert window.current.translation == 'current line'  # type: ignore[union-attr]
+        assert document.to_srt() == '1\n00:00:00,000 --> 00:00:01,000\n稳定行\nstable line\n'
 
     def test_translation_can_be_hidden_without_changing_source_state(self) -> None:
         document = SubtitleDocument(translation_enabled=False)
@@ -201,9 +195,9 @@ class SubtitleDocumentTest(unittest.TestCase):
         )
 
         window = document.window()
-        self.assertEqual(window.previous.text, "稳定行")  # type: ignore[union-attr]
-        self.assertIsNone(window.previous.translation)  # type: ignore[union-attr]
-        self.assertEqual(document.to_srt(), "1\n00:00:00,000 --> 00:00:01,000\n稳定行\n")
+        assert window.previous.text == '稳定行'  # type: ignore[union-attr]
+        assert window.previous.translation is None  # type: ignore[union-attr]
+        assert document.to_srt() == '1\n00:00:00,000 --> 00:00:01,000\n稳定行\n'
 
     def test_rejects_stale_stable_base(self) -> None:
         document = SubtitleDocument()
@@ -218,7 +212,7 @@ class SubtitleDocumentTest(unittest.TestCase):
             }
         )
 
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError):
             document.apply_event(
                 {
                     "type": "transcript_update",
@@ -263,10 +257,6 @@ class SubtitleDocumentTest(unittest.TestCase):
         )
 
         window = document.window()
-        self.assertEqual(window.previous.text, "第一句")  # type: ignore[union-attr]
-        self.assertEqual(window.previous.translation, "first line")  # type: ignore[union-attr]
-        self.assertIsNone(window.current)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert window.previous.text == '第一句'  # type: ignore[union-attr]
+        assert window.previous.translation == 'first line'  # type: ignore[union-attr]
+        assert window.current is None

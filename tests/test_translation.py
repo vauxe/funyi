@@ -3,14 +3,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from tempfile import TemporaryDirectory
-import time
-import unittest
 from unittest import mock
 
+import pytest
 import torch
 from transformers.generation.stopping_criteria import EosTokenCriteria, MaxLengthCriteria
 
+import qwen3_asr_runtime.translation as translation_module
 from qwen3_asr_runtime.translation import (
     DEFAULT_HYMT_ATTN_IMPLEMENTATION,
     DEFAULT_HYMT_DECODE_BACKEND,
@@ -86,18 +85,15 @@ class ShortBatchDecodeTokenizer(FakeTokenizer):
 
 
 class FakeModel(torch.nn.Module):
-    def __init__(self, *, generate_delay_sec: float = 0.0) -> None:
+    def __init__(self) -> None:
         super().__init__()
         self.anchor = torch.nn.Parameter(torch.zeros(1))
-        self.generate_delay_sec = float(generate_delay_sec)
         self.generate_kwargs: dict[str, object] = {}
         self.input_ids: torch.Tensor | None = None
 
     def generate(self, *, input_ids: torch.Tensor, **kwargs: object) -> torch.Tensor:
         self.generate_kwargs = dict(kwargs)
         self.input_ids = input_ids.detach().cpu()
-        if self.generate_delay_sec > 0:
-            time.sleep(self.generate_delay_sec)
         suffix = torch.tensor([[21, 22], [31, 32]], dtype=torch.long, device=input_ids.device)[: input_ids.shape[0]]
         return torch.cat([input_ids, suffix], dim=1)
 
@@ -116,39 +112,39 @@ class FakeHunyuanModel(FakeModel):
         )
 
 
-class TranslationPromptTest(unittest.TestCase):
+class TestTranslationPrompt:
     def test_prompt_uses_one_template_for_chinese_source_text(self) -> None:
         prompt = build_hymt_prompt("今天天气很好。", target_language="English")
 
-        self.assertIn("Translate the following segment into English", prompt)
-        self.assertIn("keeping the original format", prompt)
-        self.assertIn("今天天气很好。", prompt)
+        assert 'Translate the following segment into English' in prompt
+        assert 'keeping the original format' in prompt
+        assert '今天天气很好。' in prompt
 
     def test_prompt_uses_one_template_for_non_chinese_pair(self) -> None:
         prompt = build_hymt_prompt("It is on the house.", target_language="German", source_language="English")
 
-        self.assertIn("Translate the following segment into German", prompt)
-        self.assertIn("without additional explanation", prompt)
-        self.assertIn("It is on the house.", prompt)
+        assert 'Translate the following segment into German' in prompt
+        assert 'without additional explanation' in prompt
+        assert 'It is on the house.' in prompt
 
     def test_prompt_does_not_branch_by_source_language(self) -> None:
         prompt_en = build_hymt_prompt("hello", target_language="Japanese", source_language="English")
         prompt_zh = build_hymt_prompt("hello", target_language="Japanese", source_language="Chinese")
 
-        self.assertEqual(prompt_en, prompt_zh)
+        assert prompt_en == prompt_zh
 
 
-class HYMTTranslatorTest(unittest.TestCase):
+class TestHYMTTranslator:
     def test_default_attention_implementation_is_sdpa(self) -> None:
-        self.assertEqual(DEFAULT_HYMT_ATTN_IMPLEMENTATION, "sdpa")
-        self.assertEqual(DEFAULT_HYMT_DECODE_BACKEND, "fixed_mask")
+        assert DEFAULT_HYMT_ATTN_IMPLEMENTATION == 'sdpa'
+        assert DEFAULT_HYMT_DECODE_BACKEND == 'fixed_mask'
 
     def test_default_max_new_tokens_matches_asr_default(self) -> None:
-        self.assertEqual(DEFAULT_HYMT_MAX_NEW_TOKENS, 512)
-        self.assertEqual(HYMTGenerationConfig().max_new_tokens, DEFAULT_HYMT_MAX_NEW_TOKENS)
+        assert DEFAULT_HYMT_MAX_NEW_TOKENS == 512
+        assert HYMTGenerationConfig().max_new_tokens == DEFAULT_HYMT_MAX_NEW_TOKENS
 
     def test_default_generation_is_greedy(self) -> None:
-        self.assertFalse(HYMTGenerationConfig().do_sample)
+        assert not HYMTGenerationConfig().do_sample
 
     def test_model_load_uses_default_attention_implementation(self) -> None:
         tokenizer = FakeTokenizer()
@@ -167,7 +163,7 @@ class HYMTTranslatorTest(unittest.TestCase):
 
         from_tokenizer.assert_called_once()
         from_model.assert_called_once()
-        self.assertEqual(from_model.call_args.kwargs["attn_implementation"], DEFAULT_HYMT_ATTN_IMPLEMENTATION)
+        assert from_model.call_args.kwargs['attn_implementation'] == DEFAULT_HYMT_ATTN_IMPLEMENTATION
 
     def test_translate_decodes_only_generated_tokens(self) -> None:
         tokenizer = FakeTokenizer()
@@ -186,20 +182,20 @@ class HYMTTranslatorTest(unittest.TestCase):
         text = translator.translate("It is on the house.", target_language="Chinese", max_new_tokens=7)
         result = translator.profile_translate("It is on the house.", target_language="Chinese", max_new_tokens=7)
 
-        self.assertEqual(text, "translated text")
-        self.assertEqual(result.text, "translated text")
-        self.assertEqual(result.prompt_tokens, 3)
-        self.assertEqual(result.generated_tokens, 2)
-        self.assertEqual(tokenizer.decoded_ids, [21, 22])
-        self.assertFalse(tokenizer.add_generation_prompt)
-        self.assertEqual(model.generate_kwargs["max_new_tokens"], 7)
-        self.assertFalse(model.generate_kwargs["do_sample"])
-        self.assertEqual(model.generate_kwargs["cache_implementation"], "static")
-        self.assertEqual(model.generate_kwargs["logits_to_keep"], 1)
-        self.assertNotIn("custom_generate", model.generate_kwargs)
-        self.assertEqual(model.generate_kwargs["top_k"], 50)
-        self.assertEqual(model.generate_kwargs["top_p"], 1.0)
-        self.assertEqual(model.generate_kwargs["temperature"], 1.0)
+        assert text == 'translated text'
+        assert result.text == 'translated text'
+        assert result.prompt_tokens == 3
+        assert result.generated_tokens == 2
+        assert tokenizer.decoded_ids == [21, 22]
+        assert not tokenizer.add_generation_prompt
+        assert model.generate_kwargs['max_new_tokens'] == 7
+        assert not model.generate_kwargs['do_sample']
+        assert model.generate_kwargs['cache_implementation'] == 'static'
+        assert model.generate_kwargs['logits_to_keep'] == 1
+        assert 'custom_generate' not in model.generate_kwargs
+        assert model.generate_kwargs['top_k'] == 50
+        assert model.generate_kwargs['top_p'] == 1.0
+        assert model.generate_kwargs['temperature'] == 1.0
 
     def test_generate_backend_can_use_hf_generate(self) -> None:
         tokenizer = FakeTokenizer()
@@ -215,8 +211,8 @@ class HYMTTranslatorTest(unittest.TestCase):
 
         translator.translate("hello", target_language="Chinese")
 
-        self.assertEqual(translator.decode_backend, "generate")
-        self.assertNotIn("custom_generate", model.generate_kwargs)
+        assert translator.decode_backend == 'generate'
+        assert 'custom_generate' not in model.generate_kwargs
 
     def test_load_disables_hymt_noop_dynamic_rope_update(self) -> None:
         tokenizer = FakeTokenizer()
@@ -225,8 +221,8 @@ class HYMTTranslatorTest(unittest.TestCase):
 
         HYMTTranslator("fake-model", device="cpu", model=model, tokenizer=tokenizer)
 
-        self.assertEqual(rotary.rope_type, "default")
-        self.assertEqual(rotary._hymt_original_rope_type, "dynamic")
+        assert rotary.rope_type == 'default'
+        assert rotary._hymt_original_rope_type == 'dynamic'
 
     def test_warmup_skips_empty_texts(self) -> None:
         translator = HYMTTranslator(
@@ -239,12 +235,14 @@ class HYMTTranslatorTest(unittest.TestCase):
 
         results = translator.warmup(["", " first ", "second"], target_language="Chinese", max_new_tokens=4)
 
-        self.assertEqual(len(results), 2)
-        self.assertEqual([result.text for result in results], ["translated text", "translated text"])
+        assert len(results) == 2
+        assert [result.text for result in results] == ['translated text', 'translated text']
 
-    def test_translate_batch_preserves_order_and_left_pads_prompts(self) -> None:
+    def test_translate_batch_preserves_order_and_left_pads_prompts(self, monkeypatch: pytest.MonkeyPatch) -> None:
         tokenizer = VariableLengthTokenizer()
-        model = FakeModel(generate_delay_sec=0.05)
+        clock = iter([0.0, 1.0, 1.1, 2.0, 2.25, 3.0, 3.05, 3.2])
+        monkeypatch.setattr(translation_module.time, "perf_counter", lambda: next(clock))
+        model = FakeModel()
         translator = HYMTTranslator(
             "fake-model",
             device="cpu",
@@ -259,18 +257,18 @@ class HYMTTranslatorTest(unittest.TestCase):
             max_new_tokens=4,
         )
 
-        self.assertEqual([result.text for result in results], ["translated text", "", "second translated"])
-        self.assertEqual([result.prompt_tokens for result in results], [2, 0, 4])
-        self.assertEqual([result.generated_tokens for result in results], [2, 0, 2])
-        self.assertGreaterEqual(results[0].generate_wall_sec, 0.04)
-        self.assertEqual(results[0].generate_wall_sec, results[2].generate_wall_sec)
-        self.assertEqual(tokenizer.template_calls, 2)
-        self.assertIsNotNone(model.input_ids)
+        assert [result.text for result in results] == ['translated text', '', 'second translated']
+        assert [result.prompt_tokens for result in results] == [2, 0, 4]
+        assert [result.generated_tokens for result in results] == [2, 0, 2]
+        assert results[0].generate_wall_sec == 0.25
+        assert results[0].generate_wall_sec == results[2].generate_wall_sec
+        assert results[0].total_wall_sec == 3.2
+        assert tokenizer.template_calls == 2
         assert model.input_ids is not None
-        self.assertEqual(model.input_ids.tolist(), [[0, 0, 10, 11], [10, 11, 12, 13]])
+        assert model.input_ids.tolist() == [[0, 0, 10, 11], [10, 11, 12, 13]]
         attention_mask = model.generate_kwargs["attention_mask"]
-        self.assertIsInstance(attention_mask, torch.Tensor)
-        self.assertEqual(attention_mask.cpu().tolist(), [[False, False, True, True], [True, True, True, True]])
+        assert isinstance(attention_mask, torch.Tensor)
+        assert attention_mask.cpu().tolist() == [[False, False, True, True], [True, True, True, True]]
 
     def test_translate_batch_rejects_decoder_output_count_mismatch(self) -> None:
         translator = HYMTTranslator(
@@ -281,11 +279,11 @@ class HYMTTranslatorTest(unittest.TestCase):
             tokenizer=ShortBatchDecodeTokenizer(),
         )
 
-        with self.assertRaises(RuntimeError):
+        with pytest.raises(RuntimeError):
             translator.profile_translate_batch(["first", "second"], target_language="Chinese")
 
 
-class HYMTFixedMaskDecodeTest(unittest.TestCase):
+class TestHYMTFixedMaskDecode:
     def test_static_sdpa_attention_masks_are_causal_4d_views(self) -> None:
         model = SimpleNamespace(config=SimpleNamespace(_attn_implementation="sdpa"))
 
@@ -299,26 +297,16 @@ class HYMTFixedMaskDecodeTest(unittest.TestCase):
             device=torch.device("cpu"),
         )
 
-        self.assertIsNotNone(masks)
         assert masks is not None
-        self.assertEqual(tuple(masks.shape), (1, 1, 4, 5))
-        self.assertEqual(
-            masks[0, 0].tolist(),
-            [
-                [True, False, False, False, False],
-                [True, True, False, False, False],
-                [True, True, True, False, False],
-                [True, True, True, True, False],
-            ],
-        )
-        self.assertEqual(
-            tuple(_attention_mask_for_step(masks, torch.empty(1, 4), 2, prefill=True).shape),
-            (1, 1, 2, 5),
-        )
-        self.assertEqual(
-            tuple(_attention_mask_for_step(masks, torch.empty(1, 4), 3, prefill=False).shape),
-            (1, 1, 1, 5),
-        )
+        assert tuple(masks.shape) == (1, 1, 4, 5)
+        assert masks[0, 0].tolist() == [
+            [True, False, False, False, False],
+            [True, True, False, False, False],
+            [True, True, True, False, False],
+            [True, True, True, True, False],
+        ]
+        assert tuple(_attention_mask_for_step(masks, torch.empty(1, 4), 2, prefill=True).shape) == (1, 1, 2, 5)
+        assert tuple(_attention_mask_for_step(masks, torch.empty(1, 4), 3, prefill=False).shape) == (1, 1, 1, 5)
 
     def test_static_sdpa_attention_masks_fall_back_for_padded_prompts(self) -> None:
         model = SimpleNamespace(config=SimpleNamespace(_attn_implementation="sdpa"))
@@ -333,7 +321,7 @@ class HYMTFixedMaskDecodeTest(unittest.TestCase):
             device=torch.device("cpu"),
         )
 
-        self.assertIsNone(masks)
+        assert masks is None
 
     def test_fast_stop_eos_ids_accepts_single_eos_and_max_length_only(self) -> None:
         criteria = [
@@ -341,24 +329,21 @@ class HYMTFixedMaskDecodeTest(unittest.TestCase):
             EosTokenCriteria(eos_token_id=torch.tensor([7])),
         ]
 
-        self.assertEqual(_fast_stop_eos_token_ids(criteria), frozenset({7}))
+        assert _fast_stop_eos_token_ids(criteria) == frozenset({7})
 
     def test_fast_stop_eos_ids_rejects_multi_eos_or_unknown_criteria(self) -> None:
-        self.assertIsNone(_fast_stop_eos_token_ids([EosTokenCriteria(eos_token_id=torch.tensor([7, 8]))]))
-        self.assertIsNone(_fast_stop_eos_token_ids([SimpleNamespace()]))
+        assert _fast_stop_eos_token_ids([EosTokenCriteria(eos_token_id=torch.tensor([7, 8]))]) is None
+        assert _fast_stop_eos_token_ids([SimpleNamespace()]) is None
 
 
-class HYMTModelPathTest(unittest.TestCase):
-    def test_local_files_keeps_existing_path(self) -> None:
-        with TemporaryDirectory() as directory:
-            self.assertEqual(_resolve_model_path(directory, local_files_only=True), directory)
+class TestHYMTModelPath:
+    def test_local_files_keeps_existing_path(self, tmp_path: Path) -> None:
+        model_path = str(tmp_path)
+
+        assert _resolve_model_path(model_path, local_files_only=True) == model_path
 
     def test_local_files_resolves_model_id_to_snapshot(self) -> None:
         with mock.patch("huggingface_hub.snapshot_download", return_value=Path("/cache/snapshot")) as download:
-            self.assertEqual(_resolve_model_path("org/model", local_files_only=True), "/cache/snapshot")
+            assert _resolve_model_path('org/model', local_files_only=True) == '/cache/snapshot'
 
         download.assert_called_once_with(repo_id="org/model", local_files_only=True)
-
-
-if __name__ == "__main__":
-    unittest.main()

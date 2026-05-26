@@ -1,4 +1,3 @@
-import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -30,29 +29,35 @@ def _fake_model() -> SimpleNamespace:
     )
 
 
-class TransformersBackendAttentionTest(unittest.TestCase):
+class TestTransformersBackendAttention:
     def test_flashinfer_routes_thinker_configs_through_flashinfer_dispatcher(self) -> None:
         model = _fake_model()
 
         with (
             patch("qwen3_asr_runtime.backends.transformers.register_flashinfer", return_value=True),
             patch.object(TransformersASRBackend, "_default_attn_implementation", return_value="flash_attention_2"),
-            patch("qwen3_asr_runtime.backends.transformers.AutoModel.from_pretrained", return_value=model) as load_model,
+            patch(
+                "qwen3_asr_runtime.backends.transformers.AutoModel.from_pretrained",
+                return_value=model,
+            ) as load_model,
             patch("qwen3_asr_runtime.backends.transformers.AutoProcessor.from_pretrained", return_value=object()),
         ):
             TransformersASRBackend.from_pretrained("dummy-model", flashinfer=True)
 
-        self.assertEqual(load_model.call_args.kwargs["attn_implementation"], "flashinfer")
-        self.assertEqual(model.thinker.config._attn_implementation, "flashinfer")
-        self.assertEqual(model.thinker.model.config._attn_implementation, "flashinfer")
-        self.assertEqual(model.thinker.audio_tower.config._attn_implementation, "flashinfer")
+        assert load_model.call_args.kwargs['attn_implementation'] == 'flashinfer'
+        assert model.thinker.config._attn_implementation == 'flashinfer'
+        assert model.thinker.model.config._attn_implementation == 'flashinfer'
+        assert model.thinker.audio_tower.config._attn_implementation == 'flashinfer'
 
     def test_flashinfer_overrides_explicit_attention_backend(self) -> None:
         model = _fake_model()
 
         with (
             patch("qwen3_asr_runtime.backends.transformers.register_flashinfer", return_value=True),
-            patch("qwen3_asr_runtime.backends.transformers.AutoModel.from_pretrained", return_value=model) as load_model,
+            patch(
+                "qwen3_asr_runtime.backends.transformers.AutoModel.from_pretrained",
+                return_value=model,
+            ) as load_model,
             patch("qwen3_asr_runtime.backends.transformers.AutoProcessor.from_pretrained", return_value=object()),
         ):
             TransformersASRBackend.from_pretrained(
@@ -61,10 +66,6 @@ class TransformersBackendAttentionTest(unittest.TestCase):
                 attn_implementation="flash_attention_2",
             )
 
-        self.assertEqual(load_model.call_args.kwargs["attn_implementation"], "flashinfer")
-        self.assertEqual(model.thinker.model.config._attn_implementation, "flashinfer")
-        self.assertEqual(model.thinker.audio_tower.config._attn_implementation, "flashinfer")
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert load_model.call_args.kwargs['attn_implementation'] == 'flashinfer'
+        assert model.thinker.model.config._attn_implementation == 'flashinfer'
+        assert model.thinker.audio_tower.config._attn_implementation == 'flashinfer'

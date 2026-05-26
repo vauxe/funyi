@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-import unittest
 
 import numpy as np
+import pytest
 
 from qwen3_asr_runtime.realtime_timestamps import (
     AudioTimelineBuffer,
@@ -42,10 +42,24 @@ class FakeAligner:
         return [FakeAlignResult(items=self.items)]
 
 
-class RealtimeTimestampRuntimeTest(unittest.IsolatedAsyncioTestCase):
-    def test_ready_payload_exposes_forced_aligner_language_contract(self) -> None:
-        actor = TimestampModelActor(FakeAligner([]))
-        self.addCleanup(actor.close, wait=True)
+@pytest.fixture
+def timestamp_actor():
+    actors: list[TimestampModelActor] = []
+
+    def make(aligner: FakeAligner) -> TimestampModelActor:
+        actor = TimestampModelActor(aligner)
+        actors.append(actor)
+        return actor
+
+    yield make
+
+    for actor in reversed(actors):
+        actor.close(wait=True)
+
+
+class TestRealtimeTimestampRuntime:
+    def test_ready_payload_exposes_forced_aligner_language_contract(self, timestamp_actor) -> None:
+        actor = timestamp_actor(FakeAligner([]))
         queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue()
         runtime = RealtimeTimestampRuntime(
             actor,
@@ -57,8 +71,8 @@ class RealtimeTimestampRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
         ready = runtime.ready_payload()
 
-        self.assertIn("Japanese", ready["allowed_source_languages"])
-        self.assertNotIn("Arabic", ready["allowed_source_languages"])
+        assert 'Japanese' in ready['allowed_source_languages']
+        assert 'Arabic' not in ready['allowed_source_languages']
 
     def test_audio_timeline_buffer_crops_across_appended_chunks(self) -> None:
         buffer = AudioTimelineBuffer()
@@ -67,15 +81,15 @@ class RealtimeTimestampRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
         crop, crop_start = buffer.crop(start_sample=3, end_sample=8, pad_samples=1)
 
-        self.assertEqual(crop_start, 2)
-        self.assertEqual(buffer.end_sample, 10)
+        assert crop_start == 2
+        assert buffer.end_sample == 10
         np.testing.assert_array_equal(crop, np.arange(2, 9, dtype=np.float32))
 
         crop[0] = -1
         recrop, _ = buffer.crop(start_sample=3, end_sample=8, pad_samples=1)
         np.testing.assert_array_equal(recrop, np.arange(2, 9, dtype=np.float32))
 
-    async def test_aligns_segment_from_crop_relative_items_and_updates_store(self) -> None:
+    async def test_aligns_segment_from_crop_relative_items_and_updates_store(self, timestamp_actor) -> None:
         store = TranscriptStore(transcript_id="t1")
         segment = store.append_stable_segment(
             text="第一句",
@@ -92,8 +106,7 @@ class RealtimeTimestampRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 FakeAlignItem(text="句", start_time=0.420, end_time=0.560),
             ]
         )
-        actor = TimestampModelActor(aligner)
-        self.addCleanup(actor.close, wait=True)
+        actor = timestamp_actor(aligner)
         queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue()
         runtime = RealtimeTimestampRuntime(
             actor,
@@ -118,23 +131,20 @@ class RealtimeTimestampRuntimeTest(unittest.IsolatedAsyncioTestCase):
         timing_update = await asyncio.wait_for(queue.get(), timeout=1.0)
         await runtime.close()
 
-        self.assertEqual(
-            timing_update,
-            {
-                "type": "transcript_timing_update",
-                "source_segment_id": "seg_000001",
-                "start_ms": 100,
-                "end_ms": 560,
-                "timing_status": "aligned",
-            },
-        )
-        self.assertEqual(store.stable_segments[0].start_ms, 100)
-        self.assertEqual(store.stable_segments[0].end_ms, 560)
-        self.assertEqual(store.stable_segments[0].timing_status, "aligned")
-        self.assertEqual(len(aligner.calls), 1)
-        self.assertEqual(aligner.calls[0][1:], ("第一句", "Chinese"))
+        assert timing_update == {
+            'type': 'transcript_timing_update',
+            'source_segment_id': 'seg_000001',
+            'start_ms': 100,
+            'end_ms': 560,
+            'timing_status': 'aligned',
+        }
+        assert store.stable_segments[0].start_ms == 100
+        assert store.stable_segments[0].end_ms == 560
+        assert store.stable_segments[0].timing_status == 'aligned'
+        assert len(aligner.calls) == 1
+        assert aligner.calls[0][1:] == ('第一句', 'Chinese')
 
-    async def test_unsupported_forced_aligner_language_fails_without_model_call(self) -> None:
+    async def test_unsupported_forced_aligner_language_fails_without_model_call(self, timestamp_actor) -> None:
         store = TranscriptStore(transcript_id="t1")
         segment = store.append_stable_segment(
             text="مرحبا",
@@ -146,8 +156,7 @@ class RealtimeTimestampRuntimeTest(unittest.IsolatedAsyncioTestCase):
         buffer = AudioTimelineBuffer()
         buffer.append(np.zeros(16_000, dtype=np.float32))
         aligner = FakeAligner([FakeAlignItem(text="مرحبا", start_time=0.1, end_time=0.4)])
-        actor = TimestampModelActor(aligner)
-        self.addCleanup(actor.close, wait=True)
+        actor = timestamp_actor(aligner)
         queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue()
         runtime = RealtimeTimestampRuntime(
             actor,
@@ -172,10 +181,10 @@ class RealtimeTimestampRuntimeTest(unittest.IsolatedAsyncioTestCase):
         timing_update = await asyncio.wait_for(queue.get(), timeout=1.0)
         await runtime.close()
 
-        self.assertEqual(timing_update["timing_status"], "failed")
-        self.assertEqual(aligner.calls, [])
+        assert timing_update['timing_status'] == 'failed'
+        assert aligner.calls == []
 
-    async def test_finish_marks_unaligned_segment_failed_before_final_snapshot(self) -> None:
+    async def test_finish_marks_unaligned_segment_failed_before_final_snapshot(self, timestamp_actor) -> None:
         store = TranscriptStore(transcript_id="t1")
         segment = store.append_stable_segment(
             text="尾句",
@@ -186,8 +195,7 @@ class RealtimeTimestampRuntimeTest(unittest.IsolatedAsyncioTestCase):
         )
         buffer = AudioTimelineBuffer()
         buffer.append(np.zeros(16_000, dtype=np.float32))
-        actor = TimestampModelActor(FakeAligner([]))
-        self.addCleanup(actor.close, wait=True)
+        actor = timestamp_actor(FakeAligner([]))
         runtime = RealtimeTimestampRuntime(
             actor,
             store=store,
@@ -209,14 +217,14 @@ class RealtimeTimestampRuntimeTest(unittest.IsolatedAsyncioTestCase):
             ]
         )
 
-        self.assertEqual(events[0]["type"], "transcript_timing_update")
-        self.assertEqual(events[0]["source_segment_id"], "seg_000001")
-        self.assertIsNone(events[0]["start_ms"])
-        self.assertIsNone(events[0]["end_ms"])
-        self.assertEqual(events[0]["timing_status"], "failed")
-        self.assertEqual(store.final_event()["segments"][0]["timing_status"], "failed")
+        assert events[0]['type'] == 'transcript_timing_update'
+        assert events[0]['source_segment_id'] == 'seg_000001'
+        assert events[0]['start_ms'] is None
+        assert events[0]['end_ms'] is None
+        assert events[0]['timing_status'] == 'failed'
+        assert store.final_event()['segments'][0]['timing_status'] == 'failed'
 
-    async def test_timing_patch_waits_for_shared_store_lock(self) -> None:
+    async def test_timing_patch_waits_for_shared_store_lock(self, timestamp_actor) -> None:
         store = TranscriptStore(transcript_id="t1")
         segment = store.append_stable_segment(
             text="锁住",
@@ -228,8 +236,7 @@ class RealtimeTimestampRuntimeTest(unittest.IsolatedAsyncioTestCase):
         buffer = AudioTimelineBuffer()
         buffer.append(np.zeros(16_000, dtype=np.float32))
         store_lock = asyncio.Lock()
-        actor = TimestampModelActor(FakeAligner([FakeAlignItem(text="锁", start_time=0.1, end_time=0.2)]))
-        self.addCleanup(actor.close, wait=True)
+        actor = timestamp_actor(FakeAligner([FakeAlignItem(text="锁", start_time=0.1, end_time=0.2)]))
         runtime = RealtimeTimestampRuntime(
             actor,
             store=store,
@@ -254,14 +261,14 @@ class RealtimeTimestampRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 )
             )
             await asyncio.sleep(0.05)
-            self.assertFalse(finish_task.done())
-            self.assertEqual(store.stable_segments[0].timing_status, "pending")
+            assert not finish_task.done()
+            assert store.stable_segments[0].timing_status == 'pending'
 
         events = await asyncio.wait_for(finish_task, timeout=1.0)
-        self.assertEqual(events[0]["timing_status"], "aligned")
-        self.assertEqual(store.stable_segments[0].timing_status, "aligned")
+        assert events[0]['timing_status'] == 'aligned'
+        assert store.stable_segments[0].timing_status == 'aligned'
 
-    async def test_finish_aligns_queued_segments_before_new_flush_segments(self) -> None:
+    async def test_finish_aligns_queued_segments_before_new_flush_segments(self, timestamp_actor) -> None:
         store = TranscriptStore(transcript_id="t1")
         first = store.append_stable_segment(
             text="第一句",
@@ -280,8 +287,7 @@ class RealtimeTimestampRuntimeTest(unittest.IsolatedAsyncioTestCase):
         buffer = AudioTimelineBuffer()
         buffer.append(np.zeros(32_000, dtype=np.float32))
         aligner = FakeAligner([FakeAlignItem(text="句", start_time=0.0, end_time=0.5)])
-        actor = TimestampModelActor(aligner)
-        self.addCleanup(actor.close, wait=True)
+        actor = timestamp_actor(aligner)
         runtime = RealtimeTimestampRuntime(
             actor,
             store=store,
@@ -313,10 +319,6 @@ class RealtimeTimestampRuntimeTest(unittest.IsolatedAsyncioTestCase):
             ]
         )
 
-        self.assertEqual([call[1] for call in aligner.calls], ["第一句", "第二句"])
-        self.assertEqual(store.stable_segments[0].start_ms, 0)
-        self.assertEqual(store.stable_segments[1].start_ms, 1000)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert [call[1] for call in aligner.calls] == ['第一句', '第二句']
+        assert store.stable_segments[0].start_ms == 0
+        assert store.stable_segments[1].start_ms == 1000
