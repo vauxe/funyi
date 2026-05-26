@@ -108,9 +108,10 @@ model or local path:
 FUNYI_TRANSLATION_MODEL=/path/to/HY-MT1.5-1.8B make backend
 ```
 
-Set `FUNYI_TRANSLATION_MODEL=` to disable translation. Auxiliary models load
-from local files by default; use `make backend-download` only when a download is
-expected. Then choose a target language in the desktop UI.
+Then choose a target language in the desktop UI. Set
+`FUNYI_TRANSLATION_MODEL=` to disable translation and leave the desktop target
+language set to `Off`. Auxiliary models load from local files by default; use
+`make backend-download` only when a download is expected.
 
 ## Enable Forced-Aligner Timestamps
 
@@ -218,7 +219,7 @@ corepack pnpm install
 
 - `desktop/README.md`: desktop client details and OS audio-capture notes.
 - `docs/realtime_asr_service.md`: WebSocket protocol and service behavior.
-- `docs/realtime_translation_design.md`: translation event model and replay
-  behavior.
+- `docs/realtime_translation_design.md`: translation scheduling, finish
+  semantics, and quality gates.
 - `docs/streaming_runtime.md`: streaming runtime semantics.
 - `docs/validation_and_regression.md`: developer validation commands.

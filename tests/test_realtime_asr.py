@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
 from pathlib import Path
 import re
 import sys
@@ -31,7 +32,6 @@ from realtime_server import (
     _send_queued_events,
     _session_translation_config,
     _translation_capture_lock,
-    _validate_timestamp_start_language,
 )
 from qwen3_asr_runtime.language_support import (
     HYMT_MODEL_CARD_LANGUAGES,
@@ -684,29 +684,29 @@ class RealtimeServerCliTest(unittest.TestCase):
                 TranslationServiceConfig(),
             )
 
-    def test_timestamp_start_language_follows_forced_aligner_model_card(self) -> None:
-        _validate_timestamp_start_language({"type": "start", "language": "Japanese"}, timestamps_enabled=True)
-        _validate_timestamp_start_language({"type": "start"}, timestamps_enabled=True)
+    def test_timestamp_session_config_accepts_full_asr_model_card(self) -> None:
+        config = _build_session_config(
+            {"type": "start", "language": "Arabic"},
+            force_align_timestamps=True,
+        )
 
-        with self.assertRaisesRegex(ValueError, "forced-aligner timestamps"):
-            _validate_timestamp_start_language({"type": "start", "language": "Arabic"}, timestamps_enabled=True)
-
+        self.assertTrue(config.force_align_timestamps)
+        self.assertEqual(config.language, "Arabic")
         self.assertIn("Japanese", QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES)
         self.assertNotIn("Arabic", QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES)
 
-    def test_set_language_command_follows_forced_aligner_model_card(self) -> None:
-        _parse_language_config_update(
+    def test_set_language_command_accepts_full_asr_model_card(self) -> None:
+        japanese = _parse_language_config_update(
             {"type": "set_language", "language": "Japanese"},
             TranslationServiceConfig(),
-            timestamps_enabled=True,
+        )
+        arabic = _parse_language_config_update(
+            {"type": "set_language", "language": "Arabic"},
+            TranslationServiceConfig(),
         )
 
-        with self.assertRaisesRegex(ValueError, "forced-aligner timestamps"):
-            _parse_language_config_update(
-                {"type": "set_language", "language": "Arabic"},
-                TranslationServiceConfig(),
-                timestamps_enabled=True,
-            )
+        self.assertEqual(japanese, {"language": "Japanese"})
+        self.assertEqual(arabic, {"language": "Arabic"})
 
 
 class RealtimeServerTranslationOrderingTest(unittest.IsolatedAsyncioTestCase):
@@ -742,6 +742,7 @@ class RealtimeServerTranslationOrderingTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(payload)
         self.assertEqual(websocket.closed_code, 1003)
         self.assertIn("Unsupported language", websocket.sent[0])
+        self.assertIs(json.loads(websocket.sent[0])["fatal"], True)
 
     async def test_receive_start_rejects_unknown_field(self) -> None:
         class FakeWebSocket:
@@ -766,6 +767,7 @@ class RealtimeServerTranslationOrderingTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(websocket.closed_code, 1003)
         self.assertIn("Unsupported start command field", websocket.sent[0])
         self.assertIn("unsupported", websocket.sent[0])
+        self.assertIs(json.loads(websocket.sent[0])["fatal"], True)
 
     async def test_sender_times_out_when_client_stops_consuming_output(self) -> None:
         class HangingSendWebSocket:

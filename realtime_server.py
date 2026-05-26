@@ -25,7 +25,6 @@ from qwen3_asr_runtime.realtime_translation import (
 )
 from qwen3_asr_runtime.language_support import (
     HYMT_MODEL_CARD_LANGUAGES,
-    QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES,
 )
 from qwen3_asr_runtime.translation import (
     DEFAULT_HYMT_ATTN_IMPLEMENTATION,
@@ -139,11 +138,6 @@ def build_app(
             store = TranscriptStore(transcript_id=session_id)
             store_lock = asyncio.Lock()
             timestamps_enabled = timestamp_actor is not None and timestamp_config is not None
-            try:
-                _validate_timestamp_start_language(start_payload, timestamps_enabled=timestamps_enabled)
-            except ValueError as exc:
-                await _send_error_and_close(websocket, str(exc), code=1003)
-                return
             config = _build_session_config(
                 start_payload,
                 force_align_timestamps=timestamps_enabled,
@@ -226,7 +220,6 @@ def build_app(
                         language_update = _parse_language_config_update(
                             command,
                             translation_service_config,
-                            timestamps_enabled=timestamps_enabled,
                         )
                     except ValueError as exc:
                         await event_queue.put({"type": "error", "error": str(exc)})
@@ -292,7 +285,7 @@ def build_app(
             _LOGGER.exception("Realtime ASR WebSocket session failed.")
             try:
                 if "event_queue" in locals() and "sender_task" in locals() and not sender_task.done():
-                    await event_queue.put({"type": "error", "error": str(exc) or type(exc).__name__})
+                    await event_queue.put({"type": "error", "error": str(exc) or type(exc).__name__, "fatal": True})
                     await event_queue.put(None)
                     await sender_task
                     await _close_websocket(websocket, code=1011)
@@ -410,8 +403,6 @@ async def _set_session_translation_target(
 def _parse_language_config_update(
     command: dict[str, Any],
     service_config: TranslationServiceConfig | None,
-    *,
-    timestamps_enabled: bool = False,
 ) -> dict[str, str | None]:
     unknown_fields = sorted(set(command) - _LANGUAGE_COMMAND_FIELDS)
     if unknown_fields:
@@ -423,7 +414,6 @@ def _parse_language_config_update(
         language: str | None = None
         if raw_language is not None and str(raw_language).strip():
             language = _normalize_supported_language(str(raw_language))
-        _validate_timestamp_language(language, timestamps_enabled=timestamps_enabled)
         update["language"] = language
 
     if "target_language" in command:
@@ -457,22 +447,6 @@ def _normalize_language_choice(language: str, allowed: tuple[str, ...], *, field
 
 def _normalize_translation_target_language(language: str) -> str:
     return _normalize_language_choice(language, HYMT_MODEL_CARD_LANGUAGES, field_name="target_language")
-
-
-def _validate_timestamp_start_language(payload: dict[str, Any], *, timestamps_enabled: bool) -> None:
-    language = str(payload.get("language") or "").strip()
-    _validate_timestamp_language(language or None, timestamps_enabled=timestamps_enabled)
-
-
-def _validate_timestamp_language(language: str | None, *, timestamps_enabled: bool) -> None:
-    if not timestamps_enabled or not language:
-        return
-    if language not in QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES:
-        raise ValueError(
-            "language must be one of "
-            f"{list(QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES)} when forced-aligner timestamps are enabled, "
-            f"got: {language}"
-        )
 
 
 def _arg_nonnegative_int(value: str) -> int:
@@ -651,7 +625,7 @@ async def _send_json_with_timeout(websocket: Any, payload: dict[str, Any], *, ti
 async def _send_error_and_close(websocket: Any, error: str, *, code: int) -> None:
     await _send_json_with_timeout(
         websocket,
-        {"type": "error", "error": str(error)},
+        {"type": "error", "error": str(error), "fatal": True},
         timeout_sec=_SERVICE_SEND_TIMEOUT_SEC,
     )
     await _close_websocket(websocket, code=code)

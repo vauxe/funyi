@@ -4,10 +4,10 @@ Status: source transcript events, a synchronous HY-MT adapter, the optional
 WebSocket translation runtime, and the subtitle replay model are wired.
 Model, prompt, or decode-path changes still need the translation quality gate.
 
-Goal: add optional bilingual subtitles above `/ws/asr` without changing ASR
-behavior. ASR-only mode keeps the current `ready`, `transcript_update`, and
-`transcript_final` contract. Source transcript semantics stay in
-`@docs/realtime_asr_service.md`.
+Purpose: describe how optional bilingual subtitles run above `/ws/asr` without
+changing ASR behavior. The public WebSocket command and event contract stays in
+`@docs/realtime_asr_service.md`; this document covers translation runtime
+scheduling, finish semantics, and quality gates only.
 
 ## Boundary
 
@@ -54,94 +54,35 @@ client SubtitleDocument
 
 Only the sender task writes to the WebSocket.
 
-When `cuda_graph` is enabled, the service prewarms the ASR CUDA graph for the
-fixed live20 profile before accepting WebSocket sessions. Prewarm failure is a
-startup failure. Runtime ASR then replays the captured graph while HY-MT can
-generate concurrently. If a request exceeds the prewarmed graph shape, ASR falls
-back to non-graph decode for that call instead of capturing a new graph next to
-HY-MT.
+The service gives the translation scheduler each source event before queueing
+that source event, so stale preview work can be cancelled before clients see a
+newer source revision. Current translation results are queued later and never
+block audio ingest. When the live20 CUDA graph path is prewarmed, ASR graph
+replay and HY-MT generation may overlap; graph capture and optimization details
+live in `@docs/performance_optimization.md`.
 
-## Protocol
+## Public API Surface
 
-The service has translation capability only when it is started with
-`--translation-model`. Session start enables translation by providing an
-explicit `target_language` from the HY-MT model-card language list:
+`@docs/realtime_asr_service.md` owns target selection, capability errors, and
+the payloads for `ready.translation`, `translation_preview`,
+`translation_stable`, and `translation_status`. The runtime receives a
+normalized `target_language` and treats `None` as translation disabled.
 
-```json
-{"type":"start","session_id":"local","target_language":"English"}
-```
-
-Omit `target_language` to run transcription only. The service has no default
-translation target, and empty `target_language` values are rejected.
-
-
-`ready.translation` when enabled:
-
-```json
-{
-  "enabled": true,
-  "target_language": "English",
-  "model": "tencent/HY-MT1.5-1.8B",
-  "stable": { "enabled": true, "reliable": true, "queue_size": null, "timeout_ms": null, "batch_size": 1 },
-  "preview": { "enabled": true, "debounce_ms": 700, "timeout_ms": 30000 }
-}
-```
-
-Stable result:
-
-```json
-{
-  "type": "translation_stable",
-  "source_revision": 12,
-  "source_segment_id": "seg_000001",
-  "source_segment_index": 1,
-  "target_language": "English",
-  "text": "..."
-}
-```
-
-Preview result:
-
-```json
-{
-  "type": "translation_preview",
-  "source_revision": 13,
-  "target_language": "English",
-  "text": "..."
-}
-```
-
-Stable failure:
-
-```json
-{
-  "type": "translation_status",
-  "scope": "stable",
-  "code": "failed",
-  "source_revision": 12,
-  "source_segment_id": "seg_000001",
-  "source_segment_index": 1,
-  "target_language": "English",
-  "message": "translation failed"
-}
-```
-
-`translation_status.code`: `failed`.
-Never expose stack traces or model internals.
+Never expose stack traces or model internals through translation status text.
 
 ## Runtime Rules
 
-For every `transcript_update`:
+For every `transcript_update`, the service loop is:
 
 ```text
 update translation scheduler state
 if partial exists: update_preview(revision, partial)
 else: cancel_preview(revision)
 enqueue each stable_appends item
-send source event
+queue source event
 ```
 
-Stable:
+Stable, while a target language is active:
 
 - stable history is reliable: every source stable segment gets exactly one
   `translation_stable` before `transcript_final`, unless the translator fails;
@@ -179,10 +120,6 @@ Client replay:
 Scheduling:
 
 - audio ingest and source event sending never wait for translation;
-- service startup prewarms ASR graph capture before accepting sessions;
-- runtime ASR graph replay can overlap HY-MT generation;
-- runtime ASR does not capture a new graph next to HY-MT; oversize requests
-  fall back to non-graph decode;
 - preview has priority over normal stable backlog because it is the lowest
   latency translation path;
 - preview work that has not entered the model can be superseded by newer state;
@@ -198,10 +135,8 @@ Scheduling:
   instance is never entered concurrently;
 - preview timeouts only discard the result; they do not interrupt the model
   call already running on the actor;
-- if `--no-cuda-graph-prewarm` is used with translation, HY-MT calls share the
-  CUDA graph capture lock to avoid runtime capture races; the validated default
-  path is the prewarmed graph path, where actor serialization is enough for
-  HY-MT model ownership.
+- HY-MT calls share one actor thread, so translation model ownership is
+  serialized even when ASR is running concurrently.
 
 ## Finish
 
@@ -247,16 +182,9 @@ translation quality gate. Protocol/runtime-only changes do not.
 
 ## Validation
 
-Protocol/runtime:
-
-- fake-translator unit tests for preview priority, stable reliability under
-  backlog, stable no-timeout behavior, preview debounce/cancel/stale-drop, and
-  finish suppression;
-- service-ordering unit tests for the invariant that an old preview is never
-  queued after a newer source revision;
-- subtitle document unit tests for recognition-frame tail selection, SRT
-  history, and translation visibility;
-- WebSocket E2E for ASR-only parity and ASR+translation ordering.
+Protocol/runtime changes use the focused fake-translator, service-ordering, and
+subtitle replay tests, plus WebSocket E2E when `realtime_server.py` behavior or
+ordering changes. Exact commands live in `@docs/validation_and_regression.md`.
 
 Translation quality gate, only for model/prompt/generation/decode changes:
 

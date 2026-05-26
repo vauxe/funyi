@@ -257,7 +257,12 @@ export class LiveSession {
     }
 
     if (event.type === "error") {
-      await this.abort(String(event.error || "Service error"));
+      const message = String(event.error || "Service error");
+      if (event.fatal === true || this.state !== "running") {
+        await this.abort(message);
+        return;
+      }
+      this.setStatus("connectionStatus", message);
       return;
     }
 

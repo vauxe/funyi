@@ -852,7 +852,7 @@ function readyTranslationEnabled(event: RealtimeEvent): boolean {
 }
 
 function statusTextHasError(value: string): boolean {
-  return /error|failed|closed|timeout|timed out|lost|unavailable|no native|no audio/i.test(value);
+  return /error|failed|closed|timeout|timed out|lost|unavailable|unsupported|no native|no audio/i.test(value);
 }
 
 function formatRange(startMs: number | null, endMs: number | null, status: string | null): string {

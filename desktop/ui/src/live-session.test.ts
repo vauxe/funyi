@@ -186,6 +186,28 @@ test("forwards language config only while running", async () => {
   assert.deepEqual(harness.clients[0]!.languageConfigs, [{ target_language: "Japanese" }]);
 });
 
+test("keeps running session open after non-fatal service command error", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness);
+
+  await harness.clients[0]!.emit({ type: "error", error: "Unsupported target_language: Swedish." });
+
+  assert.equal(harness.session.getState(), "running");
+  assert.equal(harness.clients[0]!.closed, false);
+  assert.equal(harness.statuses.get("connectionStatus"), "Unsupported target_language: Swedish.");
+});
+
+test("fatal service errors abort the active session", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness);
+
+  await harness.clients[0]!.emit({ type: "error", error: "Realtime ASR session failed.", fatal: true });
+
+  assert.equal(harness.session.getState(), "idle");
+  assert.equal(harness.clients[0]!.closed, true);
+  assert.equal(harness.statuses.get("connectionStatus"), "Realtime ASR session failed.");
+});
+
 test("warns when macOS capture keeps delivering silent pcm", async () => {
   const harness = createHarness();
   await startRunningSession(harness);

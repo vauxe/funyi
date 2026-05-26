@@ -303,6 +303,28 @@ test("language controls stay editable while running and send runtime updates", a
   });
 });
 
+test("recoverable command errors remain visible while running", async () => {
+  const elements = installDocument();
+  installTauriRuntime();
+
+  await importApp("recoverable-command-error");
+  await nextTick();
+
+  elements["session-button"]!.click();
+  const socket = FakeWebSocket.instances[0];
+  assert.ok(socket);
+
+  socket.open();
+  socket.message({ type: "ready", sample_rate: 16000 });
+  await nextTick();
+
+  socket.message({ type: "error", error: "Unsupported target_language: Swedish." });
+  await nextTick();
+
+  assert.equal(elements["session-status"]!.textContent, "Unsupported target_language: Swedish.");
+  assert.equal(elements["session-button"]!.title, "Stop");
+});
+
 test("macOS native drag does not run manual drag release commands", async () => {
   const elements = installDocument();
   const invocations = installTauriRuntime({ platform: "macos" });

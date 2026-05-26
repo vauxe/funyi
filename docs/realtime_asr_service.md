@@ -2,6 +2,11 @@
 
 Local single-user transcription service. It is not a public multi-user service.
 
+This document owns the `/ws/asr` command and event contract. Streaming window
+mechanics live in `@docs/streaming_runtime.md`, optimization flags live in
+`@docs/performance_optimization.md`, and translation scheduling lives in
+`@docs/realtime_translation_design.md`.
+
 ## Protocol
 
 The service exposes:
@@ -25,11 +30,6 @@ defaults to `pcm_s16le`. The only accepted audio stream is mono little-endian
 names and is normalized case-insensitively. Omit it, set it to `null`, or set it
 to an empty string for auto language detection. Invalid languages are rejected
 before `ready`.
-
-The service default keeps stable history conservative:
-`live_stability_delay_ms=12000`. Use `partial` updates for low-latency live
-subtitle display. Lower `--live-stability-delay-ms` only when the service can
-tolerate more aggressive stable commits.
 
 If the service was started with `--translation-model`, `target_language`
 selects the per-session translation target. Targets must be in the HY-MT
@@ -70,18 +70,18 @@ translation. Non-empty targets require `--translation-model`. The server flushes
 the current ASR tail before applying changed settings, and stable history is not
 rewritten or retranslated.
 
-Events:
+## Server Events
 
-- `ready`
-- `transcript_update`
-- `transcript_timing_update` when forced-aligner timestamps are enabled
-- `translation_preview` when translation preview is enabled
-- `translation_stable` when stable translation succeeds
-- `translation_status` when stable translation fails
-- `transcript_final`
-- `error`
+This section is the single source of truth for `/ws/asr` server event payloads.
+Other docs should link here instead of redefining these shapes.
 
-`ready`:
+All server events are JSON text frames with a `type` field. Clients should ignore
+fields they do not need.
+
+### `ready`
+
+Sent once after the `start` command is accepted. Audio capture should begin only
+after this event.
 
 ```json
 {
@@ -92,10 +92,54 @@ Events:
 }
 ```
 
-When enabled, `ready.timestamps` and `ready.translation` describe timestamp and
-translation capability for this session.
+Optional `ready.timestamps`, present only when forced-aligner timestamps are
+enabled:
 
-`transcript_update` is the normal source-caption update:
+```json
+{
+  "enabled": true,
+  "model": "Qwen/Qwen3-ForcedAligner-0.6B",
+  "source": "forced_aligner",
+  "allowed_source_languages": ["Chinese", "English"],
+  "stable": {
+    "initial_status": "pending",
+    "patch_event": "transcript_timing_update",
+    "finish_timeout_ms": 30000,
+    "pad_ms": 500
+  }
+}
+```
+
+Optional `ready.translation`, present only when the session has a
+`target_language` in `start`:
+
+```json
+{
+  "enabled": true,
+  "target_language": "English",
+  "model": "tencent/HY-MT1.5-1.8B",
+  "stable": {
+    "enabled": true,
+    "reliable": true,
+    "queue_size": null,
+    "timeout_ms": null,
+    "batch_size": 1
+  },
+  "preview": {
+    "enabled": true,
+    "debounce_ms": 700,
+    "timeout_ms": 30000
+  }
+}
+```
+
+Enabling translation later with `set_language.target_language` does not resend
+`ready`; later translation events carry their own `target_language`.
+
+### `transcript_update`
+
+Normal source-caption update. `stable_appends` is append-only history; `partial`
+is the replaceable current tail, or `null`.
 
 ```json
 {
@@ -122,78 +166,19 @@ translation capability for this session.
 }
 ```
 
-The frontend appends `stable_appends`, replaces `partial`, and requires
-`stable_base` to match local `stable_count`.
+Each stable segment has `id`, `index`, `start_ms`, `end_ms`, `text`, and
+`language`. In forced-aligner timestamp mode, new stable segments initially use
+`start_ms: null`, `end_ms: null`, and `timing_status: "pending"`.
+Long stable text may arrive as multiple subtitle-sized `stable_appends`; those
+are display cues, not separate ASR chunks.
 
-`transcript_final` is the final stable snapshot:
+Clients append `stable_appends`, replace `partial`, and require `stable_base` to
+match local `stable_count`. If the base check fails, reconnect and start a fresh
+session.
 
-```json
-{
-  "type": "transcript_final",
-  "revision": 8,
-  "stable_count": 3,
-  "segments": []
-}
-```
+### `transcript_timing_update`
 
-Translation events are emitted on the same `/ws/asr` stream when the session has
-a `target_language`. `translation_preview` annotates the current `partial` by
-`source_revision`. `translation_stable` and `translation_status` annotate stable
-segments by `source_segment_id` / `source_segment_index`. See
-`@docs/realtime_translation_design.md` for payloads and scheduler rules.
-
-`error`:
-
-```json
-{"type":"error","error":"message"}
-```
-
-Startup validation failures send `error` and close the WebSocket, usually with
-code `1003`. A second concurrent session is rejected with code `1013`. Internal
-session failures close with code `1011`. Command errors after `ready` are sent
-as `error` events and do not automatically close the session.
-
-Long stable text is split into subtitle-sized stable segments without using
-punctuation as a boundary signal.
-
-## Timestamp Mode
-
-By default, stable segments use sample-clock `start_ms` / `end_ms` values.
-Starting the service with `--timestamp-model <model>` enables forced-aligner
-timestamps. In that mode, stable-segment public timing is one forced-aligned
-`start_ms` / `end_ms` pair, filled asynchronously.
-
-Forced-aligner timestamps use the ForcedAligner model-card language list. When
-`language` is explicitly set in `start`, the service rejects values outside that
-list before `ready`. Auto-language sessions may still transcribe ASR-supported
-languages outside the ForcedAligner list, but their timestamp patches are marked
-`timing_status="failed"`. `ready.timestamps.allowed_source_languages` exposes
-the accepted ForcedAligner source-language list.
-
-New stable segments are emitted immediately with pending timing:
-
-```json
-{
-  "type": "transcript_update",
-  "revision": 7,
-  "stable_base": 2,
-  "stable_count": 3,
-  "stable_appends": [
-    {
-      "id": "seg_000003",
-      "index": 3,
-      "start_ms": null,
-      "end_ms": null,
-      "timing_status": "pending",
-      "text": "现在开始",
-      "language": "Chinese"
-    }
-  ],
-  "partial": null
-}
-```
-
-When alignment finishes, the service patches the same stable segment:
+Forced-aligner timestamp patch for one existing stable segment.
 
 ```json
 {
@@ -205,9 +190,113 @@ When alignment finishes, the service patches the same stable segment:
 }
 ```
 
-`transcript_timing_update` only patches timing metadata for an existing stable
-segment identified by `source_segment_id`. It must not create, remove, reorder,
-or rewrite transcript text. Clients that do not need timestamps can ignore it.
+`timing_status` is `aligned` or `failed`. Failed patches use `start_ms: null` and
+`end_ms: null`. This event must not create, remove, reorder, or rewrite
+transcript text. Clients that do not need timestamps can ignore it.
+
+### `translation_preview`
+
+Best-effort translation for the current `partial`. It is temporary and should be
+displayed only when `source_revision` matches the current partial revision.
+
+```json
+{
+  "type": "translation_preview",
+  "source_revision": 13,
+  "target_language": "English",
+  "text": "..."
+}
+```
+
+### `translation_stable`
+
+Durable translation for one stable source segment.
+
+```json
+{
+  "type": "translation_stable",
+  "source_revision": 12,
+  "source_segment_id": "seg_000001",
+  "source_segment_index": 1,
+  "target_language": "English",
+  "text": "..."
+}
+```
+
+### `translation_status`
+
+Stable translation status for one source segment. Emitted when stable
+translation fails.
+
+```json
+{
+  "type": "translation_status",
+  "scope": "stable",
+  "code": "failed",
+  "source_revision": 12,
+  "source_segment_id": "seg_000001",
+  "source_segment_index": 1,
+  "target_language": "English",
+  "message": "translation failed"
+}
+```
+
+`code` is `failed`.
+
+### `transcript_final`
+
+Final stable snapshot. The service emits this after final transcript,
+timestamp, and stable-translation work that must complete before close.
+
+```json
+{
+  "type": "transcript_final",
+  "revision": 8,
+  "stable_count": 3,
+  "segments": []
+}
+```
+
+`segments` uses the same stable-segment shape as `transcript_update.stable_appends`.
+After `transcript_final`, the service closes the WebSocket with code `1000`.
+
+### `error`
+
+Fatal error:
+
+```json
+{"type":"error","error":"message","fatal":true}
+```
+
+Startup validation failures send `error` with `fatal=true` and close the
+WebSocket, usually with code `1003`. A second concurrent session is rejected
+with code `1013`. Internal session failures close with code `1011`.
+
+Recoverable command error after `ready`:
+
+```json
+{"type":"error","error":"message"}
+```
+
+Recoverable command errors do not automatically close the session.
+
+## Timestamp Mode
+
+By default, stable segments use sample-clock `start_ms` / `end_ms` values.
+Starting the service with `--timestamp-model <model>` enables forced-aligner
+timestamps. In that mode, stable-segment public timing is one forced-aligned
+`start_ms` / `end_ms` pair, filled asynchronously.
+
+Forced-aligner timestamps use the ForcedAligner model-card language list, but
+`language` remains an ASR prompt and accepts the full Qwen3-ASR language list.
+Segments whose detected or configured source language is outside the
+ForcedAligner list are still transcribed; their timestamp patches are marked
+`timing_status="failed"`. `ready.timestamps.allowed_source_languages` exposes
+the source-language list that can produce aligned timestamps.
+
+New stable segments are emitted immediately in `transcript_update` with pending
+timing. When alignment finishes, the service sends `transcript_timing_update`
+for the same stable segment.
 
 For `finish`, timestamp-enabled sessions wait up to the configured
 `--timestamp-finish-timeout-ms` for queued stable-segment timing before
@@ -255,42 +344,27 @@ must not treat model-carried prefix text as user-visible stable history.
 - long speech may stabilize repeated text after `live_stability_delay_ms`;
 - ASCII word fragments stay partial;
 - stable history is never rewritten;
-- bounded-window recognition frames may be tail-only after the stable cursor,
-  and prompt-carried text must not be stabilized as new evidence;
-- stable translation history must not drop middle source segments;
-- changing `target_language` cancels pending preview and queued stable
-  translation work; already emitted transcript history is not retranslated;
-- unaligned finalization promotes a final tail update when it extends the last
-  visible partial; otherwise it promotes the last visible partial instead of
-  dropping user-visible tail text;
-- translation/export belong above stable segments.
+- timestamp and translation events annotate existing source segments; they do
+  not rewrite source transcript history;
+- bounded-window and final-tail selection rules live in
+  `@docs/streaming_runtime.md`.
 
 ## Defaults
 
-Service entrypoint defaults:
+Protocol-visible service defaults:
 
-- live20: `chunk_size_sec=0.5`, `unfixed_chunk_num=4`,
-  `max_window_sec=20`, `max_prefix_tokens=64`
-- `spec_decode=True`
-- `cuda_graph=True`, `cuda_graph_len_bucket=64`
-- startup CUDA graph prewarm for live20; prewarm failure is a startup failure
-- `flashinfer=True`
-- `fused_rmsnorm=True`, `fused_linears=True`
-- `w8a16=True` for qkv/gate_up
-- `live_stability_delay_ms=12000`
-- forced-aligner timestamps are disabled unless `--timestamp-model` is set
+- one active WebSocket session;
+- stable history delay: `live_stability_delay_ms=12000`; clients should render
+  replaceable `partial` for low-latency subtitles;
+- forced-aligner timestamps are off unless `--timestamp-model` is set;
 - timestamp mode defaults: `--timestamp-pad-ms=500`,
-  `--timestamp-finish-timeout-ms=30000`,
-  `--timestamp-local-files-only`
+  `--timestamp-finish-timeout-ms=30000`, `--timestamp-local-files-only`;
+- translation is available only when the service starts with
+  `--translation-model`.
 
-Disable flags only for debugging, fallback, or comparison.
-When translation is enabled with `--translation-model`, a session may provide
-`target_language` in the start command or later via `set_language`. Targets are
-accepted only when they are in the HY-MT model-card language list.
-Stable translation batching is opt-in with `--translation-stable-batch-size`.
-The default is `1` so preview latency and existing single-item runtime behavior
-stay unchanged; larger values only batch queued stable segments with the same
-source language.
+The local service runtime profile is live20. Its model-window settings are in
+`@docs/streaming_runtime.md`; optimization flags and rejected paths are in
+`@docs/performance_optimization.md`.
 
 ## Validation
 
