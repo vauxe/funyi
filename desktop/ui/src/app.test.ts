@@ -7,6 +7,7 @@ type Invocation = { command: string; args?: Record<string, unknown> };
 
 class FakeElement {
   attributes = new Map<string, string>();
+  blurred = false;
   checked = false;
   children: FakeElement[] = [];
   classList = {
@@ -53,6 +54,10 @@ class FakeElement {
     }
   }
 
+  blur(): void {
+    this.blurred = true;
+  }
+
   click(): void {
     for (const listener of this.listeners.get("click") || []) {
       listener();
@@ -79,6 +84,7 @@ class FakeElement {
 }
 
 class FakeDocument {
+  activeElement: FakeElement | null = null;
   readonly elements: Record<string, FakeElement>;
 
   constructor(elements: Record<string, FakeElement>) {
@@ -158,7 +164,7 @@ test("history button switches overlay mode and inline settings drive start paylo
     command: "set_overlay_mode",
     args: { mode: "history" },
   });
-  assert.equal(elements["connection-status"]!.textContent, "");
+  assert.equal(elements["session-status"]!.textContent, "");
   assert.equal(elements["audio-source"]!.children[0]?.textContent, "Sys · Audio");
   assert.deepEqual(selectValues(elements["language"]!), ["", ...ASR_LANGUAGE_OPTIONS]);
   assert.deepEqual(selectValues(elements["translation-target-language"]!), [
@@ -202,9 +208,10 @@ test("empty translation target starts without translation request", async () => 
   socket.open();
   const payload = JSON.parse(String(socket.sent[0]));
   assert.equal("target_language" in payload, false);
+  assert.equal(elements["session-status"]!.textContent, "Connecting...");
 });
 
-test("ready status includes the negotiated translation target", async () => {
+test("normal running sessions do not show redundant status text", async () => {
   const elements = installDocument();
   installTauriRuntime();
 
@@ -224,7 +231,35 @@ test("ready status includes the negotiated translation target", async () => {
   });
   await nextTick();
 
-  assert.equal(elements["ready-status"]!.textContent, "16k · Translate Japanese");
+  assert.equal(elements["session-status"]!.textContent, "");
+  assert.equal(elements["app-shell"]!.dataset.statusActive, "false");
+
+  elements["session-button"]!.click();
+  await nextTick();
+
+  assert.equal(elements["session-button"]!.title, "Cancel final transcript");
+  assert.equal(elements["session-button"]!.attributes.get("aria-label"), "Cancel final transcript");
+
+  socket.message({ type: "transcript_final", segments: [] });
+  await nextTick();
+});
+
+test("active server session errors are shown as a retryable user status", async () => {
+  const elements = installDocument();
+  installTauriRuntime();
+
+  await importApp("active-server-session");
+  await nextTick();
+
+  elements["session-button"]!.click();
+  const socket = FakeWebSocket.instances[0];
+  assert.ok(socket);
+
+  socket.open();
+  socket.message({ type: "error", error: "Another realtime session is active." });
+  await nextTick();
+
+  assert.equal(elements["session-status"]!.textContent, "Previous session closing");
 });
 
 test("macOS native drag does not run manual drag release commands", async () => {
@@ -234,6 +269,7 @@ test("macOS native drag does not run manual drag release commands", async () => 
   await importApp("macos-native-drag");
   await nextTick();
 
+  (globalThis.document as unknown as FakeDocument).activeElement = elements["server-url"]!;
   elements["caption-strip"]!.dispatch("pointerdown", {
     button: 0,
     pointerId: 7,
@@ -242,6 +278,7 @@ test("macOS native drag does not run manual drag release commands", async () => 
   });
   await nextTick();
 
+  assert.equal(elements["server-url"]!.blurred, true);
   assert.equal(elements["app-shell"]!.className, "is-dragging");
   dispatchWindow("pointerup", { pointerId: 7 });
   await nextTick();
@@ -274,10 +311,7 @@ function installDocument(): Record<string, FakeElement> {
       "resize-north-west",
       "resize-south-east",
       "resize-south-west",
-      "connection-status",
-      "ready-status",
-      "capture-status",
-      "audio-stats",
+      "session-status",
       "previous-source",
       "previous-translation",
       "current-source",

@@ -20,7 +20,7 @@ export interface AudioFrame {
 export type Unlisten = () => void;
 
 export interface LiveSessionClient {
-  close(): void;
+  close(): void | Promise<void>;
   connect(startPayload: Record<string, unknown>): Promise<void>;
   finish(): void;
   sendPcm(bytes: Uint8Array): boolean;
@@ -204,12 +204,12 @@ export class LiveSession {
 
     const client = this.client;
     this.client = null;
-    this.setState("idle");
     this.clearFinishTimeout();
     await this.stopCaptureOnly();
     if (closeSocket) {
-      client?.close();
+      await client?.close();
     }
+    this.setState("idle");
     if (message) {
       this.setStatus("connectionStatus", message);
     }
@@ -218,11 +218,11 @@ export class LiveSession {
   async complete(): Promise<void> {
     const client = this.client;
     this.client = null;
-    this.setState("idle");
     this.clearFinishTimeout();
     await this.stopCaptureOnly();
     this.setStatus("captureStatus", "Done");
-    client?.close();
+    await client?.close();
+    this.setState("idle");
   }
 
   private async handleAsrEvent(event: RealtimeEvent, client: LiveSessionClient): Promise<void> {

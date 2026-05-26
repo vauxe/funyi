@@ -11,9 +11,9 @@ import {
 } from "./native-audio.js";
 import { ASR_LANGUAGE_OPTIONS, TRANSLATION_TARGET_LANGUAGE_OPTIONS } from "./languages.js";
 
-type StatusKey = "connectionStatus" | "readyStatus" | "captureStatus" | "audioStats";
+type StatusKey = "connectionStatus" | "captureStatus" | "audioStats";
 type OverlayMode = "compact" | "history";
-type StatusTone = "idle" | "active" | "ok" | "warn" | "error";
+type StatusTone = "idle" | "active" | "warn" | "error";
 type ResizeDirection = "East" | "North" | "NorthEast" | "NorthWest" | "South" | "SouthEast" | "SouthWest" | "West";
 
 interface ResizeHandle {
@@ -44,10 +44,7 @@ const dom = {
   historyButton: requireElement<HTMLButtonElement>("#history-button"),
   minimizeButton: requireElement<HTMLButtonElement>("#minimize-button"),
   closeButton: requireElement<HTMLButtonElement>("#close-button"),
-  connectionStatus: requireElement<HTMLSpanElement>("#connection-status"),
-  readyStatus: requireElement<HTMLSpanElement>("#ready-status"),
-  captureStatus: requireElement<HTMLSpanElement>("#capture-status"),
-  audioStats: requireElement<HTMLSpanElement>("#audio-stats"),
+  sessionStatus: requireElement<HTMLSpanElement>("#session-status"),
   previousSource: requireElement<HTMLDivElement>("#previous-source"),
   previousTranslation: requireElement<HTMLDivElement>("#previous-translation"),
   currentSource: requireElement<HTMLDivElement>("#current-source"),
@@ -83,7 +80,6 @@ let activeResize: ActiveResize | null = null;
 let pendingResizeFrame: number | null = null;
 const statusValues: Record<StatusKey, string> = {
   connectionStatus: "",
-  readyStatus: "",
   captureStatus: "",
   audioStats: "",
 };
@@ -98,7 +94,6 @@ const liveSession = new LiveSession({
   },
   onReady: (event) => {
     subtitleDocument.setTranslationEnabled(readyTranslationEnabled(event));
-    setStatus("readyStatus", readySummary(event));
     render();
   },
   onStateChange: setControlsState,
@@ -172,6 +167,7 @@ async function handleDragPointerDown(event: PointerEvent, surface: HTMLElement):
   if (event.button !== 0 || isInteractiveTarget(event.target)) {
     return;
   }
+  blurActiveEditableControl();
   event.preventDefault();
   if (usesNativeWindowDrag) {
     await startNativeOverlayDrag(event.pointerId);
@@ -568,7 +564,6 @@ async function startSession(): Promise<void> {
 function resetSessionState(): void {
   subtitleDocument = new SubtitleDocument({ translationEnabled: translationEnabled() });
   resetRenderedHistory();
-  setStatus("readyStatus", "");
   setStatus("captureStatus", "");
   liveSession.resetStats();
   render();
@@ -689,15 +684,14 @@ function setControlsState(state: SessionState, { canStart }: { canStart: boolean
   dom.sessionButton.disabled = state === "idle" && !canStart;
   dom.sessionButton.classList.toggle("is-stop", active);
   dom.sessionButton.classList.toggle("is-finishing", state === "finishing");
-  dom.sessionButton.title = active ? "Stop" : "Start";
-  dom.sessionButton.setAttribute(
-    "aria-label",
-    state === "finishing" ? "Cancel final transcript" : active ? "Stop" : "Start",
-  );
+  const sessionButtonLabel = state === "finishing" ? "Cancel final transcript" : active ? "Stop" : "Start";
+  dom.sessionButton.title = sessionButtonLabel;
+  dom.sessionButton.setAttribute("aria-label", sessionButtonLabel);
   dom.serverUrl.disabled = active;
   dom.language.disabled = active;
   dom.translationTargetLanguage.disabled = active;
   dom.audioSource.disabled = active;
+  renderStatusSummary();
 }
 
 function setStatus(key: StatusKey, value: string): void {
@@ -705,13 +699,13 @@ function setStatus(key: StatusKey, value: string): void {
     connectionStatusOwner = value ? "session" : null;
   }
   statusValues[key] = value || "";
-  renderStatusIndicator(key);
+  renderStatusSummary();
 }
 
 function setOverlayCommandError(error: unknown): void {
   connectionStatusOwner = "overlay";
   statusValues.connectionStatus = errorMessage(error);
-  renderStatusIndicator("connectionStatus");
+  renderStatusSummary();
 }
 
 function clearOverlayCommandError(): void {
@@ -720,14 +714,15 @@ function clearOverlayCommandError(): void {
   }
   connectionStatusOwner = null;
   statusValues.connectionStatus = "";
-  renderStatusIndicator("connectionStatus");
+  renderStatusSummary();
 }
 
-function renderStatusIndicator(key: StatusKey): void {
-  const element = dom[key];
-  const value = statusValues[key];
-  const { active, tone, level } = statusPresentation(key, value);
-  element.textContent = active ? value : "";
+function renderStatusSummary(): void {
+  const element = dom.sessionStatus;
+  const { text, tone, level } = statusSummary();
+  const active = text !== "";
+  dom.appShell.dataset.statusActive = String(active);
+  element.textContent = text;
   element.dataset.active = String(active);
   element.dataset.tone = tone;
   if (level) {
@@ -735,35 +730,34 @@ function renderStatusIndicator(key: StatusKey): void {
   } else {
     delete element.dataset.level;
   }
-  element.title = value;
-  element.setAttribute("aria-label", active ? element.textContent || value : "");
+  element.title = text;
+  element.setAttribute("aria-label", text);
 }
 
-function statusPresentation(
-  key: StatusKey,
-  value: string,
-): { active: boolean; tone: StatusTone; level?: string } {
-  if (!value) {
-    return { active: false, tone: "idle" };
+function statusSummary(): { text: string; tone: StatusTone; level?: string } {
+  const error = currentUserVisibleError();
+  if (error) {
+    return { text: userFacingError(error), tone: "error" };
   }
-  if (key === "audioStats") {
-    const level = audioLevelState(value);
-    return {
-      active: true,
-      tone: /drop/i.test(value) || level === "low" ? "warn" : level === "live" ? "ok" : "idle",
-      level,
-    };
+  if (sessionState === "connecting") {
+    return { text: "Connecting...", tone: "active" };
   }
-  if (key === "connectionStatus") {
-    return { active: true, tone: statusTextHasError(value) ? "error" : "ok" };
+  if (sessionState === "finishing") {
+    return { text: "Finishing...", tone: "active" };
   }
-  if (key === "captureStatus") {
-    return {
-      active: true,
-      tone: statusTextHasError(value) ? "error" : /silent/i.test(value) ? "warn" : "active",
-    };
+  if (sessionState !== "running") {
+    return { text: "", tone: "idle" };
   }
-  return { active: true, tone: "ok" };
+
+  const level = audioLevelState(statusValues.audioStats);
+  if (/drop/i.test(statusValues.audioStats)) {
+    return { text: "Audio lagging", tone: "warn", level };
+  }
+  if (/silent/i.test(statusValues.captureStatus)) {
+    return { text: silentCaptureSummary(statusValues.captureStatus), tone: "warn", level };
+  }
+
+  return { text: "", tone: "idle", level };
 }
 
 function audioLevelState(value: string): "silent" | "low" | "live" {
@@ -776,6 +770,57 @@ function audioLevelState(value: string): "silent" | "low" | "live" {
     return "silent";
   }
   return level < -42 ? "low" : "live";
+}
+
+function currentUserVisibleError(): string {
+  const captureStatus = statusValues.captureStatus;
+  if (statusTextHasError(captureStatus)) {
+    return captureStatus;
+  }
+
+  const connectionStatus = statusValues.connectionStatus;
+  if (!connectionStatus || isLowLevelConnectionStatus(connectionStatus)) {
+    return "";
+  }
+  if (statusTextHasError(connectionStatus)) {
+    return connectionStatus;
+  }
+  return sessionState === "idle" && connectionStatus !== "Final transcript cancelled."
+    ? connectionStatus
+    : "";
+}
+
+function isLowLevelConnectionStatus(value: string): boolean {
+  return /^WS(?:\.\.\.| OK| closed)?$/i.test(value);
+}
+
+function userFacingError(value: string): string {
+  if (/Another realtime session is active/i.test(value)) {
+    return "Previous session closing";
+  }
+  if (/No native audio source available/i.test(value)) {
+    return "No audio source available.";
+  }
+  if (/^WS error|WebSocket connection failed/i.test(value)) {
+    return "Connection failed.";
+  }
+  if (/WebSocket closed before start/i.test(value)) {
+    return "Connection closed.";
+  }
+  if (/WebSocket closed/i.test(value)) {
+    return "Connection closed.";
+  }
+  if (/Timed out waiting for transcript_final/i.test(value)) {
+    return "Finish timed out.";
+  }
+  if (/invalid event/i.test(value)) {
+    return "Service sent an invalid response.";
+  }
+  return value;
+}
+
+function silentCaptureSummary(value: string): string {
+  return /mic/i.test(value) ? "No mic audio" : "No system audio";
 }
 
 function audioSourceLabel(source: { kind?: string; name: string }): string {
@@ -802,19 +847,6 @@ function readyTranslationEnabled(event: RealtimeEvent): boolean {
 
 function statusTextHasError(value: string): boolean {
   return /error|failed|closed|timeout|timed out|lost|unavailable|no native|no audio/i.test(value);
-}
-
-function readySummary(event: RealtimeEvent): string {
-  const sampleRate = Number(event.sample_rate || 0);
-  const readyText = sampleRate > 0 ? `${sampleRate / 1000}k` : "Ready";
-  const translation = event.translation;
-  if (!isRecord(translation) || !translation.enabled) {
-    return readyText;
-  }
-  const targetLanguage = typeof translation.target_language === "string"
-    ? translation.target_language.trim()
-    : "";
-  return targetLanguage ? `${readyText} · Translate ${targetLanguage}` : `${readyText} · Translate`;
 }
 
 function formatRange(startMs: number | null, endMs: number | null, status: string | null): string {
@@ -863,7 +895,18 @@ async function invokeTauriCommand<TResult>(command: string, args?: Record<string
 
 function isInteractiveTarget(target: EventTarget | null): boolean {
   return target instanceof Element
-    && Boolean(target.closest("button,input,select,textarea,a"));
+    && Boolean(target.closest("button,input,select,textarea,a,label"));
+}
+
+function blurActiveEditableControl(): void {
+  const activeElement = document.activeElement;
+  if (!(activeElement instanceof Element)) {
+    return;
+  }
+  const tagName = activeElement.tagName.toLowerCase();
+  if (tagName === "input" || tagName === "select" || tagName === "textarea") {
+    (activeElement as HTMLElement).blur();
+  }
 }
 
 function beginOverlayTransition(): number {

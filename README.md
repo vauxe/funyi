@@ -21,18 +21,18 @@ is not a public multi-user ASR server.
 - An NVIDIA CUDA GPU for the default realtime profile.
 - A local model path or access to download `Qwen/Qwen3-ASR-1.7B`.
 - For the desktop client: Node.js with Corepack-enabled `pnpm`, Rust/Cargo,
-  and the native WebView packages required by your operating system.
+  and macOS or Windows native build tools.
 - On Windows, Tauri also needs Visual Studio Build Tools 2022 with the
   `Desktop development with C++` workload so `cl.exe` and `link.exe` are
   available, plus a Windows 10/11 SDK.
 
-The desktop client captures system playback audio where the operating system
-supports it:
+The desktop client currently runs on Windows and macOS. A Linux audio capture
+module exists, but Linux desktop builds are disabled until the overlay window
+layer has Linux support.
 
 | Platform | System audio capture |
 |---|---|
 | Windows | WASAPI loopback from the default playback device |
-| Linux | PipeWire/PulseAudio monitor sources through `pactl` and `parec` |
 | macOS | ScreenCaptureKit system audio capture, with Screen & System Audio Recording permission |
 
 ## Install
@@ -52,20 +52,6 @@ make desktop-install
 
 If your shell does not expose a `pnpm` command, use `corepack pnpm ...`
 directly instead of trying to install a separate global shim.
-
-On Ubuntu/Linux builds, Tauri also needs native system packages. A typical
-minimal set is:
-
-```bash
-sudo apt install pkg-config libdbus-1-dev libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev
-```
-
-For Linux system audio capture, install PulseAudio CLI tools if your distro does
-not already provide them:
-
-```bash
-sudo apt install pulseaudio-utils
-```
 
 ## Start Live Captions
 
@@ -178,12 +164,8 @@ cd desktop
 corepack pnpm run build
 ```
 
-On Linux, this repository defaults to `.deb` and `.rpm` bundles. AppImage
-bundling can be run explicitly on a real Linux desktop or CI environment:
-
-```bash
-corepack pnpm exec tauri build --bundles appimage
-```
+Linux desktop bundles are not supported until the overlay window layer has Linux
+support.
 
 ## Data And Privacy
 
@@ -207,9 +189,7 @@ If the service fails during startup, first check:
   `corepack pnpm ...`;
 - on Windows, `where cl` and `where link` both succeed after installing
   Visual Studio Build Tools 2022 with `Desktop development with C++` and a
-  Windows SDK;
-- on Linux, `pactl list short sources` shows at least one source ending in
-  `.monitor` for system playback capture.
+  Windows SDK.
 
 If you only need to rebuild dependencies after a cleanup:
 

@@ -15,24 +15,37 @@ export interface AsrClientOptions {
   onError?: AsrSocketCallback<Event>;
   onClose?: AsrSocketCallback<CloseEvent>;
   maxBufferedBytes?: number;
+  closeTimeoutMs?: number;
 }
 
 export class AsrClient {
+  private readonly closeTimeoutMs: number;
   private readonly maxBufferedBytes: number;
   private readonly onClose?: AsrSocketCallback<CloseEvent>;
   private readonly onError?: AsrSocketCallback<Event>;
   private readonly onEvent?: AsrEventCallback;
   private readonly onStatus?: StatusCallback;
   private readonly url: string;
+  private closeWait: Promise<void> | null = null;
+  private finishCloseWait: (() => void) | null = null;
   private ws: WebSocket | null = null;
 
-  constructor({ url, onEvent, onStatus, onError, onClose, maxBufferedBytes = 512 * 1024 }: AsrClientOptions) {
+  constructor({
+    url,
+    onEvent,
+    onStatus,
+    onError,
+    onClose,
+    maxBufferedBytes = 512 * 1024,
+    closeTimeoutMs = 1000,
+  }: AsrClientOptions) {
     this.url = url;
     this.onEvent = onEvent;
     this.onStatus = onStatus;
     this.onError = onError;
     this.onClose = onClose;
     this.maxBufferedBytes = maxBufferedBytes;
+    this.closeTimeoutMs = closeTimeoutMs;
   }
 
   connect(startPayload: AsrStartPayload): Promise<void> {
@@ -58,6 +71,10 @@ export class AsrClient {
       };
       ws.onclose = (event) => {
         this.emitStatus("WS closed");
+        if (this.ws === ws) {
+          this.ws = null;
+        }
+        this.finishCloseWait?.();
         if (!settled) {
           settled = true;
           reject(new Error(`WebSocket closed before start: ${event.code}`));
@@ -93,11 +110,45 @@ export class AsrClient {
     this.sendCommand("finish");
   }
 
-  close(): void {
-    if (this.ws && this.ws.readyState <= WebSocket.OPEN) {
-      this.ws.close();
+  close(): Promise<void> {
+    const ws = this.ws;
+    if (!ws || ws.readyState === WebSocket.CLOSED) {
+      this.ws = null;
+      return Promise.resolve();
     }
-    this.ws = null;
+    if (this.closeWait) {
+      return this.closeWait;
+    }
+    const closeWait = new Promise<void>((resolve) => {
+      let settled = false;
+      const timeout = globalThis.setTimeout(finish, this.closeTimeoutMs);
+      this.finishCloseWait = finish;
+
+      if (ws.readyState <= WebSocket.OPEN) {
+        try {
+          ws.close();
+        } catch {
+          finish();
+        }
+      }
+
+      function finish(): void {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        globalThis.clearTimeout(timeout);
+        resolve();
+      }
+    }).finally(() => {
+      if (this.ws === ws) {
+        this.ws = null;
+      }
+      this.closeWait = null;
+      this.finishCloseWait = null;
+    });
+    this.closeWait = closeWait;
+    return closeWait;
   }
 
   private sendCommand(type: string): void {

@@ -59,29 +59,26 @@
         <section class="status-line" aria-live="polite">
           <div class="status-controls">
             <label class="status-field status-field-service">
-              <span>Service</span>
+              <span>URL</span>
               <input id="server-url" value="ws://127.0.0.1:8000/ws/asr" spellcheck="false" />
             </label>
             <div class="language-settings" role="group" aria-label="Language settings">
               <label class="language-control">
-                <span>ASR</span>
+                <span>Speech</span>
                 <select id="language"></select>
               </label>
               <label class="language-control">
-                <span>To</span>
+                <span>Translate</span>
                 <select id="translation-target-language"></select>
               </label>
             </div>
             <label class="status-field status-field-source">
-              <span>Source</span>
+              <span>Audio</span>
               <select id="audio-source"></select>
             </label>
           </div>
           <div class="status-indicators">
-            <span id="connection-status"></span>
-            <span id="ready-status"></span>
-            <span id="capture-status"></span>
-            <span id="audio-stats"></span>
+            <span id="session-status"></span>
           </div>
         </section>
       </section>

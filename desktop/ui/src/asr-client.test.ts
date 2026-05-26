@@ -5,12 +5,14 @@ import { AsrClient } from "./asr-client.js";
 
 class FakeWebSocket {
   static CONNECTING = 0;
+  static CLOSING = 2;
   static OPEN = 1;
   static CLOSED = 3;
   static instances: FakeWebSocket[] = [];
 
   binaryType = "";
   bufferedAmount = 0;
+  closeCalls = 0;
   onclose?: (event: CloseEvent) => void;
   onerror?: (event: Event) => void;
   onmessage?: (event: MessageEvent) => void;
@@ -29,8 +31,13 @@ class FakeWebSocket {
   }
 
   close(): void {
+    this.closeCalls += 1;
+    this.readyState = FakeWebSocket.CLOSING;
+  }
+
+  emitClose(code = 1000): void {
     this.readyState = FakeWebSocket.CLOSED;
-    this.onclose?.({ code: 1000 } as CloseEvent);
+    this.onclose?.({ code } as CloseEvent);
   }
 }
 
@@ -65,7 +72,7 @@ test("connect rejects if socket closes before open", async () => {
   const pending = client.connect({ type: "start" });
   const socket = FakeWebSocket.instances[0];
   assert.ok(socket);
-  socket.onclose?.({ code: 1006 } as CloseEvent);
+  socket.emitClose(1006);
 
   await assert.rejects(pending, /WebSocket closed before start: 1006/);
   assert.equal(closedBy, client);
@@ -116,10 +123,31 @@ test("reports async close handler failures", async () => {
   });
   const socket = await connectOpened(client);
 
-  socket.onclose?.({ code: 1000 } as CloseEvent);
+  socket.emitClose(1000);
   await nextTick();
 
   assert.equal(statuses.at(-1), "close handler failed: close boom");
+});
+
+test("close resolves only after websocket close is observed", async () => {
+  const client = new AsrClient({
+    url: "ws://127.0.0.1:8000/ws/asr",
+  });
+  const socket = await connectOpened(client);
+
+  let closed = false;
+  const pendingClose = client.close().then(() => {
+    closed = true;
+  });
+  await nextTick();
+
+  assert.equal(socket.closeCalls, 1);
+  assert.equal(closed, false);
+
+  socket.emitClose();
+  await pendingClose;
+
+  assert.equal(closed, true);
 });
 
 function nextTick(): Promise<void> {

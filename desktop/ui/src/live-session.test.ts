@@ -13,6 +13,7 @@ import {
 
 class FakeAsrClient implements LiveSessionClient {
   closed = false;
+  closeWait: Promise<void> | null = null;
   commands: string[] = [];
   onClose: LiveSessionClientCallbacks["onClose"];
   onError: LiveSessionClientCallbacks["onError"];
@@ -36,8 +37,9 @@ class FakeAsrClient implements LiveSessionClient {
     this.onStatus?.("WS OK", this);
   }
 
-  close(): void {
+  close(): Promise<void> | void {
     this.closed = true;
+    return this.closeWait || undefined;
   }
 
   finish(): void {
@@ -255,6 +257,31 @@ test("stop while finishing cancels the final wait", async () => {
   assert.equal(harness.clients[0]!.closed, true);
   assert.equal(harness.clock.scheduled, null);
   assert.equal(harness.statuses.get("connectionStatus"), "Final transcript cancelled.");
+});
+
+test("immediate stop waits for socket close before returning to idle", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness);
+  let releaseClose: () => void = () => {};
+  harness.clients[0]!.closeWait = new Promise((resolve) => {
+    releaseClose = resolve;
+  });
+
+  let stopped = false;
+  const pendingStop = harness.session.stop({ sendFinish: false }).then(() => {
+    stopped = true;
+  });
+  await nextTick();
+
+  assert.equal(stopped, false);
+  assert.equal(harness.session.getState(), "running");
+  assert.equal(harness.clients[0]!.closed, true);
+
+  releaseClose();
+  await pendingStop;
+
+  assert.equal(stopped, true);
+  assert.equal(harness.session.getState(), "idle");
 });
 
 test("capture errors abort the active session and clean listeners", async () => {
