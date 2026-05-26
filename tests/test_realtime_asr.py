@@ -21,6 +21,7 @@ from realtime_server import (
     _build_translation,
     _close_websocket,
     _parse_args,
+    _parse_language_config_update,
     _prepare_cuda_graph_runtime,
     _publish_finish_events,
     _receive_start,
@@ -656,6 +657,33 @@ class RealtimeServerCliTest(unittest.TestCase):
         self.assertEqual(config.context, "meeting")
         self.assertEqual(config.language, "Chinese")
 
+    def test_set_language_command_normalizes_language_choices(self) -> None:
+        update = _parse_language_config_update(
+            {"type": "set_language", "language": "japanese", "target_language": "traditional chinese"},
+            TranslationServiceConfig(),
+        )
+
+        self.assertEqual(update, {"language": "Japanese", "target_language": "Traditional Chinese"})
+
+    def test_set_language_command_allows_auto_asr_and_translation_off(self) -> None:
+        update = _parse_language_config_update(
+            {"type": "set_language", "language": "", "target_language": None},
+            None,
+        )
+
+        self.assertEqual(update, {"language": None, "target_language": None})
+
+    def test_set_language_command_rejects_target_without_translation_model(self) -> None:
+        with self.assertRaisesRegex(ValueError, "translation model to be configured"):
+            _parse_language_config_update({"type": "set_language", "target_language": "English"}, None)
+
+    def test_set_language_command_rejects_unknown_field(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unsupported set_language command field"):
+            _parse_language_config_update(
+                {"type": "set_language", "language": "English", "extra": True},
+                TranslationServiceConfig(),
+            )
+
     def test_timestamp_start_language_follows_forced_aligner_model_card(self) -> None:
         _validate_timestamp_start_language({"type": "start", "language": "Japanese"}, timestamps_enabled=True)
         _validate_timestamp_start_language({"type": "start"}, timestamps_enabled=True)
@@ -665,6 +693,20 @@ class RealtimeServerCliTest(unittest.TestCase):
 
         self.assertIn("Japanese", QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES)
         self.assertNotIn("Arabic", QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES)
+
+    def test_set_language_command_follows_forced_aligner_model_card(self) -> None:
+        _parse_language_config_update(
+            {"type": "set_language", "language": "Japanese"},
+            TranslationServiceConfig(),
+            timestamps_enabled=True,
+        )
+
+        with self.assertRaisesRegex(ValueError, "forced-aligner timestamps"):
+            _parse_language_config_update(
+                {"type": "set_language", "language": "Arabic"},
+                TranslationServiceConfig(),
+                timestamps_enabled=True,
+            )
 
 
 class RealtimeServerTranslationOrderingTest(unittest.IsolatedAsyncioTestCase):
@@ -1390,6 +1432,38 @@ class RealtimeASRSessionTest(unittest.TestCase):
         self.assertEqual(partial_texts(resume_events), ["后续"])
         self.assertEqual(model.finish_calls, 1)
         self.assertEqual(model.init_count, 1)
+
+    def test_set_language_flushes_tail_and_restarts_future_asr_state(self) -> None:
+        model = FakeStreamingModel(outputs=["hello", "world"], finish_text="hello")
+        session = make_session(model)
+        speech = np.ones(16_000, dtype=np.float32) * 0.2
+
+        session.ingest_audio(speech)
+        switch_events = session.set_language("English")
+        resume_events = session.ingest_audio(speech)
+
+        stable = stable_appends(switch_events)
+        self.assertEqual([segment["text"] for segment in stable], ["hello"])
+        self.assertEqual(stable[0]["language"], "Chinese")
+        self.assertEqual(session.config.language, "English")
+        self.assertEqual(partial_texts(resume_events), ["world"])
+        self.assertEqual(model.finish_calls, 1)
+        self.assertEqual(model.init_count, 2)
+        self.assertEqual(model.init_kwargs[0]["language"], "Chinese")
+        self.assertEqual(model.init_kwargs[1]["language"], "English")
+        assert_transcript_update_invariants(self, switch_events + resume_events)
+
+    def test_set_language_none_returns_future_asr_to_auto_language(self) -> None:
+        model = FakeStreamingModel(outputs=["hello", "world"], finish_text="hello")
+        session = make_session(model)
+        speech = np.ones(16_000, dtype=np.float32) * 0.2
+
+        session.ingest_audio(speech)
+        session.set_language(None)
+        session.ingest_audio(speech)
+
+        self.assertIsNone(session.config.language)
+        self.assertIsNone(model.init_kwargs[1]["language"])
 
     def test_forced_flush_stabilizes_one_speech_segment_without_punctuation_split(self) -> None:
         model = FakeStreamingModel(outputs=[""], finish_text="第一句。第二句。尾巴")

@@ -53,6 +53,7 @@ _START_COMMAND_FIELDS = frozenset(
         "target_language",
     }
 )
+_LANGUAGE_COMMAND_FIELDS = frozenset({"type", "language", "target_language"})
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -220,6 +221,46 @@ def build_app(
                 if command_type == "flush":
                     events = await _run_store_write(store_lock, session.flush)
                     await _publish_session_events(event_queue, translation, events, timestamp_runtime, session)
+                elif command_type == "set_language":
+                    try:
+                        language_update = _parse_language_config_update(
+                            command,
+                            translation_service_config,
+                            timestamps_enabled=timestamps_enabled,
+                        )
+                    except ValueError as exc:
+                        await event_queue.put({"type": "error", "error": str(exc)})
+                        continue
+
+                    current_target = translation.target_language if translation is not None else None
+                    language_changed = (
+                        "language" in language_update and language_update["language"] != session.config.language
+                    )
+                    target_changed = (
+                        "target_language" in language_update
+                        and language_update["target_language"] != current_target
+                    )
+
+                    if language_changed:
+                        events = await _run_store_write(store_lock, session.set_language, language_update["language"])
+                    elif target_changed:
+                        events = await _run_store_write(store_lock, session.flush)
+                    else:
+                        events = []
+                    await _publish_session_events(event_queue, translation, events, timestamp_runtime, session)
+
+                    if target_changed:
+                        try:
+                            translation = await _set_session_translation_target(
+                                language_update["target_language"],
+                                translation,
+                                translation_actor=translation_actor,
+                                translation_service_config=translation_service_config,
+                                event_queue=event_queue,
+                            )
+                        except ValueError as exc:
+                            await event_queue.put({"type": "error", "error": str(exc)})
+                            continue
                 elif command_type == "finish":
                     if timestamp_runtime is None:
                         events = await _run_store_write(store_lock, session.finish)
@@ -322,14 +363,79 @@ def _session_translation_config(
         raise ValueError("target_language requires translation model to be configured")
 
     normalized_target = _normalize_translation_target_language(requested_target)
+    return _translation_config_for_target(normalized_target, service_config)
+
+
+def _translation_config_for_target(
+    target_language: str,
+    service_config: TranslationServiceConfig,
+) -> RealtimeTranslationConfig:
     return RealtimeTranslationConfig(
-        target_language=normalized_target,
+        target_language=target_language,
         preview_enabled=service_config.preview_enabled,
         preview_debounce_ms=service_config.preview_debounce_ms,
         preview_timeout_ms=service_config.preview_timeout_ms,
         max_new_tokens=service_config.max_new_tokens,
         stable_batch_size=service_config.stable_batch_size,
     )
+
+
+async def _set_session_translation_target(
+    target_language: str | None,
+    translation: RealtimeTranslationRuntime | None,
+    *,
+    translation_actor: TranslationModelActor | None,
+    translation_service_config: TranslationServiceConfig | None,
+    event_queue: asyncio.Queue[dict[str, Any] | None],
+) -> RealtimeTranslationRuntime | None:
+    if translation is not None:
+        await translation.set_target_language(target_language)
+        return translation
+
+    if target_language is None:
+        return None
+
+    if translation_actor is None or translation_service_config is None:
+        raise ValueError("target_language requires translation model to be configured")
+
+    translation = RealtimeTranslationRuntime(
+        translation_actor,
+        config=_translation_config_for_target(target_language, translation_service_config),
+        event_queue=event_queue,
+    )
+    await translation.start()
+    return translation
+
+
+def _parse_language_config_update(
+    command: dict[str, Any],
+    service_config: TranslationServiceConfig | None,
+    *,
+    timestamps_enabled: bool = False,
+) -> dict[str, str | None]:
+    unknown_fields = sorted(set(command) - _LANGUAGE_COMMAND_FIELDS)
+    if unknown_fields:
+        raise ValueError(f"Unsupported set_language command field(s): {', '.join(unknown_fields)}.")
+
+    update: dict[str, str | None] = {}
+    if "language" in command:
+        raw_language = command.get("language")
+        language: str | None = None
+        if raw_language is not None and str(raw_language).strip():
+            language = _normalize_supported_language(str(raw_language))
+        _validate_timestamp_language(language, timestamps_enabled=timestamps_enabled)
+        update["language"] = language
+
+    if "target_language" in command:
+        raw_target = command.get("target_language")
+        target_language: str | None = None
+        if raw_target is not None and str(raw_target).strip():
+            if service_config is None:
+                raise ValueError("target_language requires translation model to be configured")
+            target_language = _normalize_translation_target_language(str(raw_target))
+        update["target_language"] = target_language
+
+    return update
 
 
 def _normalize_supported_language(language: str) -> str:
@@ -354,10 +460,12 @@ def _normalize_translation_target_language(language: str) -> str:
 
 
 def _validate_timestamp_start_language(payload: dict[str, Any], *, timestamps_enabled: bool) -> None:
-    if not timestamps_enabled:
-        return
     language = str(payload.get("language") or "").strip()
-    if not language:
+    _validate_timestamp_language(language or None, timestamps_enabled=timestamps_enabled)
+
+
+def _validate_timestamp_language(language: str | None, *, timestamps_enabled: bool) -> None:
+    if not timestamps_enabled or not language:
         return
     if language not in QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES:
         raise ValueError(

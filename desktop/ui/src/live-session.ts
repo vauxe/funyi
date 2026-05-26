@@ -11,6 +11,11 @@ export interface RealtimeEvent extends Record<string, unknown> {
   type?: string;
 }
 
+export interface LanguageConfigUpdate {
+  language?: string | null;
+  target_language?: string | null;
+}
+
 export interface AudioFrame {
   sampleRate: number;
   format: string;
@@ -23,6 +28,7 @@ export interface LiveSessionClient {
   close(): void | Promise<void>;
   connect(startPayload: Record<string, unknown>): Promise<void>;
   finish(): void;
+  setLanguageConfig(config: LanguageConfigUpdate): void;
   sendPcm(bytes: Uint8Array): boolean;
 }
 
@@ -117,6 +123,13 @@ export class LiveSession {
 
   getState(): SessionState {
     return this.state;
+  }
+
+  setLanguageConfig(config: LanguageConfigUpdate): void {
+    if (this.state !== "running" || this.client === null) {
+      return;
+    }
+    this.client.setLanguageConfig(config);
   }
 
   resetStats(): void {

@@ -5,6 +5,7 @@ import {
   LiveSession,
   type LiveSessionClient,
   type LiveSessionClientCallbacks,
+  type LanguageConfigUpdate,
   type RealtimeEvent,
   type AudioAdapter,
   type AudioFrame,
@@ -15,6 +16,7 @@ class FakeAsrClient implements LiveSessionClient {
   closed = false;
   closeWait: Promise<void> | null = null;
   commands: string[] = [];
+  languageConfigs: LanguageConfigUpdate[] = [];
   onClose: LiveSessionClientCallbacks["onClose"];
   onError: LiveSessionClientCallbacks["onError"];
   onEvent: LiveSessionClientCallbacks["onEvent"];
@@ -44,6 +46,10 @@ class FakeAsrClient implements LiveSessionClient {
 
   finish(): void {
     this.commands.push("finish");
+  }
+
+  setLanguageConfig(config: LanguageConfigUpdate): void {
+    this.languageConfigs.push(config);
   }
 
   sendPcm(bytes: Uint8Array): boolean {
@@ -164,6 +170,20 @@ test("starts capture after ready and forwards only valid pcm frames", async () =
 
   assert.deepEqual([...harness.clients[0]!.sentPcm[0]!], [4]);
   assert.equal(harness.statuses.get("audioStats"), "Silent");
+});
+
+test("forwards language config only while running", async () => {
+  const harness = createHarness();
+
+  harness.session.setLanguageConfig({ language: "English" });
+  await startRunningSession(harness);
+
+  harness.session.setLanguageConfig({ target_language: "Japanese" });
+  assert.deepEqual(harness.clients[0]!.languageConfigs, [{ target_language: "Japanese" }]);
+
+  await harness.session.stop({ sendFinish: false });
+  harness.session.setLanguageConfig({ language: null });
+  assert.deepEqual(harness.clients[0]!.languageConfigs, [{ target_language: "Japanese" }]);
 });
 
 test("warns when macOS capture keeps delivering silent pcm", async () => {

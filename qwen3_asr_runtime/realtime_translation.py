@@ -42,6 +42,7 @@ class _StableJob:
     source_segment_index: int
     source_text: str
     source_language: str
+    target_language: str
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,7 @@ class _PreviewJob:
     source_revision: int
     source_text: str
     source_language: str
+    target_language: str
 
 
 class TranslationModelActor:
@@ -250,6 +252,7 @@ class RealtimeTranslationRuntime:
         self.model_actor = model_actor
         self.config = config
         self.event_queue = event_queue
+        self._target_language: str | None = str(config.target_language).strip()
 
         self._stable_queue: Deque[_StableJob] = deque()
         self._preview_slot: _PreviewJob | None = None
@@ -266,7 +269,7 @@ class RealtimeTranslationRuntime:
     def ready_payload(self) -> dict[str, Any]:
         return {
             "enabled": True,
-            "target_language": self.config.target_language,
+            "target_language": self.target_language,
             "model": self.model_actor.model_path,
             "stable": {
                 "enabled": bool(self.config.stable_enabled),
@@ -282,6 +285,10 @@ class RealtimeTranslationRuntime:
             },
         }
 
+    @property
+    def target_language(self) -> str | None:
+        return self._target_language
+
     async def start(self) -> None:
         if self._worker_task is None:
             self._worker_task = asyncio.create_task(self._worker_loop())
@@ -294,22 +301,36 @@ class RealtimeTranslationRuntime:
             self._wake.set()
         await self._stop_worker(cancel_running_preview=True)
 
+    async def set_target_language(self, target_language: str | None) -> None:
+        normalized = str(target_language).strip() if target_language is not None else ""
+        async with self._lock:
+            self._target_language = normalized or None
+            self._preview_generation += 1
+            self._preview_slot = None
+            self._stable_queue.clear()
+            self._wake.set()
+
     async def accept_source_event(self, event: dict[str, Any]) -> None:
         if event.get("type") != "transcript_update":
+            return
+
+        target_language = self.target_language
+        if not target_language:
+            await self._cancel_preview()
             return
 
         revision = int(event.get("revision") or 0)
         partial = event.get("partial")
         if self.config.preview_enabled:
             if isinstance(partial, dict) and str(partial.get("text") or "").strip():
-                await self._update_preview(revision, partial)
+                await self._update_preview(revision, partial, target_language=target_language)
             else:
                 await self._cancel_preview()
 
         if self.config.stable_enabled:
             for segment in event.get("stable_appends") or []:
                 if isinstance(segment, dict):
-                    await self._enqueue_stable(revision, segment)
+                    await self._enqueue_stable(revision, segment, target_language=target_language)
 
     async def cancel_preview(self) -> None:
         await self._cancel_preview()
@@ -326,12 +347,13 @@ class RealtimeTranslationRuntime:
 
         events: list[dict[str, Any]] = []
 
+        target_language = self.target_language
         finish_jobs: list[_StableJob] = []
         for event in transcript_updates:
             revision = int(event.get("revision") or 0)
             for segment in event.get("stable_appends") or []:
                 if isinstance(segment, dict):
-                    job = self._make_stable_job(revision, segment)
+                    job = self._make_stable_job(revision, segment, target_language=target_language)
                     if job is not None:
                         finish_jobs.append(job)
 
@@ -340,8 +362,8 @@ class RealtimeTranslationRuntime:
             events.extend(await self._run_stable_jobs(jobs, publish=False))
         return events
 
-    async def _enqueue_stable(self, revision: int, segment: dict[str, Any]) -> None:
-        job = self._make_stable_job(revision, segment)
+    async def _enqueue_stable(self, revision: int, segment: dict[str, Any], *, target_language: str) -> None:
+        job = self._make_stable_job(revision, segment, target_language=target_language)
         if job is None:
             return
 
@@ -351,7 +373,13 @@ class RealtimeTranslationRuntime:
             self._stable_queue.append(job)
             self._wake.set()
 
-    async def _update_preview(self, revision: int, partial_segment: dict[str, Any]) -> None:
+    async def _update_preview(
+        self,
+        revision: int,
+        partial_segment: dict[str, Any],
+        *,
+        target_language: str,
+    ) -> None:
         source_text = str(partial_segment.get("text") or "").strip()
         if not source_text:
             await self._cancel_preview()
@@ -365,6 +393,7 @@ class RealtimeTranslationRuntime:
                 source_revision=int(revision),
                 source_text=source_text,
                 source_language=str(partial_segment.get("language") or self.config.source_language or ""),
+                target_language=target_language,
             )
             self._wake.set()
 
@@ -421,6 +450,7 @@ class RealtimeTranslationRuntime:
         translated, _error_code = await self._translate_text(
             job.source_text,
             source_language=job.source_language,
+            target_language=job.target_language,
             timeout_sec=self._preview_timeout_sec(),
         )
         async with self._lock:
@@ -436,7 +466,7 @@ class RealtimeTranslationRuntime:
             {
                 "type": "translation_preview",
                 "source_revision": int(job.source_revision),
-                "target_language": self.config.target_language,
+                "target_language": job.target_language,
                 "text": translated,
             }
         )
@@ -447,6 +477,7 @@ class RealtimeTranslationRuntime:
         translations = await self._translate_texts(
             [job.source_text for job in jobs],
             source_language=jobs[0].source_language,
+            target_language=jobs[0].target_language,
             timeout_sec=None,
         )
         events = [
@@ -482,7 +513,7 @@ class RealtimeTranslationRuntime:
                 "source_revision": int(job.source_revision),
                 "source_segment_id": job.source_segment_id,
                 "source_segment_index": int(job.source_segment_index),
-                "target_language": self.config.target_language,
+                "target_language": job.target_language,
                 "text": translated,
             }
         return event
@@ -492,11 +523,12 @@ class RealtimeTranslationRuntime:
         text: str,
         *,
         source_language: str,
+        target_language: str,
         timeout_sec: float | None,
     ) -> tuple[str | None, str | None]:
         return await self.model_actor.translate(
             text,
-            target_language=self.config.target_language,
+            target_language=target_language,
             source_language=source_language,
             max_new_tokens=self.config.max_new_tokens,
             timeout_sec=timeout_sec,
@@ -507,6 +539,7 @@ class RealtimeTranslationRuntime:
         texts: list[str],
         *,
         source_language: str,
+        target_language: str,
         timeout_sec: float | None,
     ) -> list[tuple[str | None, str | None]]:
         if len(texts) == 1:
@@ -514,12 +547,13 @@ class RealtimeTranslationRuntime:
                 await self._translate_text(
                     texts[0],
                     source_language=source_language,
+                    target_language=target_language,
                     timeout_sec=timeout_sec,
                 )
             ]
         return await self.model_actor.translate_batch(
             texts,
-            target_language=self.config.target_language,
+            target_language=target_language,
             source_language=source_language,
             max_new_tokens=self.config.max_new_tokens,
             timeout_sec=timeout_sec,
@@ -554,6 +588,7 @@ class RealtimeTranslationRuntime:
             bool(batch)
             and len(batch) < max(1, int(self.config.stable_batch_size))
             and job.source_language == batch[0].source_language
+            and job.target_language == batch[0].target_language
         )
 
     async def _stop_worker(self, *, cancel_running_preview: bool = False) -> None:
@@ -582,9 +617,16 @@ class RealtimeTranslationRuntime:
             if self._running_job_kind == kind:
                 self._running_job_kind = None
 
-    def _make_stable_job(self, revision: int, segment: dict[str, Any]) -> _StableJob | None:
+    def _make_stable_job(
+        self,
+        revision: int,
+        segment: dict[str, Any],
+        *,
+        target_language: str | None,
+    ) -> _StableJob | None:
         source_text = str(segment.get("text") or "").strip()
-        if not source_text:
+        target = str(target_language or "").strip()
+        if not source_text or not target:
             return None
         return _StableJob(
             source_revision=int(revision),
@@ -592,6 +634,7 @@ class RealtimeTranslationRuntime:
             source_segment_index=int(segment.get("index") or 0),
             source_text=source_text,
             source_language=str(segment.get("language") or self.config.source_language or ""),
+            target_language=target,
         )
 
     def _stable_status(self, job: _StableJob, code: str, message: str) -> dict[str, Any]:
@@ -602,7 +645,7 @@ class RealtimeTranslationRuntime:
             "source_revision": int(job.source_revision),
             "source_segment_id": job.source_segment_id,
             "source_segment_index": int(job.source_segment_index),
-            "target_language": self.config.target_language,
+            "target_language": job.target_language,
             "message": str(message),
         }
 

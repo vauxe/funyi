@@ -116,8 +116,10 @@ async function boot(): Promise<void> {
   dom.historyButton.addEventListener("click", () => void setOverlayMode(overlayMode === "history" ? "compact" : "history"));
   dom.minimizeButton.addEventListener("click", () => void minimizeOverlay());
   dom.closeButton.addEventListener("click", () => void closeOverlay());
+  dom.language.addEventListener("change", () => liveSession.setLanguageConfig({ language: selectedAsrLanguage() }));
   dom.translationTargetLanguage.addEventListener("change", () => {
     subtitleDocument.setTranslationEnabled(translationEnabled());
+    liveSession.setLanguageConfig({ target_language: translationTargetLanguage() || null });
     render();
   });
   render();
@@ -549,7 +551,7 @@ async function startSession(): Promise<void> {
     session_id: `desktop-${Date.now()}`,
     sample_rate: 16000,
     audio_format: "pcm_s16le",
-    language: dom.language.value.trim() || undefined,
+    language: selectedAsrLanguage() || undefined,
   };
   if (targetLanguage) {
     startPayload.target_language = targetLanguage;
@@ -688,8 +690,8 @@ function setControlsState(state: SessionState, { canStart }: { canStart: boolean
   dom.sessionButton.title = sessionButtonLabel;
   dom.sessionButton.setAttribute("aria-label", sessionButtonLabel);
   dom.serverUrl.disabled = active;
-  dom.language.disabled = active;
-  dom.translationTargetLanguage.disabled = active;
+  dom.language.disabled = state === "connecting" || state === "finishing";
+  dom.translationTargetLanguage.disabled = state === "connecting" || state === "finishing";
   dom.audioSource.disabled = active;
   renderStatusSummary();
 }
@@ -834,6 +836,10 @@ function audioSourceLabel(source: { kind?: string; name: string }): string {
 
 function translationTargetLanguage(): string {
   return dom.translationTargetLanguage.value.trim();
+}
+
+function selectedAsrLanguage(): string | null {
+  return dom.language.value.trim() || null;
 }
 
 function translationEnabled(): boolean {

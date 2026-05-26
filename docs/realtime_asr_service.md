@@ -34,7 +34,19 @@ send about 100 ms per WebSocket audio frame. Frame size is transport cadence;
 the service accepts each frame directly and ASR runs on the model streaming
 cadence.
 
-Commands: `flush`, `finish`.
+Commands: `flush`, `finish`, `set_language`.
+
+`set_language` changes future transcription and translation settings:
+
+```json
+{"type":"set_language","language":"English","target_language":"Japanese"}
+```
+
+Omitted fields are unchanged. Null or empty `language` returns future ASR to
+auto language detection; null or empty `target_language` disables future
+translation. Non-empty targets require `--translation-model`. The server flushes
+the current ASR tail before applying changed settings, and stable history is not
+rewritten or retranslated.
 
 Events:
 
@@ -141,12 +153,16 @@ must not treat model-carried prefix text as user-visible stable history.
 - clients should use replaceable `partial` text for the live subtitle line;
 - one WebSocket session owns one continuous ASR stream;
 - `flush` promotes the current tail but does not start a new model epoch;
+- `set_language` promotes the current tail, then starts future ASR from the new
+  language setting;
 - long speech may stabilize repeated text after `live_stability_delay_ms`;
 - ASCII word fragments stay partial;
 - stable history is never rewritten;
 - bounded-window recognition frames may be tail-only after the stable cursor,
   and prompt-carried text must not be stabilized as new evidence;
 - stable translation history must not drop middle source segments;
+- changing `target_language` cancels pending preview and queued stable
+  translation work; already emitted transcript history is not retranslated;
 - unaligned finalization promotes a final tail update when it extends the last
   visible partial; otherwise it promotes the last visible partial instead of
   dropping user-visible tail text;
@@ -171,9 +187,9 @@ Service entrypoint defaults:
   `--timestamp-local-files-only`
 
 Disable flags only for debugging, fallback, or comparison.
-When translation is enabled with `--translation-model`, each translated session
-must provide `target_language` in the start command. Targets are accepted only
-when they are in the HY-MT model-card language list.
+When translation is enabled with `--translation-model`, a session may provide
+`target_language` in the start command or later via `set_language`. Targets are
+accepted only when they are in the HY-MT model-card language list.
 Stable translation batching is opt-in with `--translation-stable-batch-size`.
 The default is `1` so preview latency and existing single-item runtime behavior
 stay unchanged; larger values only batch queued stable segments with the same

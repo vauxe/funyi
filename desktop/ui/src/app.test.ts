@@ -262,6 +262,47 @@ test("active server session errors are shown as a retryable user status", async 
   assert.equal(elements["session-status"]!.textContent, "Previous session closing");
 });
 
+test("language controls stay editable while running and send runtime updates", async () => {
+  const elements = installDocument();
+  installTauriRuntime();
+
+  await importApp("runtime-language-switch");
+  await nextTick();
+
+  elements["language"]!.value = "Chinese";
+  elements["translation-target-language"]!.value = "English";
+  elements["session-button"]!.click();
+  const socket = FakeWebSocket.instances[0];
+  assert.ok(socket);
+
+  socket.open();
+  socket.message({
+    type: "ready",
+    sample_rate: 16000,
+    translation: { enabled: true, target_language: "English" },
+  });
+  await nextTick();
+
+  assert.equal(elements["language"]!.disabled, false);
+  assert.equal(elements["translation-target-language"]!.disabled, false);
+  assert.equal(elements["server-url"]!.disabled, true);
+  assert.equal(elements["audio-source"]!.disabled, true);
+
+  elements["language"]!.value = "Japanese";
+  elements["language"]!.dispatch("change", {});
+  assert.deepEqual(JSON.parse(String(socket.sent.at(-1))), {
+    type: "set_language",
+    language: "Japanese",
+  });
+
+  elements["translation-target-language"]!.value = "";
+  elements["translation-target-language"]!.dispatch("change", {});
+  assert.deepEqual(JSON.parse(String(socket.sent.at(-1))), {
+    type: "set_language",
+    target_language: null,
+  });
+});
+
 test("macOS native drag does not run manual drag release commands", async () => {
   const elements = installDocument();
   const invocations = installTauriRuntime({ platform: "macos" });

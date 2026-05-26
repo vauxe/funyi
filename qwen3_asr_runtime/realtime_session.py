@@ -126,6 +126,14 @@ class RealtimeASRSession:
         events.extend(self._handle_decoded_text(finalize=True))
         return events
 
+    def set_language(self, language: Optional[str]) -> list[dict[str, Any]]:
+        events = self.flush()
+        self.config.language = (str(language).strip() or None) if language is not None else None
+        cursor_sample = max(int(self._transcript.sample), int(self._last_asr_end_sample))
+        self._transcript = _TranscriptCursor(sample=cursor_sample)
+        self._asr_state = None
+        return events
+
     def finish(self) -> list[dict[str, Any]]:
         events = self.flush()
         events.append(self.store.final_event())

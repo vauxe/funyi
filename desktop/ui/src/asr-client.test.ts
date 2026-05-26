@@ -150,6 +150,21 @@ test("close resolves only after websocket close is observed", async () => {
   assert.equal(closed, true);
 });
 
+test("setLanguageConfig sends runtime language command", async () => {
+  const client = new AsrClient({
+    url: "ws://127.0.0.1:8000/ws/asr",
+  });
+  const socket = await connectOpened(client);
+
+  client.setLanguageConfig({ language: "English", target_language: null });
+
+  assert.deepEqual(JSON.parse(String(socket.sent.at(-1))), {
+    type: "set_language",
+    language: "English",
+    target_language: null,
+  });
+});
+
 function nextTick(): Promise<void> {
   return new Promise((resolve) => {
     setImmediate(resolve);

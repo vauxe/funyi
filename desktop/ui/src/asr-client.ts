@@ -107,7 +107,11 @@ export class AsrClient {
   }
 
   finish(): void {
-    this.sendCommand("finish");
+    this.sendPayload({ type: "finish" });
+  }
+
+  setLanguageConfig(config: { language?: string | null; target_language?: string | null }): void {
+    this.sendPayload({ type: "set_language", ...config });
   }
 
   close(): Promise<void> {
@@ -151,11 +155,11 @@ export class AsrClient {
     return closeWait;
   }
 
-  private sendCommand(type: string): void {
+  private sendPayload(payload: Record<string, unknown>): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       return;
     }
-    this.ws.send(JSON.stringify({ type }));
+    this.ws.send(JSON.stringify(payload));
   }
 
   private emitStatus(status: string): void {

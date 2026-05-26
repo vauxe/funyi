@@ -273,6 +273,71 @@ class RealtimeTranslationRuntimeTest(unittest.IsolatedAsyncioTestCase):
             ["seg_000001", "seg_000002", "seg_000003"],
         )
 
+    async def test_target_switch_clears_pending_stable_queue(self) -> None:
+        translator = FakeTranslator()
+        runtime, queue = await self.make_runtime(
+            translator,
+            preview_enabled=False,
+        )
+
+        await runtime.accept_source_event(transcript_update(1, stable_appends=[stable_segment(1, "old")]))
+        await runtime.set_target_language("Japanese")
+        await runtime.start()
+        await runtime.accept_source_event(transcript_update(2, stable_appends=[stable_segment(2, "new")]))
+
+        event = await get_event(queue)
+        self.assertEqual(event["type"], "translation_stable")
+        self.assertEqual(event["source_segment_id"], "seg_000002")
+        self.assertEqual(event["target_language"], "Japanese")
+        self.assertEqual(event["text"], "Japanese:new")
+        await asyncio.sleep(0.02)
+        self.assertTrue(queue.empty())
+        self.assertEqual(translator.calls, ["new"])
+
+    async def test_target_switch_cancels_pending_preview_and_uses_new_target(self) -> None:
+        translator = FakeTranslator()
+        runtime, queue = await self.make_runtime(
+            translator,
+            stable_enabled=False,
+            preview_debounce_ms=25,
+        )
+        await runtime.start()
+
+        await runtime.accept_source_event(
+            transcript_update(1, partial={"text": "old", "language": "Chinese", "start_ms": 0, "end_ms": 100})
+        )
+        await asyncio.sleep(0.005)
+        await runtime.set_target_language("Japanese")
+        await runtime.accept_source_event(
+            transcript_update(2, partial={"text": "new", "language": "Chinese", "start_ms": 0, "end_ms": 200})
+        )
+
+        event = await get_event(queue)
+        self.assertEqual(event["type"], "translation_preview")
+        self.assertEqual(event["source_revision"], 2)
+        self.assertEqual(event["target_language"], "Japanese")
+        self.assertEqual(event["text"], "Japanese:new")
+        await asyncio.sleep(0.05)
+        self.assertTrue(queue.empty())
+
+    async def test_target_none_disables_future_translation(self) -> None:
+        translator = FakeTranslator()
+        runtime, queue = await self.make_runtime(translator, preview_debounce_ms=0)
+        await runtime.start()
+
+        await runtime.set_target_language(None)
+        await runtime.accept_source_event(
+            transcript_update(
+                1,
+                stable_appends=[stable_segment(1, "stable")],
+                partial={"text": "draft", "language": "Chinese", "start_ms": 0, "end_ms": 100},
+            )
+        )
+
+        await asyncio.sleep(0.02)
+        self.assertTrue(queue.empty())
+        self.assertEqual(translator.calls, [])
+
     async def test_finish_returns_every_queued_stable_translation_once(self) -> None:
         runtime, _queue = await self.make_runtime(FakeTranslator(), preview_enabled=False)
         for index, text in [(1, "one"), (2, "two"), (3, "three")]:
