@@ -21,21 +21,17 @@ only when the details control expands the window.
 
 ## Run
 
-Start the ASR service first:
+From the repository root, start the ASR service first:
 
 ```bash
-uv run python realtime_server.py \
-  --model Qwen/Qwen3-ASR-1.7B \
-  --host 127.0.0.1 \
-  --port 8000 \
-  --translation-model tencent/HY-MT1.5-1.8B
+make backend
 ```
 
-Then run the desktop client from this directory:
+Then run the desktop client:
 
 ```bash
-corepack pnpm install
-corepack pnpm run dev
+make desktop-install
+make desktop
 ```
 
 If your shell does not expose a `pnpm` command, keep using `corepack pnpm ...`

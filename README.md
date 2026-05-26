@@ -47,8 +47,7 @@ Install the desktop dependencies only if you want to run or build the Tauri
 client:
 
 ```bash
-cd desktop
-corepack pnpm install
+make desktop-install
 ```
 
 If your shell does not expose a `pnpm` command, use `corepack pnpm ...`
@@ -70,13 +69,20 @@ sudo apt install pulseaudio-utils
 
 ## Start Live Captions
 
-Start the local ASR service first:
+Start the full local backend first:
 
 ```bash
-uv run python realtime_server.py \
-  --model Qwen/Qwen3-ASR-1.7B \
-  --host 127.0.0.1 \
-  --port 8000
+make backend
+```
+
+This starts ASR with translation and forced-aligner timestamps enabled, using
+the validated local service optimization stack. Common variants:
+
+```bash
+make backend-download
+make backend-asr
+FUNYI_PORT=8001 make backend
+make backend BACKEND_ARGS="--live-stability-delay-ms 8000"
 ```
 
 The realtime service defaults to `--live-stability-delay-ms 12000` so stable
@@ -93,8 +99,7 @@ curl http://127.0.0.1:8000/healthz
 Then start the desktop client:
 
 ```bash
-cd desktop
-corepack pnpm run dev
+make desktop
 ```
 
 Use the desktop UI to connect to:
@@ -110,37 +115,31 @@ capture.
 
 ## Enable Translation
 
-Realtime translation is optional. Start the service with a translation model,
-then choose a target language in the desktop UI:
+`make backend` enables `tencent/HY-MT1.5-1.8B` by default. To use a different
+model or local path:
 
 ```bash
-uv run python realtime_server.py \
-  --model Qwen/Qwen3-ASR-1.7B \
-  --host 127.0.0.1 \
-  --port 8000 \
-  --translation-model tencent/HY-MT1.5-1.8B
+FUNYI_TRANSLATION_MODEL=/path/to/HY-MT1.5-1.8B make backend
 ```
 
-Translation auxiliary models load with `local_files_only` by default, so put the
-model in the local Hugging Face cache or pass a local model path. Use
-`--no-translation-local-files-only` only when you intentionally want the service
-to download the translation model.
+Set `FUNYI_TRANSLATION_MODEL=` to disable translation. Auxiliary models load
+from local files by default; use `make backend-download` only when a download is
+expected. Then choose a target language in the desktop UI.
 
 ## Enable Forced-Aligner Timestamps
 
-Stable transcript segments already include sample-clock timing. If you need
-forced-aligned timestamps, start the service with a timestamp model:
+Stable transcript segments already include sample-clock timing.
+`make backend` enables forced-aligned timestamps with
+`Qwen/Qwen3-ForcedAligner-0.6B` by default. To use a different model or local
+path:
 
 ```bash
-uv run python realtime_server.py \
-  --model Qwen/Qwen3-ASR-1.7B \
-  --host 127.0.0.1 \
-  --port 8000 \
-  --timestamp-model <forced-aligner-model-or-path>
+FUNYI_TIMESTAMP_MODEL=/path/to/Qwen3-ForcedAligner-0.6B make backend
 ```
 
-Timestamp auxiliary models also use local-files-only loading by default. Use
-`--no-timestamp-local-files-only` only when a model download is expected.
+Set `FUNYI_TIMESTAMP_MODEL=` to disable forced alignment. Auxiliary models load
+from local files by default; use `make backend-download` only when a download is
+expected.
 
 ## Transcribe An Audio File
 
