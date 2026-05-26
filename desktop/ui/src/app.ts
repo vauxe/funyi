@@ -750,7 +750,7 @@ function statusPresentation(
     const level = audioLevelState(value);
     return {
       active: true,
-      tone: level === "live" ? "ok" : level === "low" ? "warn" : "idle",
+      tone: /drop/i.test(value) || level === "low" ? "warn" : level === "live" ? "ok" : "idle",
       level,
     };
   }

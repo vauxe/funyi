@@ -52,6 +52,12 @@ button:hover:not(:disabled) {
   color: #f4fffd;
 }
 
+button:focus-visible {
+  outline: 2px solid rgba(118, 255, 240, 0.72);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px rgba(57, 197, 187, 0.18);
+}
+
 button:disabled {
   cursor: default;
   opacity: 0.36;
@@ -386,6 +392,11 @@ select:focus {
     0 0 18px rgba(57, 197, 187, 0.12);
   color: #f4fffd;
   transform: translateY(-1px);
+}
+
+.caption-controls .icon-button:focus-visible {
+  border-color: rgba(118, 255, 240, 0.46);
+  color: #f4fffd;
 }
 
 .caption-controls .icon-button:active:not(:disabled) {

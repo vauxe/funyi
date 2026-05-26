@@ -18,6 +18,7 @@ class FakeAsrClient implements LiveSessionClient {
   onError: LiveSessionClientCallbacks["onError"];
   onEvent: LiveSessionClientCallbacks["onEvent"];
   onStatus: LiveSessionClientCallbacks["onStatus"];
+  sendPcmResult = true;
   sentPcm: Uint8Array[] = [];
   startPayload: Record<string, unknown> | null = null;
   url: string;
@@ -44,8 +45,10 @@ class FakeAsrClient implements LiveSessionClient {
   }
 
   sendPcm(bytes: Uint8Array): boolean {
-    this.sentPcm.push(bytes);
-    return true;
+    if (this.sendPcmResult) {
+      this.sentPcm.push(bytes);
+    }
+    return this.sendPcmResult;
   }
 
   emit(event: RealtimeEvent): void | Promise<void> {
@@ -54,10 +57,11 @@ class FakeAsrClient implements LiveSessionClient {
 }
 
 interface HarnessOptions {
+  onReady?: (event: RealtimeEvent) => void;
   onTranscriptEvent?: (event: RealtimeEvent) => void | Promise<void>;
 }
 
-function createHarness({ onTranscriptEvent }: HarnessOptions = {}) {
+function createHarness({ onReady, onTranscriptEvent }: HarnessOptions = {}) {
   const clients: FakeAsrClient[] = [];
   const statuses = new Map<string, string>();
   const audio = {
@@ -118,6 +122,7 @@ function createHarness({ onTranscriptEvent }: HarnessOptions = {}) {
       return client;
     },
     finishTimeoutMs: 50,
+    onReady,
     onStatus: (key, value) => statuses.set(key, value),
     onTranscriptEvent,
   });
@@ -171,6 +176,39 @@ test("warns when macOS capture keeps delivering silent pcm", async () => {
     harness.statuses.get("captureStatus") || "",
     /Sys silent/,
   );
+});
+
+test("reports dropped frames when websocket backpressure refuses pcm", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness);
+  harness.clients[0]!.sendPcmResult = false;
+
+  harness.audio.frameHandler?.({ sampleRate: 16000, format: "pcm_s16le", dataBase64: "abcd" });
+  harness.audio.frameHandler?.({ sampleRate: 16000, format: "pcm_s16le", dataBase64: "abcd" });
+
+  assert.equal(harness.clients[0]!.sentPcm.length, 0);
+  assert.equal(harness.statuses.get("audioStats"), "Silent, dropped 2");
+});
+
+test("ready callback errors abort before capture starts", async () => {
+  const harness = createHarness({
+    onReady: () => {
+      throw new Error("ready render failed");
+    },
+  });
+  harness.session.setAudioAvailable(true);
+  await harness.session.start({
+    audioSourceId: "system_default",
+    startPayload: { type: "start", sample_rate: 16000 },
+    url: "ws://127.0.0.1:8000/ws/asr",
+  });
+
+  await harness.clients[0]!.emit({ type: "ready", sample_rate: 16000 });
+
+  assert.equal(harness.session.getState(), "idle");
+  assert.equal(harness.clients[0]!.closed, true);
+  assert.deepEqual(harness.audio.startCalls, []);
+  assert.equal(harness.statuses.get("connectionStatus"), "ready render failed");
 });
 
 test("uses microphone-specific capture status and silent warning", async () => {

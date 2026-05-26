@@ -77,6 +77,7 @@ export class LiveSession {
   private audioAvailable = false;
   private audioSourceId = "";
   private client: LiveSessionClient | null = null;
+  private droppedAudioFrames = 0;
   private finishTimeout: unknown = null;
   private lastAudioLevelDb: number | null = null;
   private silentFrameWarningActive = false;
@@ -120,6 +121,7 @@ export class LiveSession {
 
   resetStats(): void {
     this.clearFinishTimeout();
+    this.droppedAudioFrames = 0;
     this.lastAudioLevelDb = null;
     this.silentFrameWarningActive = false;
     this.silentFrames = 0;
@@ -229,9 +231,9 @@ export class LiveSession {
     }
 
     if (event.type === "ready") {
-      this.setState("running");
-      this.onReady?.(event);
       try {
+        this.setState("running");
+        this.onReady?.(event);
         await this.startCaptureAfterReady();
       } catch (error) {
         const message = errorMessage(error);
@@ -309,7 +311,10 @@ export class LiveSession {
     const bytes = this.audio.decodePcm(frame.dataBase64);
     this.lastAudioLevelDb = pcmLevelDb(bytes);
     this.updateSilentCaptureStatus(this.lastAudioLevelDb);
-    this.client?.sendPcm(bytes);
+    const client = this.client;
+    if (client && !client.sendPcm(bytes)) {
+      this.droppedAudioFrames += 1;
+    }
     this.updateAudioStats();
   }
 
@@ -342,7 +347,7 @@ export class LiveSession {
   }
 
   private updateAudioStats(): void {
-    this.setStatus("audioStats", formatAudioLevel(this.lastAudioLevelDb));
+    this.setStatus("audioStats", formatAudioStats(this.lastAudioLevelDb, this.droppedAudioFrames));
   }
 
   private updateSilentCaptureStatus(levelDb: number | null): void {
@@ -410,6 +415,14 @@ function formatAudioLevel(levelDb: number | null): string {
     return "Silent";
   }
   return `${Math.round(levelDb)}dB`;
+}
+
+function formatAudioStats(levelDb: number | null, droppedAudioFrames: number): string {
+  const level = formatAudioLevel(levelDb);
+  if (droppedAudioFrames <= 0) {
+    return level;
+  }
+  return `${level}, dropped ${droppedAudioFrames}`;
 }
 
 function isAudible(levelDb: number | null): levelDb is number {

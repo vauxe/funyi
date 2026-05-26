@@ -46,12 +46,7 @@ test("connect sends start payload after socket opens", async () => {
     onStatus: (status, source) => statuses.push([status, source]),
   });
 
-  const pending = client.connect({ type: "start", sample_rate: 16000 });
-  const socket = FakeWebSocket.instances[0];
-  assert.ok(socket);
-  socket.readyState = FakeWebSocket.OPEN;
-  socket.onopen?.();
-  await pending;
+  const socket = await connectOpened(client, { type: "start", sample_rate: 16000 });
 
   assert.equal(socket.binaryType, "arraybuffer");
   assert.deepEqual(JSON.parse(String(socket.sent[0])), { type: "start", sample_rate: 16000 });
@@ -81,12 +76,7 @@ test("sendPcm drops frames when websocket buffer is over limit", async () => {
     url: "ws://127.0.0.1:8000/ws/asr",
     maxBufferedBytes: 4,
   });
-  const pending = client.connect({ type: "start" });
-  const socket = FakeWebSocket.instances[0];
-  assert.ok(socket);
-  socket.readyState = FakeWebSocket.OPEN;
-  socket.onopen?.();
-  await pending;
+  const socket = await connectOpened(client);
 
   socket.sent = [];
   socket.bufferedAmount = 5;
@@ -97,3 +87,56 @@ test("sendPcm drops frames when websocket buffer is over limit", async () => {
   assert.equal(client.sendPcm(new Uint8Array([1, 2])), true);
   assert.equal(socket.sent.length, 1);
 });
+
+test("reports async message handler failures", async () => {
+  const statuses: string[] = [];
+  const client = new AsrClient({
+    url: "ws://127.0.0.1:8000/ws/asr",
+    onEvent: async () => {
+      throw new Error("handler boom");
+    },
+    onStatus: (status) => statuses.push(status),
+  });
+  const socket = await connectOpened(client);
+
+  socket.onmessage?.({ data: JSON.stringify({ type: "ready" }) } as MessageEvent);
+  await nextTick();
+
+  assert.equal(statuses.at(-1), "event handler failed: handler boom");
+});
+
+test("reports async close handler failures", async () => {
+  const statuses: string[] = [];
+  const client = new AsrClient({
+    url: "ws://127.0.0.1:8000/ws/asr",
+    onClose: async () => {
+      throw new Error("close boom");
+    },
+    onStatus: (status) => statuses.push(status),
+  });
+  const socket = await connectOpened(client);
+
+  socket.onclose?.({ code: 1000 } as CloseEvent);
+  await nextTick();
+
+  assert.equal(statuses.at(-1), "close handler failed: close boom");
+});
+
+function nextTick(): Promise<void> {
+  return new Promise((resolve) => {
+    setImmediate(resolve);
+  });
+}
+
+async function connectOpened(
+  client: AsrClient,
+  payload: Record<string, unknown> = { type: "start" },
+): Promise<FakeWebSocket> {
+  const pending = client.connect(payload);
+  const socket = FakeWebSocket.instances[0];
+  assert.ok(socket);
+  socket.readyState = FakeWebSocket.OPEN;
+  socket.onopen?.();
+  await pending;
+  return socket;
+}

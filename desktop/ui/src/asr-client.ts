@@ -5,7 +5,7 @@ export type AsrEvent = Record<string, unknown> & {
 export type AsrStartPayload = Record<string, unknown>;
 
 type AsrEventCallback = (event: AsrEvent, source: AsrClient) => void | Promise<void>;
-type AsrSocketCallback<TEvent> = (event: TEvent, source: AsrClient) => void;
+type AsrSocketCallback<TEvent> = (event: TEvent, source: AsrClient) => void | Promise<void>;
 type StatusCallback = (status: string, source: AsrClient) => void;
 
 export interface AsrClientOptions {
@@ -50,7 +50,7 @@ export class AsrClient {
       };
       ws.onerror = (event) => {
         this.emitStatus("WS error");
-        this.onError?.(event, this);
+        this.runCallback("error handler", () => this.onError?.(event, this));
         if (!settled) {
           settled = true;
           reject(new Error("WebSocket connection failed"));
@@ -62,7 +62,7 @@ export class AsrClient {
           settled = true;
           reject(new Error(`WebSocket closed before start: ${event.code}`));
         }
-        this.onClose?.(event, this);
+        this.runCallback("close handler", () => this.onClose?.(event, this));
       };
       ws.onmessage = (message) => {
         if (typeof message.data !== "string") {
@@ -70,7 +70,7 @@ export class AsrClient {
         }
         try {
           const event = JSON.parse(message.data);
-          this.onEvent?.(event, this);
+          this.runCallback("event handler", () => this.onEvent?.(event, this));
         } catch (error) {
           this.emitStatus(`invalid event: ${errorMessage(error)}`);
         }
@@ -109,6 +109,16 @@ export class AsrClient {
 
   private emitStatus(status: string): void {
     this.onStatus?.(status, this);
+  }
+
+  private runCallback(label: string, callback: () => void | Promise<void>): void {
+    try {
+      void Promise.resolve(callback()).catch((error: unknown) => {
+        this.emitStatus(`${label} failed: ${errorMessage(error)}`);
+      });
+    } catch (error) {
+      this.emitStatus(`${label} failed: ${errorMessage(error)}`);
+    }
   }
 }
 
