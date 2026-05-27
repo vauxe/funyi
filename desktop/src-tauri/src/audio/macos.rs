@@ -238,9 +238,8 @@ fn handle_audio_sample(app: &AppHandle, state: &Arc<Mutex<CaptureState>>, sample
         return;
     };
     append_pcm_s16le(&mut state.pcm, data, sample_count, input_rate);
-    let pending = &mut state.pcm.pending;
-    let seq = &mut state.seq;
-    let _ = emit_pending_audio_frames(app, pending, seq);
+    let CaptureState { pcm, seq } = &mut *state;
+    let _ = emit_pending_audio_frames(app, &mut pcm.pending, seq);
 }
 
 fn audio_sample_rate(sample: &CMSampleBuffer) -> Option<usize> {

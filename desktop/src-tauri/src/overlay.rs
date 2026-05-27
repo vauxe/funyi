@@ -6,6 +6,7 @@ const HISTORY_WINDOW_WIDTH: f64 = 960.0;
 const HISTORY_WINDOW_HEIGHT: f64 = 430.0;
 const MIN_OVERLAY_WIDTH: f64 = 520.0;
 const MIN_OVERLAY_HEIGHT: f64 = 128.0;
+#[cfg(any(target_os = "windows", test))]
 const SNAP_EDGE_MARGIN_PX: i32 = 42;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
@@ -208,6 +209,7 @@ pub fn resize_plan(
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
 pub fn snapped_frame_near_point(
     frame: Frame,
     bounds: Option<WorkBounds>,
@@ -300,6 +302,7 @@ fn clamped_position(
     (x.clamp(bounds.left, max_x), y.clamp(bounds.top, max_y))
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn snapped_clamped_position(bounds: WorkBounds, frame: Frame) -> (i32, i32) {
     let mut x = frame.x;
     let mut y = frame.y;

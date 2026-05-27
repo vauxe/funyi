@@ -126,11 +126,11 @@ fn extract_mono_samples(data: &[u8], sample_count: usize) -> Vec<f32> {
         if data.len() == i16_len {
             return data.chunks_exact(2).map(i16_sample).collect();
         }
-        if f32_len > 0 && data.len() % f32_len == 0 {
+        if f32_len > 0 && data.len().is_multiple_of(f32_len) {
             let channels = data.len() / f32_len;
             return average_interleaved_f32(data, sample_count, channels);
         }
-        if i16_len > 0 && data.len() % i16_len == 0 {
+        if i16_len > 0 && data.len().is_multiple_of(i16_len) {
             let channels = data.len() / i16_len;
             return average_interleaved_i16(data, sample_count, channels);
         }
