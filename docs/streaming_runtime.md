@@ -58,7 +58,9 @@ The runtime keeps these responsibilities separate:
 | `RecognitionFrame` | explicit model/session data contract separating prompt text from generated evidence |
 | `TailSelector` | select the replaceable transcript tail from one recognition frame and the transcript cursor |
 | `TextStabilizer` | LocalAgreement-style stable prefix and replaceable partial text |
-| `RealtimeASRSession` | lossless PCM ingestion, ASR cadence, TranscriptStore writes |
+| `SpeechGate` | Silero-driven speech-turn boundary detection with bounded pre-roll |
+| `RealtimeConnectionSession` | WebSocket-session sample clock, VAD endpoint handling, bounded ASR context lifecycle |
+| `RealtimeASRSession` | one ASR epoch's cadence, text stabilization, TranscriptStore writes |
 | `realtime_server.py` | WebSocket transport, one active local connection, JSON send policy |
 
 `ASRStreamingState`, `RecognitionFrame`, `TailSelector`, `TextStabilizer`, and
@@ -85,7 +87,7 @@ policy, not transcript history and not ASR chunks.
 Each decode step uses:
 
 ```text
-incoming PCM
+speech-turn PCM
   -> advance audio_now
   -> fixed ASR cadence chunks
   -> audio window from audio_trim_cursor and retention policy
@@ -160,11 +162,15 @@ emitted partial, finalization promotes the longer final tail. If it is a rewrite
 finalization falls back to the last emitted partial; final history must not lose
 a tail the user has already seen.
 
-For realtime service sessions, the WebSocket session owns one continuous
-`ASRStreamingState`. `flush` and `finish` may promote the current tail into
-stable history, but they must not use silence as an ASR input gate. Any accepted
-PCM sample that is dropped before it reaches the model is permanently
-unrecoverable.
+For realtime service sessions, the WebSocket session owns one continuous sample
+clock and a shared `TranscriptStore`. VAD speech end starts a bounded idle hold
+instead of committing text immediately, so short pauses do not reset
+model-carried text context or promote unstable rewrites. When an ASR epoch is
+retained across a short pause, the suppressed gap is advanced as hidden silence
+so transcript timestamps remain on the original audio clock; long idle does not
+keep running ASR. Speech start includes bounded pre-roll, and long idle or
+explicit `flush`/`finish` promotes the active tail before dropping retained ASR
+state.
 
 The trim policy is explicit:
 
@@ -317,7 +323,7 @@ Property tests should cover:
 - live30 `max_prefix_tokens=64` outside the service profile
 - graph buckets `32` or `256`
 - fuzzy full-history overlap as a substitute for explicit window state
-- VAD as a service ASR input gate
+- raw low-energy RMS filtering as a substitute for speech-turn state
 - persistent reserved StaticCache/graph across steps without allocator control
 
 Open architecture work:

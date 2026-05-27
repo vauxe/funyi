@@ -34,7 +34,11 @@ from qwen3_asr_runtime.translation import (
     HYMTGenerationConfig,
     HYMTTranslator,
 )
-from qwen3_asr_runtime.realtime_session import RealtimeASRConfig, RealtimeASRSession
+from qwen3_asr_runtime.realtime_session import (
+    RealtimeASRConfig,
+    RealtimeASRSession,
+    RealtimeConnectionSession,
+)
 from qwen3_asr_runtime.transcript_store import TranscriptStore
 from qwen3_asr_runtime.utils import SAMPLE_RATE, normalize_language_name, validate_language
 
@@ -85,6 +89,7 @@ def build_app(
     translation_actor: TranslationModelActor | None = None,
     translation_service_config: TranslationServiceConfig | None = None,
     live_stability_delay_ms: int = _SERVICE_LIVE_STABILITY_DELAY_MS,
+    vad_enabled: bool = True,
 ) -> Any:
     try:
         from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -149,7 +154,14 @@ def build_app(
                 await _send_error_and_close(websocket, str(exc), code=1003)
                 return
             try:
-                session = RealtimeASRSession(model, transcript_store=store, config=config)
+                if vad_enabled:
+                    session = RealtimeConnectionSession(
+                        model,
+                        transcript_store=store,
+                        config=config,
+                    )
+                else:
+                    session = RealtimeASRSession(model, transcript_store=store, config=config)
             except RuntimeError as exc:
                 await _send_error_and_close(websocket, str(exc), code=1011)
                 return
@@ -513,7 +525,7 @@ async def _publish_session_events(
     translation: RealtimeTranslationRuntime | None,
     events: list[dict[str, Any]],
     timestamp_runtime: RealtimeTimestampRuntime | None = None,
-    session: RealtimeASRSession | None = None,
+    session: Any | None = None,
 ) -> None:
     for event in events:
         if translation is not None:
@@ -672,6 +684,12 @@ def _parse_args() -> argparse.Namespace:
             "Minimum repeated-prefix delay before live text becomes stable. "
             "Lower values are more aggressive and can reduce transcript quality."
         ),
+    )
+    parser.add_argument(
+        "--vad",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable Silero voice activity control for realtime service ASR turns.",
     )
     parser.add_argument("--timestamp-model", default=None, help="Enable forced-aligner timestamps with this model.")
     parser.add_argument("--timestamp-device-map", default=None, help="Forced-aligner device_map. Default: cuda:0.")
@@ -872,6 +890,7 @@ def main() -> None:
         translation_actor=translation_actor,
         translation_service_config=translation_service_config,
         live_stability_delay_ms=args.live_stability_delay_ms,
+        vad_enabled=bool(args.vad),
     )
 
     try:

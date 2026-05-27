@@ -69,12 +69,14 @@ make backend-download
 make backend-asr
 FUNYI_PORT=8001 make backend
 make backend BACKEND_ARGS="--live-stability-delay-ms 8000"
+make backend BACKEND_ARGS="--no-vad"
 ```
 
 The realtime service defaults to `--live-stability-delay-ms 12000` so stable
-history stays conservative. Use the replaceable `partial` line for low-latency
-live subtitle display; stable text is split into subtitle-sized cues after it is
-safe to commit.
+history stays conservative, and Silero voice activity control is enabled so idle
+silence does not drive ASR decoding. Use the replaceable `partial` line for
+low-latency live subtitle display; stable text is split into subtitle-sized cues
+after it is safe to commit.
 
 Check that the service is alive:
 

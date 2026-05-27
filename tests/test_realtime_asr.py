@@ -38,11 +38,16 @@ from qwen3_asr_runtime.language_support import (
     QWEN3_ASR_MODEL_CARD_LANGUAGES,
     QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES,
 )
-from qwen3_asr_runtime.realtime_session import RealtimeASRConfig, RealtimeASRSession
+from qwen3_asr_runtime.realtime_session import (
+    RealtimeASRConfig,
+    RealtimeASRSession,
+    RealtimeConnectionSession,
+)
+from qwen3_asr_runtime.speech_gate import SpeechGate, SpeechGateConfig
 from qwen3_asr_runtime.streaming import RecognitionFrame, TailSelector, TextStabilizer
 from qwen3_asr_runtime.transcript_store import TranscriptStore
 from qwen3_asr_runtime.utils import SUPPORTED_LANGUAGES
-from qwen3_asr_runtime.vad import SileroVadAdapter, SileroVadConfig
+from qwen3_asr_runtime.vad import SileroVadAdapter, SileroVadConfig, VadDecision
 
 
 def _desktop_language_options(name: str) -> tuple[str, ...]:
@@ -125,6 +130,26 @@ class FakeStreamingModel:
             decoded_text=text_value,
             generated_text=text_value,
         )
+
+
+class FakeVadAdapter:
+    def __init__(self, decisions: list[VadDecision]) -> None:
+        self.decisions = list(decisions)
+        self.accept_lengths: list[int] = []
+        self._speech_active = False
+
+    @property
+    def speech_active(self) -> bool:
+        return self._speech_active
+
+    def reset(self) -> None:
+        self._speech_active = False
+
+    def accept(self, audio: np.ndarray) -> VadDecision:
+        self.accept_lengths.append(int(audio.shape[0]))
+        decision = self.decisions.pop(0) if self.decisions else VadDecision(speech_active=self._speech_active)
+        self._speech_active = bool(decision.speech_active)
+        return decision
 
 
 def make_session(
@@ -471,6 +496,7 @@ class TestRealtimeServerCli:
         assert args.translation_stable_batch_size == 1
         assert not args.translation_sample
         assert args.live_stability_delay_ms == 12000
+        assert args.vad
 
     def test_live_stability_delay_can_be_configured(self) -> None:
         with patch.object(
@@ -479,6 +505,10 @@ class TestRealtimeServerCli:
             ["realtime_server.py", "--model", "model", "--live-stability-delay-ms", "5000"],
         ):
             assert _parse_args().live_stability_delay_ms == 5000
+
+    def test_realtime_vad_can_be_disabled(self) -> None:
+        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--no-vad"]):
+            assert not _parse_args().vad
 
     def test_translation_sampling_can_be_enabled(self) -> None:
         with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--translation-sample"]):
@@ -1044,6 +1074,87 @@ class TestRealtimeServerTranslationOrdering:
             assert await asyncio.wait_for(write_task, timeout=1.0) == 'done'
 
 
+class TestSpeechGate:
+    def test_initial_silence_produces_no_speech_events(self) -> None:
+        gate = SpeechGate(
+            vad=FakeVadAdapter([VadDecision(speech_active=False)]),
+            config=SpeechGateConfig(pre_roll_ms=400),
+        )
+
+        events = gate.accept(np.zeros(16_000, dtype=np.float32))
+
+        assert events == []
+
+    def test_speech_start_includes_bounded_preroll(self) -> None:
+        gate = SpeechGate(
+            vad=FakeVadAdapter(
+                [
+                    VadDecision(speech_active=False),
+                    VadDecision(speech_started=True, speech_active=True, speech_start_sample=16_000),
+                ]
+            ),
+            config=SpeechGateConfig(pre_roll_ms=400),
+        )
+        gate.accept(np.zeros(16_000, dtype=np.float32))
+
+        events = gate.accept(np.ones(16_000, dtype=np.float32) * 0.2)
+
+        assert len(events) == 1
+        assert events[0].type == 'speech_start'
+        assert events[0].start_sample == 9_600
+        assert events[0].end_sample == 32_000
+        assert events[0].audio.shape[0] == 22_400
+
+    def test_short_speech_in_one_chunk_emits_start_and_end(self) -> None:
+        gate = SpeechGate(
+            vad=FakeVadAdapter(
+                [
+                    VadDecision(
+                        speech_started=True,
+                        speech_ended=True,
+                        speech_active=False,
+                        speech_start_sample=2_000,
+                        speech_end_sample=10_000,
+                    )
+                ]
+            ),
+            config=SpeechGateConfig(pre_roll_ms=400),
+        )
+
+        events = gate.accept(np.ones(16_000, dtype=np.float32) * 0.2)
+
+        assert [event.type for event in events] == ['speech_start', 'speech_end']
+        assert events[0].start_sample == 0
+        assert events[0].end_sample == 10_000
+        assert events[1].start_sample == 10_000
+        assert not gate.speech_active
+
+    def test_speech_restart_in_same_chunk_does_not_duplicate_previous_turn_audio(self) -> None:
+        gate = SpeechGate(
+            vad=FakeVadAdapter(
+                [
+                    VadDecision(speech_started=True, speech_active=True, speech_start_sample=0),
+                    VadDecision(
+                        speech_started=True,
+                        speech_ended=True,
+                        speech_active=True,
+                        speech_start_sample=28_000,
+                        speech_end_sample=20_000,
+                    ),
+                ]
+            ),
+            config=SpeechGateConfig(pre_roll_ms=400),
+        )
+        gate.accept(np.ones(16_000, dtype=np.float32) * 0.2)
+
+        events = gate.accept(np.ones(16_000, dtype=np.float32) * 0.2)
+
+        assert [event.type for event in events] == ['speech_audio', 'speech_end', 'speech_start']
+        assert events[0].end_sample == 20_000
+        assert events[2].start_sample == 21_600
+        assert events[2].start_sample >= events[1].end_sample
+
+
 class TestRealtimeASRSession:
     def test_service_default_keeps_stable_history_conservative(self) -> None:
         model = FakeStreamingModel(outputs=["第一秒", "前两秒", "前两秒第三秒"])
@@ -1088,6 +1199,143 @@ class TestRealtimeASRSession:
         assert model.init_count == 1
         assert model.stream_calls == 1
         assert model.stream_audio_lengths == [16000]
+        assert_transcript_update_invariants(events)
+
+    def test_turn_time_origin_keeps_absolute_transcript_timestamps(self) -> None:
+        model = FakeStreamingModel(outputs=["第一秒", "第一秒第二秒"])
+        session = RealtimeASRSession(
+            model,
+            config=RealtimeASRConfig(
+                language="Chinese",
+                live_stability_delay_ms=0,
+            ),
+            time_origin_sample=32_000,
+        )
+        speech = np.ones(16_000, dtype=np.float32) * 0.2
+
+        events = session.ingest_audio(speech) + session.ingest_audio(speech)
+
+        stable = stable_appends(events)
+        assert [segment['text'] for segment in stable] == ['第一秒']
+        assert stable[0]['start_ms'] == 2000
+        assert stable[0]['end_ms'] == 3000
+        assert_transcript_update_invariants(events)
+
+
+class TestRealtimeConnectionSession:
+    def test_initial_silence_does_not_start_asr_or_emit_partial(self) -> None:
+        model = FakeStreamingModel(outputs=["静音幻觉"])
+        session = RealtimeConnectionSession(
+            model,
+            config=RealtimeASRConfig(language="Chinese"),
+            speech_gate=SpeechGate(
+                vad=FakeVadAdapter([VadDecision(speech_active=False)]),
+            ),
+        )
+
+        events = session.ingest_audio(np.zeros(16_000, dtype=np.float32))
+
+        assert events == []
+        assert model.init_count == 0
+        assert model.stream_calls == 0
+
+    def test_speech_end_keeps_short_pause_context_without_model_finish(self) -> None:
+        model = FakeStreamingModel(outputs=["开头"], finish_text="开头")
+        session = RealtimeConnectionSession(
+            model,
+            config=RealtimeASRConfig(language="Chinese"),
+            speech_gate=SpeechGate(
+                vad=FakeVadAdapter(
+                    [
+                        VadDecision(speech_active=False),
+                        VadDecision(speech_started=True, speech_active=True, speech_start_sample=16_000),
+                        VadDecision(speech_ended=True, speech_active=False, speech_end_sample=32_000),
+                        VadDecision(speech_started=True, speech_active=True, speech_start_sample=48_000),
+                    ]
+                ),
+                config=SpeechGateConfig(pre_roll_ms=400),
+            ),
+        )
+
+        events: list[dict[str, object]] = []
+        events.extend(session.ingest_audio(np.zeros(16_000, dtype=np.float32)))
+        events.extend(session.ingest_audio(np.ones(16_000, dtype=np.float32) * 0.2))
+        events.extend(session.ingest_audio(np.zeros(16_000, dtype=np.float32)))
+
+        assert stable_appends(events) == []
+        assert model.finish_calls == 0
+        assert model.init_count == 1
+        assert session.active_asr is not None
+        assert_transcript_update_invariants(events)
+        stream_calls_after_flush = model.stream_calls
+
+        events = session.ingest_audio(np.ones(16_000, dtype=np.float32) * 0.2)
+
+        assert model.init_count == 1
+        assert model.stream_calls > stream_calls_after_flush
+        assert session.active_asr is not None
+        assert_transcript_update_invariants(events)
+
+    def test_short_vad_pause_advances_timeline_without_publishing_silence(self) -> None:
+        model = FakeStreamingModel(outputs=["第一秒", "第一秒", "第一秒第二秒"])
+        session = RealtimeConnectionSession(
+            model,
+            config=RealtimeASRConfig(language="Chinese", live_stability_delay_ms=0),
+            speech_gate=SpeechGate(
+                vad=FakeVadAdapter(
+                    [
+                        VadDecision(speech_started=True, speech_active=True, speech_start_sample=0),
+                        VadDecision(speech_ended=True, speech_active=False, speech_end_sample=16_000),
+                        VadDecision(speech_started=True, speech_active=True, speech_start_sample=32_000),
+                    ]
+                ),
+                config=SpeechGateConfig(pre_roll_ms=0),
+            ),
+        )
+
+        first_events = session.ingest_audio(np.ones(16_000, dtype=np.float32) * 0.2)
+        pause_events = session.ingest_audio(np.zeros(16_000, dtype=np.float32))
+        resume_events = session.ingest_audio(np.ones(16_000, dtype=np.float32) * 0.2)
+
+        assert stable_appends(first_events) == []
+        assert pause_events == []
+        stable = stable_appends(resume_events)
+        updates = transcript_updates(resume_events)
+        assert [segment['text'] for segment in stable] == ['第一秒']
+        assert stable[0]['start_ms'] == 0
+        assert stable[0]['end_ms'] == 1000
+        assert updates[-1]['partial']['text'] == '第二秒'  # type: ignore[index]
+        assert updates[-1]['partial']['end_ms'] == 3000  # type: ignore[index]
+        assert model.finish_calls == 0
+        assert model.init_count == 1
+        assert model.stream_audio_lengths == [16000, 16000, 16000]
+        assert_transcript_update_invariants(first_events + pause_events + resume_events)
+
+    def test_speech_context_expiry_flushes_and_closes_after_long_idle(self) -> None:
+        model = FakeStreamingModel(outputs=["开头"], finish_text="开头")
+        session = RealtimeConnectionSession(
+            model,
+            config=RealtimeASRConfig(language="Chinese"),
+            speech_context_hold_ms=500,
+            speech_gate=SpeechGate(
+                vad=FakeVadAdapter(
+                    [
+                        VadDecision(speech_started=True, speech_active=True, speech_start_sample=0),
+                        VadDecision(speech_ended=True, speech_active=False, speech_end_sample=16_000),
+                    ]
+                ),
+            ),
+        )
+
+        events: list[dict[str, object]] = []
+        events.extend(session.ingest_audio(np.ones(16_000, dtype=np.float32) * 0.2))
+        events.extend(session.ingest_audio(np.zeros(16_000, dtype=np.float32)))
+
+        assert [segment['text'] for segment in stable_appends(events)] == ['开头']
+        assert model.finish_calls == 1
+        assert model.init_count == 1
+        assert model.stream_audio_lengths == [16000]
+        assert session.active_asr is None
         assert_transcript_update_invariants(events)
 
     def test_punctuation_does_not_stabilize_while_speech_continues(self) -> None:

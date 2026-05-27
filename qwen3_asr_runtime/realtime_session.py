@@ -8,6 +8,7 @@ import numpy as np
 
 from .streaming import RecognitionFrame, RecognitionTail, TailSelector, TextStabilizer
 from .realtime_timestamps import StableTimingJob
+from .speech_gate import SpeechGate, SpeechGateEvent
 from .transcript_store import PartialSegment, StableSegment, TranscriptStore
 from .utils import SAMPLE_RATE
 from .vad import normalize_pcm
@@ -73,11 +74,7 @@ class _TranscriptCursor:
 
 
 class RealtimeASRSession:
-    """Single-user realtime ASR session.
-
-    The session has one lossless audio path: every accepted PCM sample is
-    eventually fed to one continuous streaming ASR state.
-    """
+    """Realtime ASR state for one contiguous audio epoch."""
 
     def __init__(
         self,
@@ -85,10 +82,12 @@ class RealtimeASRSession:
         *,
         transcript_store: TranscriptStore | None = None,
         config: RealtimeASRConfig | None = None,
+        time_origin_sample: int = 0,
     ) -> None:
         self.model = model
         self.store = transcript_store or TranscriptStore()
         self.config = config or RealtimeASRConfig()
+        self._time_origin_sample = int(time_origin_sample)
 
         self._asr_state: Any = None
         self._transcript = _TranscriptCursor()
@@ -110,6 +109,13 @@ class RealtimeASRSession:
             return []
         self._append_asr_audio(audio)
         return self._drain_asr_audio(force=False, emit_live=True)
+
+    def advance_audio(self, pcm16k: np.ndarray) -> None:
+        audio = normalize_pcm(pcm16k)
+        if audio.shape[0] == 0:
+            return
+        self._append_asr_audio(audio)
+        self._drain_asr_audio(force=False, emit_live=False)
 
     def flush(self) -> list[dict[str, Any]]:
         events = self._drain_asr_audio(force=True, emit_live=False)
@@ -374,7 +380,10 @@ class RealtimeASRSession:
     def _remember_timing_hint(self, segment: StableSegment, *, start_sample: int, end_sample: int) -> None:
         if not self.config.force_align_timestamps:
             return
-        self._timing_hints[segment.id] = (int(start_sample), max(int(start_sample), int(end_sample)))
+        self._timing_hints[segment.id] = (
+            self._absolute_sample(start_sample),
+            max(self._absolute_sample(start_sample), self._absolute_sample(end_sample)),
+        )
 
     def _drain_asr_audio(self, *, force: bool, emit_live: bool) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
@@ -386,7 +395,10 @@ class RealtimeASRSession:
         return events
 
     def _sample_to_ms(self, sample_index: int) -> int:
-        return int(round(1000 * int(sample_index) / int(self.config.sample_rate)))
+        return int(round(1000 * self._absolute_sample(sample_index) / int(self.config.sample_rate)))
+
+    def _absolute_sample(self, sample_index: int) -> int:
+        return int(self._time_origin_sample) + int(sample_index)
 
     def _low_latency_streaming_kwargs(self) -> dict[str, Any]:
         kwargs = dict(_LOW_LATENCY_STREAMING_KWARGS)
@@ -401,7 +413,159 @@ class RealtimeASRSession:
         return max(1, int(round(self.config.sample_rate * chunk_size_sec)))
 
 
+class RealtimeConnectionSession:
+    """Long-lived realtime connection that owns VAD epochs and transcript history."""
+
+    def __init__(
+        self,
+        model: Any,
+        *,
+        transcript_store: TranscriptStore | None = None,
+        config: RealtimeASRConfig | None = None,
+        speech_gate: SpeechGate | None = None,
+        speech_context_hold_ms: int = 30_000,
+    ) -> None:
+        self.model = model
+        self.store = transcript_store or TranscriptStore()
+        self.config = config or RealtimeASRConfig()
+        self.speech_gate = speech_gate or SpeechGate()
+        self._active_asr: RealtimeASRSession | None = None
+        self._active_asr_end_sample: int | None = None
+        self._active_asr_flushed = False
+        self._pending_close_sample: int | None = None
+        self._speech_context_hold_samples = max(
+            0,
+            int(round(self.config.sample_rate * int(speech_context_hold_ms) / 1000)),
+        )
+        self._timing_jobs: dict[str, StableTimingJob] = {}
+
+    @property
+    def active_asr(self) -> RealtimeASRSession | None:
+        return self._active_asr
+
+    def ingest_audio(self, pcm16k: np.ndarray) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        for speech_event in self.speech_gate.accept(pcm16k):
+            if speech_event.type in ("speech_start", "speech_audio"):
+                events.extend(self._accept_speech_audio(speech_event))
+            elif speech_event.type == "speech_end":
+                self._pending_close_sample = int(speech_event.end_sample)
+        events.extend(self._close_expired_turn())
+        return events
+
+    def flush(self) -> list[dict[str, Any]]:
+        return self._flush_active_asr(close=False)
+
+    def set_language(self, language: Optional[str]) -> list[dict[str, Any]]:
+        events = self._flush_active_asr(close=True)
+        self.config.language = (str(language).strip() or None) if language is not None else None
+        return events
+
+    def finish(self) -> list[dict[str, Any]]:
+        events = self._flush_active_asr(close=True)
+        events.append(self.store.final_event())
+        return events
+
+    def stable_timing_jobs(self, event: dict[str, Any]) -> list[StableTimingJob]:
+        if event.get("type") != "transcript_update":
+            return []
+        jobs: list[StableTimingJob] = []
+        for segment in event.get("stable_appends") or []:
+            if not isinstance(segment, dict):
+                continue
+            job = self._timing_jobs.get(str(segment.get("id") or ""))
+            if job is not None:
+                jobs.append(job)
+        return jobs
+
+    def stable_timing_jobs_for_events(self, events: list[dict[str, Any]]) -> list[StableTimingJob]:
+        jobs: list[StableTimingJob] = []
+        for event in events:
+            jobs.extend(self.stable_timing_jobs(event))
+        return jobs
+
+    def _new_asr_epoch(self, origin_sample: int) -> RealtimeASRSession:
+        return RealtimeASRSession(
+            self.model,
+            transcript_store=self.store,
+            config=self.config,
+            time_origin_sample=int(origin_sample),
+        )
+
+    def _ensure_active_asr(self, origin_sample: int) -> None:
+        if self._active_asr is None:
+            self._active_asr = self._new_asr_epoch(origin_sample)
+            self._active_asr_end_sample = int(origin_sample)
+            self._active_asr_flushed = False
+
+    def _accept_speech_audio(self, speech_event: SpeechGateEvent) -> list[dict[str, Any]]:
+        events = self._close_expired_turn(current_sample=speech_event.start_sample)
+        self._ensure_active_asr(speech_event.start_sample)
+        self._pending_close_sample = None
+        events.extend(self._ingest_speech_audio(speech_event))
+        return events
+
+    def _ingest_speech_audio(self, speech_event: SpeechGateEvent) -> list[dict[str, Any]]:
+        if self._active_asr is None or speech_event.audio.shape[0] == 0:
+            return []
+        audio = speech_event.audio
+        start_sample = int(speech_event.start_sample)
+        represented_end = (
+            start_sample if self._active_asr_end_sample is None else int(self._active_asr_end_sample)
+        )
+
+        if start_sample < represented_end:
+            drop = min(represented_end - start_sample, int(audio.shape[0]))
+            audio = audio[drop:]
+            start_sample += drop
+            if audio.shape[0] == 0:
+                return []
+
+        if start_sample > represented_end:
+            gap = start_sample - represented_end
+            self._active_asr.advance_audio(np.zeros((gap,), dtype=np.float32))
+
+        self._active_asr_flushed = False
+        events = self._active_asr.ingest_audio(audio)
+        self._active_asr_end_sample = start_sample + int(audio.shape[0])
+        self._remember_timing_jobs(self._active_asr, events)
+        return events
+
+    def _flush_active_asr(self, *, close: bool) -> list[dict[str, Any]]:
+        if self._active_asr is None:
+            return []
+        session = self._active_asr
+        events: list[dict[str, Any]] = []
+        if not self._active_asr_flushed:
+            events = session.flush()
+            self._remember_timing_jobs(session, events)
+            self._active_asr_flushed = True
+        if close:
+            self._drop_active_asr()
+        return events
+
+    def _close_expired_turn(self, *, current_sample: int | None = None) -> list[dict[str, Any]]:
+        if self._pending_close_sample is None:
+            return []
+        sample = int(self.speech_gate.samples_seen if current_sample is None else current_sample)
+        idle_samples = sample - int(self._pending_close_sample)
+        if idle_samples >= self._speech_context_hold_samples:
+            return self._flush_active_asr(close=True)
+        return []
+
+    def _drop_active_asr(self) -> None:
+        self._active_asr = None
+        self._active_asr_end_sample = None
+        self._active_asr_flushed = False
+        self._pending_close_sample = None
+
+    def _remember_timing_jobs(self, turn: RealtimeASRSession, events: list[dict[str, Any]]) -> None:
+        for job in turn.stable_timing_jobs_for_events(events):
+            self._timing_jobs[job.source_segment_id] = job
+
+
 __all__ = [
     "RealtimeASRConfig",
     "RealtimeASRSession",
+    "RealtimeConnectionSession",
 ]

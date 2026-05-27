@@ -319,8 +319,10 @@ states.
 
 - `realtime_server.py`: one connection, start validation, PCM decode,
   `asyncio.to_thread(...)`, JSON send.
-- `RealtimeASRSession`: lossless PCM ingestion, ASR cadence, sample clock, text
-  stabilization, `TranscriptStore` writes, final flush.
+- `RealtimeConnectionSession`: absolute sample clock, Silero speech gate,
+  bounded ASR context lifecycle, shared `TranscriptStore`.
+- `RealtimeASRSession`: one ASR epoch's cadence, text stabilization,
+  `TranscriptStore` writes, final flush.
 - `TranscriptStore`: in-memory append-only source transcript.
 - `RealtimeTimestampRuntime`: optional stable-segment forced alignment and
   `transcript_timing_update` patches.
@@ -335,10 +337,15 @@ must not treat model-carried prefix text as user-visible stable history.
 ## Rules
 
 - transport frames are not ASR chunks or transcript segments;
-- every accepted PCM sample must eventually be fed to the streaming ASR state;
+- every accepted PCM sample advances the connection timeline;
+- speech audio is the only visible ASR input; short retained pauses may be
+  represented as hidden silence to preserve the ASR epoch clock, while idle
+  silence must not produce partial or stable text;
 - clients should use replaceable `partial` text for the live subtitle line;
-- one WebSocket session owns one continuous ASR stream;
-- `flush` promotes the current tail but does not start a new model epoch;
+- one WebSocket session owns one continuous transcript history and may keep ASR
+  context across short VAD pauses;
+- `flush` promotes the current active ASR tail but does not end the WebSocket
+  session;
 - `set_language` promotes the current tail, then starts future ASR from the new
   language setting;
 - long speech may stabilize repeated text after `live_stability_delay_ms`;
@@ -354,6 +361,11 @@ must not treat model-carried prefix text as user-visible stable history.
 Protocol-visible service defaults:
 
 - one active WebSocket session;
+- Silero voice activity control is on by default; use `--no-vad` only for
+  pass-through debugging;
+- VAD speech end starts an idle hold; short pauses keep ASR state, text
+  stability, and sample-clock continuity intact, while long idle or explicit
+  `flush`/`finish` promotes the current tail;
 - stable history delay: `live_stability_delay_ms=12000`; clients should render
   replaceable `partial` in a local compact view for low-latency subtitles;
 - forced-aligner timestamps are off unless `--timestamp-model` is set;
