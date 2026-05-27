@@ -12,6 +12,8 @@ export class FakeElement {
   pointerCapture: number | null = null;
   parentElement: FakeElement | null = null;
   scrollCalls: Array<{ behavior?: ScrollBehavior; block?: ScrollLogicalPosition }> = [];
+  scrollHeight = 0;
+  scrollTop = 0;
   styleValues = new Map<string, string>();
   textContent = "";
   title = "";

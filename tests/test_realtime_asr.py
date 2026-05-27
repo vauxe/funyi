@@ -1298,7 +1298,7 @@ class TestRealtimeASRSession:
         assert partial_texts(events)[-1] == 'world today'
         assert_transcript_update_invariants(events)
 
-    def test_long_stable_text_is_split_into_subtitle_sized_cues(self) -> None:
+    def test_long_stable_text_is_committed_as_one_transcript_segment(self) -> None:
         stable_text = "一二三四五六七八九十甲乙丙丁戊己庚辛。后续文本"
         model = FakeStreamingModel(outputs=[stable_text, stable_text + "后续"])
         session = make_session(model, live_stability_delay_ms=0)
@@ -1309,15 +1309,14 @@ class TestRealtimeASRSession:
         events.extend(session.ingest_audio(speech))
 
         stable = stable_appends(events)
-        assert len(stable) > 1
-        assert ''.join((str(segment['text']) for segment in stable)) == stable_text
-        assert all((len(str(segment['text'])) <= 18 for segment in stable))
+        assert len(stable) == 1
+        assert stable[0]['text'] == stable_text
         assert stable[0]['start_ms'] == 0
         assert stable[-1]['end_ms'] == 1000
         assert partial_texts(events)[-1] == '后续'
         assert_transcript_update_invariants(events)
 
-    def test_long_ascii_stable_text_split_preserves_spaces(self) -> None:
+    def test_long_ascii_stable_text_preserves_spaces(self) -> None:
         stable_text = "hello world today again tomorrow"
         model = FakeStreamingModel(outputs=[stable_text, stable_text + " next"])
         session = make_session(model, live_stability_delay_ms=0)
@@ -1328,8 +1327,8 @@ class TestRealtimeASRSession:
         events.extend(session.ingest_audio(speech))
 
         stable = stable_appends(events)
-        assert len(stable) > 1
-        assert ''.join((str(segment['text']) for segment in stable)) == stable_text
+        assert len(stable) == 1
+        assert stable[0]['text'] == stable_text
         assert partial_texts(events)[-1] == 'next'
         assert_transcript_update_invariants(events)
 

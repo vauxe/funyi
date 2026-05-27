@@ -169,12 +169,12 @@ is the replaceable current tail, or `null`.
 Each stable segment has `id`, `index`, `start_ms`, `end_ms`, `text`, and
 `language`. In forced-aligner timestamp mode, new stable segments initially use
 `start_ms: null`, `end_ms: null`, and `timing_status: "pending"`.
-Long stable text may arrive as multiple subtitle-sized `stable_appends`; those
-are display cues, not separate ASR chunks.
+`stable_appends` are transcript history segments, not subtitle layout units.
 
 Clients append `stable_appends`, replace `partial`, and require `stable_base` to
-match local `stable_count`. If the base check fails, reconnect and start a fresh
-session.
+match local `stable_count`. Clients that need compact subtitles render the latest
+stable/current text into a constrained view locally. If the base check fails,
+reconnect and start a fresh session.
 
 ### `transcript_timing_update`
 
@@ -355,7 +355,7 @@ Protocol-visible service defaults:
 
 - one active WebSocket session;
 - stable history delay: `live_stability_delay_ms=12000`; clients should render
-  replaceable `partial` for low-latency subtitles;
+  replaceable `partial` in a local compact view for low-latency subtitles;
 - forced-aligner timestamps are off unless `--timestamp-model` is set;
 - timestamp mode defaults: `--timestamp-pad-ms=500`,
   `--timestamp-finish-timeout-ms=30000`, `--timestamp-local-files-only`;

@@ -57,6 +57,56 @@ test("renders current caption window and stable history", () => {
   assert.ok(historyItem.className.split(/\s+/).includes("is-latest"));
 });
 
+test("renders complete long caption text and leaves visual clipping to layout", () => {
+  const document = new SubtitleDocument();
+  const stableText = "一二三四五六七八九十甲乙丙丁戊己庚辛。后续文本";
+  const currentText = "当前文本也可能很长。最后显示";
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 1,
+    stable_appends: [stableSegment(1, stableText, { startMs: 0, endMs: 2300 })],
+    partial: partialSegment(currentText),
+  });
+  const elements = createElements();
+  const view = new CaptionView(captionViewElements(elements));
+
+  view.render(document, { historyVisible: false });
+
+  assert.equal(elements.previousSource.textContent, stableText);
+  assert.equal(elements.currentSource.textContent, currentText);
+  const [historyItem] = elements.historyList.children;
+  assert.equal(historyItem?.children[1]?.textContent, stableText);
+});
+
+test("anchors compact caption text to the latest visible tail", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 1,
+    stable_appends: [stableSegment(1, "previous text", { startMs: 0, endMs: 1000 })],
+    partial: partialSegment("current text"),
+  });
+  document.applyEvent({ type: "translation_stable", source_segment_id: "seg_000001", text: "previous translation" });
+  document.applyEvent({ type: "translation_preview", source_revision: 1, text: "current translation" });
+  const elements = createElements();
+  elements.previousSource.scrollHeight = 120;
+  elements.previousTranslation.scrollHeight = 80;
+  elements.currentSource.scrollHeight = 160;
+  elements.currentTranslation.scrollHeight = 96;
+  const view = new CaptionView(captionViewElements(elements));
+
+  view.render(document, { historyVisible: false });
+
+  assert.equal(elements.previousSource.scrollTop, 120);
+  assert.equal(elements.previousTranslation.scrollTop, 80);
+  assert.equal(elements.currentSource.scrollTop, 160);
+  assert.equal(elements.currentTranslation.scrollTop, 96);
+});
+
 test("updates history when translation visibility changes and scrolls visible history", () => {
   const document = new SubtitleDocument({ translationEnabled: true });
   document.applyEvent({

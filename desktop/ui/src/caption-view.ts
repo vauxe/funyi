@@ -78,8 +78,8 @@ function renderCaptionLine(
   sourceElement: HTMLElement,
   translationElement: HTMLElement,
 ): void {
-  setTextIfChanged(sourceElement, line?.text || "");
-  setTextIfChanged(translationElement, line?.translation || "");
+  setCaptionText(sourceElement, line?.text || "");
+  setCaptionText(translationElement, line?.translation || "");
 }
 
 function createHistoryItem(): HTMLElement {
@@ -116,6 +116,11 @@ function setTextIfChanged(element: HTMLElement, value: string): void {
   if (element.textContent !== value) {
     element.textContent = value;
   }
+}
+
+function setCaptionText(element: HTMLElement, value: string): void {
+  setTextIfChanged(element, value);
+  element.scrollTop = element.scrollHeight;
 }
 
 function formatRange(startMs: number | null, endMs: number | null, status: string | null): string {

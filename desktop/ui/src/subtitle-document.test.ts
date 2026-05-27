@@ -85,6 +85,26 @@ test("translation annotates matching lines and stale preview is ignored", () => 
   assert.equal(document.toSrt(), "1\n00:00:00,000 --> 00:00:01,000\nstable\nstable line\n");
 });
 
+test("window returns complete latest lines", () => {
+  const document = new SubtitleDocument();
+  const stableText = "一二三四五六七八九十甲乙丙丁戊己庚辛。后续文本";
+  const partialText = "当前文本也可能很长。最后显示";
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 1,
+    stable_appends: [stableSegment(1, stableText, { startMs: 0, endMs: 2300 })],
+    partial: partialSegment(partialText, { startMs: 2300, endMs: 3300 }),
+  });
+
+  assert.equal(document.stableLines.length, 1);
+  assert.equal(document.stableLines[0]?.text, stableText);
+  const window = document.window();
+  assert.equal(window.previous?.text, stableText);
+  assert.equal(window.current?.text, partialText);
+});
+
 test("current translation preview survives repeated partial revisions", () => {
   const document = new SubtitleDocument();
   document.applyEvent({

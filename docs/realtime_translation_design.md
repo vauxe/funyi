@@ -113,9 +113,10 @@ Client replay:
 - `translation_stable` annotates a stable line by source segment id/index;
 - `translation_preview` annotates the current draft only when `source_revision`
   matches;
-- the compact subtitle window is `stable_lines[-1]` above `current` below;
+- the compact subtitle window renders `stable_lines[-1]` above `current` below
+  and lets the client layout constrain the visible text;
 - SRT/detail output uses stable history only, with translation as a second line
-  in the same cue when translation display is enabled.
+  in the same SRT entry when translation display is enabled.
 
 Scheduling:
 
@@ -192,7 +193,7 @@ Translation quality gate, only for model/prompt/generation/decode changes:
 - target language, empty output, length outliers, repetition loops, and required
   structural markers;
 - `must_preserve` items such as protocol labels, fixed UI strings, numbers,
-  units, and subtitle cue ids;
+  units, and source segment ids;
 - per-case reference similarity with regression failure on meaningful drops.
 
 Private audio, transcripts, and generated outputs stay in `local_data/`,

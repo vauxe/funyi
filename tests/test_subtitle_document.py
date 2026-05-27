@@ -84,6 +84,27 @@ class TestSubtitleDocument:
 
         assert document.to_srt() == '1\n00:00:00,000 --> 00:00:01,200\n第一句\n'
 
+    def test_window_returns_complete_latest_lines(self) -> None:
+        document = SubtitleDocument()
+        stable_text = "一二三四五六七八九十甲乙丙丁戊己庚辛。后续文本"
+        partial_text = "当前文本也可能很长。最后显示"
+        document.apply_event(
+            {
+                "type": "transcript_update",
+                "revision": 1,
+                "stable_base": 0,
+                "stable_count": 1,
+                "stable_appends": [stable_segment(1, stable_text, start_ms=0, end_ms=2300)],
+                "partial": partial_segment(partial_text, start_ms=2300, end_ms=3300),
+            }
+        )
+
+        assert len(document.stable_lines) == 1
+        assert document.stable_lines[0].text == stable_text
+        window = document.window()
+        assert window.previous.text == stable_text  # type: ignore[union-attr]
+        assert window.current.text == partial_text  # type: ignore[union-attr]
+
     def test_timing_update_patches_pending_stable_line(self) -> None:
         document = SubtitleDocument()
         document.apply_event(

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { cssPxValue, rustNumberConst } from "./test-contract-parsers.fixture.js";
+import { cssPxValue, cssRuleBody, rustNumberConst } from "./test-contract-parsers.fixture.js";
 import { readDesktopFile } from "./test-project-files.fixture.js";
 
 interface TauriWindowConfig {
@@ -31,6 +31,13 @@ test("CSS shell dimensions match the native overlay geometry contract", () => {
   assert.equal(cssPxValue(UI_STYLES, "body", "min-width"), overlaySize("MIN_OVERLAY_WIDTH"));
   assert.equal(cssPxValue(UI_STYLES, "body", "min-height"), overlaySize("MIN_OVERLAY_HEIGHT"));
   assert.equal(cssPxValue(UI_STYLES, ".app-shell", "--compact-height"), overlaySize("COLLAPSED_WINDOW_HEIGHT"));
+});
+
+test("compact caption text is constrained by layout instead of replay truncation", () => {
+  assert.match(cssRuleBody(UI_STYLES, ".caption-source,\n.caption-translation"), /display:\s*-webkit-box;/u);
+  assert.match(cssRuleBody(UI_STYLES, ".caption-source"), /-webkit-line-clamp:\s*2;/u);
+  assert.match(cssRuleBody(UI_STYLES, ".caption-line.previous .caption-source"), /-webkit-line-clamp:\s*1;/u);
+  assert.match(UI_STYLES, /\.caption-translation\s*\{\s*-webkit-line-clamp:\s*1;/u);
 });
 
 function overlaySize(name: string): number {

@@ -76,9 +76,9 @@ with the full user-visible history. It consumes explicit `RecognitionFrame`
 objects, asks `TailSelector` for the uncommitted tail, then
 writes stable or partial transcript updates.
 
-When a stable update contains a long run of text, `RealtimeASRSession` splits
-the already-stable text into subtitle-sized cue segments; this does not create
-new ASR chunks or change the model state.
+When a stable update contains a long run of text, `RealtimeASRSession` appends
+one stable transcript segment. Compact subtitle length is a client layout
+policy, not transcript history and not ASR chunks.
 
 ## Non-Streaming Model To Infinite Stream
 
@@ -297,7 +297,7 @@ Required gates by change type:
 - bounded-live or prompt/window/stabilizer changes: streaming CER gates;
 - `RealtimeASRSession` or WebSocket behavior: WebSocket E2E;
 - user-visible caption behavior: client replay assertions for append-only
-  stable history and replace-only partial text.
+  stable history, replace-only partial text, and compact display layout.
 
 Property tests should cover:
 

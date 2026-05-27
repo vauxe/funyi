@@ -26,9 +26,6 @@ _LOW_LATENCY_STREAMING_KWARGS: dict[str, Any] = {
     "spec_decode": True,
 }
 
-_MAX_SUBTITLE_CUE_CHARS = 18
-
-
 @dataclass
 class RealtimeASRConfig:
     sample_rate: int = SAMPLE_RATE
@@ -284,89 +281,21 @@ class RealtimeASRSession:
         start_sample = int(self._transcript.sample)
         language = self._current_asr_language()
 
-        segments: list[StableSegment] = []
-        for cue_text, cue_start_sample, cue_end_sample in self._subtitle_cues(
-            normalized,
-            start_sample=start_sample,
-            end_sample=end_sample,
-        ):
-            start_ms = self._sample_to_ms(cue_start_sample)
-            end_ms = max(start_ms, self._sample_to_ms(cue_end_sample))
-            segment = self.store.append_stable_segment(
-                text=cue_text,
-                start_ms=None if self.config.force_align_timestamps else start_ms,
-                end_ms=None if self.config.force_align_timestamps else end_ms,
-                language=language,
-                timing_status="pending" if self.config.force_align_timestamps else None,
-            )
-            self._remember_timing_hint(segment, start_sample=cue_start_sample, end_sample=cue_end_sample)
-            segments.append(segment)
+        start_ms = self._sample_to_ms(start_sample)
+        end_ms = max(start_ms, self._sample_to_ms(end_sample))
+        segment = self.store.append_stable_segment(
+            text=normalized,
+            start_ms=None if self.config.force_align_timestamps else start_ms,
+            end_ms=None if self.config.force_align_timestamps else end_ms,
+            language=language,
+            timing_status="pending" if self.config.force_align_timestamps else None,
+        )
+        self._remember_timing_hint(segment, start_sample=start_sample, end_sample=end_sample)
         self._transcript.sample = end_sample
         self._transcript.stable_text_prefix += normalized
         self._transcript.stabilizer.set_tail(partial, end_sample=self._last_asr_end_sample if partial else None)
         self.store.replace_partial(self._partial_segment(partial))
-        return self._emit_transcript_update(stable_base=stable_base, stable_appends=segments)
-
-    def _subtitle_cues(
-        self,
-        text: str,
-        *,
-        start_sample: int,
-        end_sample: int,
-    ) -> list[tuple[str, int, int]]:
-        start_sample = int(start_sample)
-        end_sample = int(end_sample)
-        cue_texts = self._split_subtitle_text(text)
-        if len(cue_texts) == 1:
-            return [(cue_texts[0], start_sample, end_sample)]
-
-        total_chars = len(text)
-        cues: list[tuple[str, int, int]] = []
-        cursor_sample = start_sample
-        consumed_chars = 0
-        duration_samples = max(0, end_sample - start_sample)
-        for index, cue_text in enumerate(cue_texts):
-            consumed_chars += len(cue_text)
-            if index == len(cue_texts) - 1:
-                cue_end_sample = end_sample
-            else:
-                cue_end_sample = start_sample + int(round(duration_samples * consumed_chars / total_chars))
-                cue_end_sample = max(cursor_sample, min(end_sample, cue_end_sample))
-            cues.append((cue_text, cursor_sample, cue_end_sample))
-            cursor_sample = cue_end_sample
-        return cues
-
-    @staticmethod
-    def _split_subtitle_text(text: str) -> list[str]:
-        if len(text) <= _MAX_SUBTITLE_CUE_CHARS:
-            return [text]
-
-        pieces: list[str] = []
-        start = 0
-        while start < len(text):
-            target = min(len(text), start + _MAX_SUBTITLE_CUE_CHARS)
-            if target < len(text):
-                target = RealtimeASRSession._subtitle_split_boundary(text, start=start, target=target)
-            pieces.append(text[start:target])
-            start = target
-        return pieces
-
-    @staticmethod
-    def _subtitle_split_boundary(text: str, *, start: int, target: int) -> int:
-        if not RealtimeASRSession._splits_ascii_word(text, target):
-            return target
-        for index in range(target - 1, start, -1):
-            if not RealtimeASRSession._splits_ascii_word(text, index):
-                return index
-        return target
-
-    @staticmethod
-    def _splits_ascii_word(text: str, index: int) -> bool:
-        if index <= 0 or index >= len(text):
-            return False
-        left = text[index - 1]
-        right = text[index]
-        return left.isascii() and right.isascii() and left.isalnum() and right.isalnum()
+        return self._emit_transcript_update(stable_base=stable_base, stable_appends=[segment])
 
     def _append_final_unaligned_tail(self, tail_text: str) -> list[dict[str, Any]]:
         partial = self.store.partial
