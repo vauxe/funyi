@@ -34,54 +34,10 @@ export interface SubtitleLine {
   readonly translationMessage: string | null;
 }
 
-class SubtitleLineRecord implements SubtitleLine {
-  readonly id: string | null;
-  readonly index: number | null;
-  readonly startMs: number | null;
-  readonly endMs: number | null;
-  readonly text: string;
-  readonly language: string;
-  readonly sourceRevision: number | null;
-  readonly timingStatus: string | null;
-  readonly translation: string | null;
-  readonly translationStatus: string | null;
-  readonly translationMessage: string | null;
-
-  constructor({
-    id = null,
-    index = null,
-    startMs = null,
-    endMs = null,
-    text = "",
-    language = "",
-    sourceRevision = null,
-    timingStatus = null,
-    translation = null,
-    translationStatus = null,
-    translationMessage = null,
-  }: SubtitleLineInit = {}) {
-    this.id = id;
-    this.index = index;
-    this.startMs = startMs;
-    this.endMs = endMs;
-    this.text = text;
-    this.language = language;
-    this.sourceRevision = sourceRevision;
-    this.timingStatus = timingStatus;
-    this.translation = translation;
-    this.translationStatus = translationStatus;
-    this.translationMessage = translationMessage;
-  }
-
-  withPatch(patch: SubtitleLineInit): SubtitleLineRecord {
-    return new SubtitleLineRecord({ ...this, ...patch });
-  }
-}
-
 export class SubtitleDocument {
-  private currentLine: SubtitleLineRecord | null;
+  private currentLine: SubtitleLine | null;
   private revision: number;
-  private stableLineList: SubtitleLineRecord[];
+  private stableLineList: SubtitleLine[];
   private translationEnabledValue: boolean;
 
   constructor({ translationEnabled = true }: { translationEnabled?: boolean } = {}) {
@@ -206,7 +162,7 @@ export class SubtitleDocument {
       let line = lineFromSegment(segment, revision);
       const previous = line.id ? existing.get(line.id) : undefined;
       if (previous) {
-        line = line.withPatch(translationPatch(previous));
+        line = patchLine(line, translationPatch(previous));
       }
       lines.push(line);
     }
@@ -235,7 +191,7 @@ export class SubtitleDocument {
     const sourceRevision = toInt(event.source_revision, 0);
     const text = String(event.text || "").trim();
     if (text && this.currentLine.sourceRevision === sourceRevision) {
-      this.currentLine = this.currentLine.withPatch({ translation: text });
+      this.currentLine = patchLine(this.currentLine, { translation: text });
     }
   }
 
@@ -267,13 +223,13 @@ export class SubtitleDocument {
   private patchStableLine(index: number, patch: SubtitleLineInit): void {
     const line = this.stableLineList[index];
     if (line) {
-      this.stableLineList[index] = line.withPatch(patch);
+      this.stableLineList[index] = patchLine(line, patch);
     }
   }
 }
 
-function lineFromSegment(segment: Record<string, unknown>, revision: number): SubtitleLineRecord {
-  return new SubtitleLineRecord({
+function lineFromSegment(segment: Record<string, unknown>, revision: number): SubtitleLine {
+  return createSubtitleLine({
     id: stringOrNull(segment.id),
     index: optionalInt(segment.index),
     startMs: optionalInt(segment.start_ms),
@@ -285,11 +241,11 @@ function lineFromSegment(segment: Record<string, unknown>, revision: number): Su
   });
 }
 
-function renderLine(line: SubtitleLineRecord | null, includeTranslation: boolean): SubtitleLine | null {
+function renderLine(line: SubtitleLine | null, includeTranslation: boolean): SubtitleLine | null {
   if (!line || includeTranslation) {
     return line;
   }
-  return line.withPatch({
+  return patchLine(line, {
     translation: null,
     translationStatus: null,
     translationMessage: null,
@@ -297,23 +253,55 @@ function renderLine(line: SubtitleLineRecord | null, includeTranslation: boolean
 }
 
 function preserveCurrentTranslation(
-  next: SubtitleLineRecord | null,
-  previous: SubtitleLineRecord | null,
-): SubtitleLineRecord | null {
+  next: SubtitleLine | null,
+  previous: SubtitleLine | null,
+): SubtitleLine | null {
   if (!next || !previous?.translation || !isSamePartialLine(next, previous)) {
     return next;
   }
-  return next.withPatch(translationPatch(previous));
+  return patchLine(next, translationPatch(previous));
 }
 
 function preserveStableTranslation(
-  next: SubtitleLineRecord,
-  previous: SubtitleLineRecord | null,
-): SubtitleLineRecord {
+  next: SubtitleLine,
+  previous: SubtitleLine | null,
+): SubtitleLine {
   if (!previous?.translation || !isSamePartialLine(next, previous)) {
     return next;
   }
-  return next.withPatch(translationPatch(previous));
+  return patchLine(next, translationPatch(previous));
+}
+
+function createSubtitleLine({
+  id = null,
+  index = null,
+  startMs = null,
+  endMs = null,
+  text = "",
+  language = "",
+  sourceRevision = null,
+  timingStatus = null,
+  translation = null,
+  translationStatus = null,
+  translationMessage = null,
+}: SubtitleLineInit = {}): SubtitleLine {
+  return {
+    id,
+    index,
+    startMs,
+    endMs,
+    text,
+    language,
+    sourceRevision,
+    timingStatus,
+    translation,
+    translationStatus,
+    translationMessage,
+  };
+}
+
+function patchLine(line: SubtitleLine, patch: SubtitleLineInit): SubtitleLine {
+  return createSubtitleLine({ ...line, ...patch });
 }
 
 function translationPatch(line: SubtitleLine): SubtitleLineInit {
