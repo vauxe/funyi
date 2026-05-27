@@ -2,16 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  OVERLAY_MODES,
   RESIZE_DIRECTION_ATTRIBUTE,
   RESIZE_DIRECTIONS,
   RESIZE_HANDLE_SELECTOR,
   isResizeDirection,
 } from "./overlay-contract.js";
-
-test("defines overlay modes as runtime contract values", () => {
-  assert.deepEqual(OVERLAY_MODES, ["compact", "history"]);
-});
 
 test("validates resize directions from markup", () => {
   assert.deepEqual(RESIZE_DIRECTIONS.filter(isResizeDirection), [...RESIZE_DIRECTIONS]);

@@ -1,7 +1,8 @@
 import type { OverlayHost } from "./host-contract.js";
 import type { OverlayMode, ResizeDirection } from "./overlay-contract.js";
-import { DEFAULT_COMPACT_HEIGHT, nextCompactHeight } from "./overlay-resize.js";
 import { FrameScheduler, PointerSession } from "./pointer-session.js";
+
+const HISTORY_AUTO_HEIGHT = 300;
 
 interface ResizeHandle {
   element: HTMLElement;
@@ -11,7 +12,6 @@ interface ResizeHandle {
 interface OverlayControllerElements {
   root: HTMLElement;
   dragSurface: HTMLElement;
-  historyButton: HTMLButtonElement;
   resizeHandles: ResizeHandle[];
 }
 
@@ -21,19 +21,8 @@ interface OverlayControllerCallbacks {
   onModeApplied(mode: OverlayMode): void;
 }
 
-interface ActiveResize {
-  direction: ResizeDirection;
-  mode: OverlayMode;
-  startY: number;
-  startHeight: number;
-}
-
 export class OverlayController {
-  private activeResize: ActiveResize | null = null;
-  private compactHeight = DEFAULT_COMPACT_HEIGHT;
-  private modeChanging = false;
   private modeValue: OverlayMode = "compact";
-  private transitionSequence = 0;
 
   private readonly dragSession: PointerSession;
   private readonly resizeSession: PointerSession;
@@ -55,7 +44,7 @@ export class OverlayController {
       });
     });
     this.resizeUpdateScheduler = new FrameScheduler(() => {
-      if (!this.activeResize) {
+      if (!this.resizeSession.isActive) {
         return;
       }
       void this.host.updateOverlayResize().catch((error: unknown) => {
@@ -68,7 +57,7 @@ export class OverlayController {
       onEnd: () => void this.finishDrag(),
     });
     this.resizeSession = new PointerSession(elements.root, "is-resizing", {
-      onMove: (event) => this.handleResizeMove(event),
+      onMove: () => this.resizeUpdateScheduler.schedule(),
       onEnd: () => void this.finishResize(),
     });
   }
@@ -82,7 +71,8 @@ export class OverlayController {
     for (const handle of this.elements.resizeHandles) {
       handle.element.addEventListener("pointerdown", (event) => void this.startResize(event, handle.direction));
     }
-    this.elements.historyButton.addEventListener("click", () => void this.toggleHistory());
+    window.addEventListener("resize", () => this.syncModeFromWindowHeight());
+    this.syncModeFromWindowHeight();
   }
 
   minimize(): Promise<void> {
@@ -93,40 +83,17 @@ export class OverlayController {
     return this.host.closeOverlay();
   }
 
-  private async toggleHistory(): Promise<void> {
-    await this.setMode(this.modeValue === "history" ? "compact" : "history");
-  }
-
-  private async setMode(mode: OverlayMode): Promise<void> {
-    const previousMode = this.modeValue;
-    if (mode === previousMode || this.modeChanging) {
+  private applyMode(mode: OverlayMode): void {
+    if (mode === this.modeValue) {
       return;
     }
-
-    this.modeChanging = true;
-    const transitionSequence = this.beginTransition();
-    let modeApplied = false;
-    try {
-      this.applyMode(mode);
-      modeApplied = true;
-      await this.host.setOverlayMode(mode);
-      this.callbacks.onClearError();
-    } catch (error) {
-      if (modeApplied && this.modeValue !== previousMode) {
-        this.applyMode(previousMode);
-      }
-      this.callbacks.onError(error);
-    } finally {
-      this.scheduleTransitioningClear(transitionSequence);
-      this.modeChanging = false;
-    }
-  }
-
-  private applyMode(mode: OverlayMode): void {
     this.modeValue = mode;
     this.elements.root.setAttribute("data-overlay-mode", mode);
-    syncModeButton(this.elements.historyButton, mode === "history", "Hide history", "Show history");
     this.callbacks.onModeApplied(mode);
+  }
+
+  private syncModeFromWindowHeight(): void {
+    this.applyMode(window.innerHeight >= HISTORY_AUTO_HEIGHT ? "history" : "compact");
   }
 
   private async startDrag(event: PointerEvent): Promise<void> {
@@ -177,12 +144,6 @@ export class OverlayController {
     if (!surface || !this.resizeSession.start(event, surface)) {
       return;
     }
-    this.activeResize = {
-      direction,
-      mode: this.modeValue,
-      startY: event.clientY,
-      startHeight: this.compactHeight,
-    };
 
     try {
       await this.host.startOverlayResize(direction);
@@ -191,17 +152,6 @@ export class OverlayController {
       this.callbacks.onError(error);
       this.clearResize();
     }
-  }
-
-  private handleResizeMove(event: PointerEvent): void {
-    const resize = this.activeResize;
-    if (!resize) {
-      return;
-    }
-    if (resize.mode === "compact") {
-      this.applyCompactResizeCssHeight(resize, event.clientY);
-    }
-    this.resizeUpdateScheduler.schedule();
   }
 
   private async finishResize(): Promise<void> {
@@ -217,18 +167,8 @@ export class OverlayController {
   }
 
   private clearResize(): void {
-    this.activeResize = null;
     this.resizeUpdateScheduler.cancel();
     this.resizeSession.clear();
-  }
-
-  private applyCompactResizeCssHeight(resize: ActiveResize, currentY: number): void {
-    const height = nextCompactHeight(resize, currentY, this.compactHeight);
-    if (height === this.compactHeight) {
-      return;
-    }
-    this.compactHeight = height;
-    this.elements.root.style.setProperty("--compact-height", `${this.compactHeight}px`);
   }
 
   private async runOverlayCommand(command: () => Promise<void>): Promise<void> {
@@ -239,43 +179,10 @@ export class OverlayController {
       this.callbacks.onError(error);
     }
   }
-
-  private beginTransition(): number {
-    this.transitionSequence += 1;
-    this.elements.root.dataset.overlayTransitioning = "true";
-    return this.transitionSequence;
-  }
-
-  private scheduleTransitioningClear(sequence: number): void {
-    const clear = (): void => {
-      if (sequence !== this.transitionSequence) {
-        return;
-      }
-      delete this.elements.root.dataset.overlayTransitioning;
-    };
-    if (typeof requestAnimationFrame === "function") {
-      requestAnimationFrame(() => requestAnimationFrame(clear));
-      return;
-    }
-    window.setTimeout(clear, 32);
-  }
-}
-
-function syncModeButton(
-  button: HTMLButtonElement,
-  expanded: boolean,
-  expandedLabel: string,
-  collapsedLabel: string,
-): void {
-  const label = expanded ? expandedLabel : collapsedLabel;
-  button.classList.toggle("is-expanded", expanded);
-  button.title = label;
-  button.setAttribute("aria-label", label);
-  button.setAttribute("aria-expanded", String(expanded));
 }
 
 function isInteractiveTarget(target: EventTarget | null): boolean {
-  return target instanceof Element && Boolean(target.closest("button,input,select,textarea,a,label"));
+  return target instanceof Element && Boolean(target.closest("button,input,select,textarea,a,label,[contenteditable]"));
 }
 
 function blurActiveEditableControl(): void {

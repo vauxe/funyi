@@ -1,5 +1,5 @@
 import type { OverlayHost } from "./host-contract.js";
-import type { OverlayMode, ResizeDirection } from "./overlay-contract.js";
+import type { ResizeDirection } from "./overlay-contract.js";
 
 export type FakeOverlayMethod = keyof OverlayHost;
 
@@ -24,7 +24,6 @@ export function createFakeOverlayHost(): FakeOverlayHost {
     endOverlayDrag: () => invoke("endOverlayDrag"),
     endOverlayResize: () => invoke("endOverlayResize"),
     minimizeOverlay: () => invoke("minimizeOverlay"),
-    setOverlayMode: (mode: OverlayMode) => invoke("setOverlayMode", { mode }),
     startOverlayDrag: () => invoke("startOverlayDrag"),
     startOverlayResize: (direction: ResizeDirection) => invoke("startOverlayResize", { direction }),
     updateOverlayDrag: () => invoke("updateOverlayDrag"),

@@ -84,7 +84,8 @@ export class FakeElement {
     const selectors = selector.split(",").map((item) => item.trim().toLowerCase());
     let element: FakeElement | null = this;
     while (element) {
-      if (selectors.includes(element.tagName.toLowerCase())) {
+      const current = element;
+      if (selectors.some((item) => current.matchesClosestSelector(item))) {
         return element;
       }
       element = element.parentElement;
@@ -137,6 +138,13 @@ export class FakeElement {
 
   private classSet(): Set<string> {
     return new Set(this.className.split(/\s+/).filter(Boolean));
+  }
+
+  private matchesClosestSelector(selector: string): boolean {
+    if (selector.startsWith("[") && selector.endsWith("]")) {
+      return this.attributes.has(selector.slice(1, -1));
+    }
+    return this.tagName.toLowerCase() === selector;
   }
 }
 

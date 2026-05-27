@@ -7,7 +7,7 @@ import {
 } from "./audio-capture-events.js";
 import { parseAudioSources, type AudioSource } from "./audio-source.js";
 import type { DesktopHost } from "./host-contract.js";
-import type { OverlayMode, ResizeDirection } from "./overlay-contract.js";
+import type { ResizeDirection } from "./overlay-contract.js";
 import { tauriRuntime } from "./tauri-runtime.js";
 
 export const DESKTOP_COMMANDS = {
@@ -16,7 +16,6 @@ export const DESKTOP_COMMANDS = {
   endOverlayResize: "end_overlay_resize",
   listAudioSources: "list_audio_sources",
   minimizeOverlay: "minimize_overlay",
-  setOverlayMode: "set_overlay_mode",
   startAudioCapture: "start_audio_capture",
   startOverlayDrag: "start_overlay_drag",
   startOverlayResize: "start_overlay_resize",
@@ -56,10 +55,6 @@ export const desktopHost: DesktopHost = {
 
   async listenAudioCaptureErrors(handler: (error: AudioCaptureError) => void): Promise<Unlisten> {
     return listenOptional(AUDIO_CAPTURE_ERROR_EVENT, (payload) => handler(parseAudioCaptureError(payload)));
-  },
-
-  async setOverlayMode(mode: OverlayMode): Promise<void> {
-    await invokeOptional(DESKTOP_COMMANDS.setOverlayMode, { mode });
   },
 
   async startOverlayDrag(): Promise<void> {

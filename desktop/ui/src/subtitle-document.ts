@@ -310,6 +310,9 @@ function isSamePartialLine(left: SubtitleLine, right: SubtitleLine): boolean {
 
   const leftText = left.text.trim();
   const rightText = right.text.trim();
+  if (isInteger(left.startMs) && left.startMs === right.startMs) {
+    return true;
+  }
   return (
     Boolean(leftText && rightText) &&
     (leftText === rightText || leftText.startsWith(rightText) || rightText.startsWith(leftText))

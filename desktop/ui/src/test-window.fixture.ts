@@ -13,6 +13,7 @@ export class FakeWindowRuntime {
   private readonly listeners = new Map<string, WindowListener[]>();
   private readonly realTimeouts = new Map<number, ReturnType<typeof globalThis.setTimeout>>();
   private readonly timerBehavior: TimerBehavior;
+  private installedWindow: Record<string, unknown> | null = null;
   private nextTimeoutId = 1;
 
   constructor({ extras = {}, timerBehavior = "manual" }: FakeWindowRuntimeOptions = {}) {
@@ -21,30 +22,32 @@ export class FakeWindowRuntime {
   }
 
   install(): this {
+    this.installedWindow = {
+      ...this.extras,
+      innerHeight: this.extras.innerHeight ?? 180,
+      addEventListener: (type: string, listener: WindowListener): void => {
+        const typeListeners = this.listeners.get(type) || [];
+        typeListeners.push(listener);
+        this.listeners.set(type, typeListeners);
+      },
+      clearTimeout: (id: number): void => {
+        this.clearTimeout(id);
+      },
+      dispatch: (type: string, event: unknown): void => {
+        this.dispatch(type, event);
+      },
+      removeEventListener: (type: string, listener: WindowListener): void => {
+        const typeListeners = this.listeners.get(type) || [];
+        this.listeners.set(
+          type,
+          typeListeners.filter((item) => item !== listener),
+        );
+      },
+      setTimeout: (callback: () => void, delay: number): number => this.setTimeout(callback, delay),
+    };
     Object.defineProperty(globalThis, "window", {
       configurable: true,
-      value: {
-        ...this.extras,
-        addEventListener: (type: string, listener: WindowListener): void => {
-          const typeListeners = this.listeners.get(type) || [];
-          typeListeners.push(listener);
-          this.listeners.set(type, typeListeners);
-        },
-        clearTimeout: (id: number): void => {
-          this.clearTimeout(id);
-        },
-        dispatch: (type: string, event: unknown): void => {
-          this.dispatch(type, event);
-        },
-        removeEventListener: (type: string, listener: WindowListener): void => {
-          const typeListeners = this.listeners.get(type) || [];
-          this.listeners.set(
-            type,
-            typeListeners.filter((item) => item !== listener),
-          );
-        },
-        setTimeout: (callback: () => void, delay: number): number => this.setTimeout(callback, delay),
-      },
+      value: this.installedWindow,
       writable: true,
     });
     return this;
@@ -64,6 +67,12 @@ export class FakeWindowRuntime {
     const [id, callback] = next;
     this.pendingTimeouts.delete(id);
     callback();
+  }
+
+  setInnerHeight(height: number): void {
+    if (this.installedWindow) {
+      this.installedWindow.innerHeight = height;
+    }
   }
 
   private clearTimeout(id: number): void {

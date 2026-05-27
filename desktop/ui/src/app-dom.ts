@@ -12,7 +12,6 @@ export const APP_ELEMENT_SELECTORS = {
   closeButton: "#close-button",
   currentSource: "#current-source",
   currentTranslation: "#current-translation",
-  historyButton: "#history-button",
   historyList: "#history-list",
   language: "#language",
   minimizeButton: "#minimize-button",
@@ -32,7 +31,6 @@ export interface AppElements {
   translationTargetLanguage: HTMLSelectElement;
   audioSource: HTMLSelectElement;
   sessionButton: HTMLButtonElement;
-  historyButton: HTMLButtonElement;
   minimizeButton: HTMLButtonElement;
   closeButton: HTMLButtonElement;
   sessionStatus: HTMLSpanElement;
@@ -53,7 +51,6 @@ export function getAppElements(): AppElements {
     translationTargetLanguage: requireElement<HTMLSelectElement>(APP_ELEMENT_SELECTORS.translationTargetLanguage),
     audioSource: requireElement<HTMLSelectElement>(APP_ELEMENT_SELECTORS.audioSource),
     sessionButton: requireElement<HTMLButtonElement>(APP_ELEMENT_SELECTORS.sessionButton),
-    historyButton: requireElement<HTMLButtonElement>(APP_ELEMENT_SELECTORS.historyButton),
     minimizeButton: requireElement<HTMLButtonElement>(APP_ELEMENT_SELECTORS.minimizeButton),
     closeButton: requireElement<HTMLButtonElement>(APP_ELEMENT_SELECTORS.closeButton),
     sessionStatus: requireElement<HTMLSpanElement>(APP_ELEMENT_SELECTORS.sessionStatus),

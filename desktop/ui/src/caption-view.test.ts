@@ -54,6 +54,8 @@ test("renders current caption window and stable history", () => {
   assert.equal(historyItem.children[0]?.textContent, "00:01.000 - 00:02.500 aligned");
   assert.equal(historyItem.children[1]?.textContent, "hello");
   assert.equal(historyItem.children[2]?.textContent, "bonjour");
+  assert.equal(historyItem.children[1]?.attributes.get("contenteditable"), "plaintext-only");
+  assert.equal(historyItem.children[2]?.attributes.get("contenteditable"), "plaintext-only");
   assert.ok(historyItem.className.split(/\s+/).includes("is-latest"));
 });
 
@@ -129,6 +131,39 @@ test("updates history when translation visibility changes and scrolls visible hi
   assert.ok(historyItem);
   assert.equal(historyItem.children[2]?.textContent, "");
   assert.deepEqual(historyItem.scrollCalls, [{ behavior: "smooth", block: "end" }]);
+});
+
+test("preserves user-edited history text when timing updates rerender the same line", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 1,
+    stable_appends: [stableSegment(1, "source", { startMs: 0, endMs: 900 })],
+    partial: null,
+  });
+  const elements = createElements();
+  const view = new CaptionView(captionViewElements(elements));
+
+  view.render(document, { historyVisible: false });
+  const [historyItem] = elements.historyList.children;
+  const source = historyItem?.children[1];
+  assert.ok(source);
+  source.textContent = "edited source";
+  source.dispatch("input", {});
+
+  document.applyEvent({
+    type: "transcript_timing_update",
+    source_segment_id: "seg_000001",
+    start_ms: 100,
+    end_ms: 1200,
+    timing_status: "aligned",
+  });
+  view.render(document, { historyVisible: false });
+
+  assert.equal(historyItem.children[0]?.textContent, "00:00.100 - 00:01.200 aligned");
+  assert.equal(source.textContent, "edited source");
 });
 
 function createElements(): Record<

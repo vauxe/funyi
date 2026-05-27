@@ -2,64 +2,13 @@ use serde::Deserialize;
 
 const COLLAPSED_WINDOW_WIDTH: f64 = 960.0;
 const COLLAPSED_WINDOW_HEIGHT: f64 = 180.0;
-const HISTORY_WINDOW_WIDTH: f64 = 960.0;
-const HISTORY_WINDOW_HEIGHT: f64 = 430.0;
 const MIN_OVERLAY_WIDTH: f64 = 520.0;
 const MIN_OVERLAY_HEIGHT: f64 = 128.0;
 #[cfg(any(target_os = "windows", test))]
 const SNAP_EDGE_MARGIN_PX: i32 = 42;
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum OverlayMode {
-    #[default]
-    Compact,
-    History,
-}
-
-impl OverlayMode {
-    pub fn logical_size(self) -> (f64, f64) {
-        match self {
-            Self::Compact => (COLLAPSED_WINDOW_WIDTH, COLLAPSED_WINDOW_HEIGHT),
-            Self::History => (HISTORY_WINDOW_WIDTH, HISTORY_WINDOW_HEIGHT),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct OverlayLayout {
-    compact_height: f64,
-    history_height: f64,
-}
-
-impl Default for OverlayLayout {
-    fn default() -> Self {
-        Self {
-            compact_height: OverlayMode::Compact.logical_size().1,
-            history_height: OverlayMode::History.logical_size().1,
-        }
-    }
-}
-
-impl OverlayLayout {
-    pub fn height(self, mode: OverlayMode) -> f64 {
-        match mode {
-            OverlayMode::Compact => self.compact_height,
-            OverlayMode::History => self.history_height,
-        }
-    }
-
-    pub fn set_height(&mut self, mode: OverlayMode, height: f64) {
-        match mode {
-            OverlayMode::Compact => {
-                self.compact_height = clamp_height(height);
-                self.history_height = self.history_height.max(self.compact_height);
-            }
-            OverlayMode::History => {
-                self.history_height = height.max(self.compact_height);
-            }
-        }
-    }
+pub fn collapsed_logical_size() -> (f64, f64) {
+    (COLLAPSED_WINDOW_WIDTH, COLLAPSED_WINDOW_HEIGHT)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -183,30 +132,8 @@ pub fn logical_width(physical_width: i32, scale: f64) -> f64 {
     (physical_width as f64 / scale).max(MIN_OVERLAY_WIDTH)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ResizePlan {
-    pub frame: Frame,
-    pub move_before_resize: bool,
-}
-
-pub fn resize_plan(
-    current: Frame,
-    target_width: i32,
-    target_height: i32,
-    bounds: Option<WorkBounds>,
-) -> ResizePlan {
-    let x = current.x + (current.width - target_width) / 2;
-    let y = current.y + current.height - target_height;
-    let (x, y) = clamped_position(bounds, x, y, target_width, target_height);
-    ResizePlan {
-        frame: Frame {
-            x,
-            y,
-            width: target_width,
-            height: target_height,
-        },
-        move_before_resize: target_height > current.height,
-    }
+pub fn logical_height(physical_height: i32, scale: f64) -> f64 {
+    clamp_height(physical_height as f64 / scale)
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -382,34 +309,6 @@ mod tests {
     };
 
     #[test]
-    fn resize_plan_preserves_bottom_edge() {
-        let current = Frame {
-            x: 1440,
-            y: 856,
-            width: 960,
-            height: 180,
-        };
-        let plan = resize_plan(current, 960, 430, Some(DESKTOP));
-
-        assert_eq!(plan.frame.y + plan.frame.height, current.y + current.height);
-        assert_eq!(plan.frame.x, current.x);
-        assert!(plan.move_before_resize);
-    }
-
-    #[test]
-    fn resize_plan_clamps_to_top_when_upward_growth_hits_screen_edge() {
-        let current = Frame {
-            x: 100,
-            y: 80,
-            width: 960,
-            height: 180,
-        };
-        let plan = resize_plan(current, 960, 430, Some(DESKTOP));
-
-        assert_eq!(plan.frame.y, 0);
-    }
-
-    #[test]
     fn resized_frame_corner_changes_both_axes() {
         let frame = Frame {
             x: 100,
@@ -429,16 +328,6 @@ mod tests {
                 height: 260,
             },
         );
-    }
-
-    #[test]
-    fn layout_keeps_history_at_least_compact_height() {
-        let mut layout = OverlayLayout::default();
-
-        layout.set_height(OverlayMode::Compact, 600.0);
-
-        assert_eq!(layout.height(OverlayMode::Compact), 600.0);
-        assert_eq!(layout.height(OverlayMode::History), 600.0);
     }
 
     #[test]

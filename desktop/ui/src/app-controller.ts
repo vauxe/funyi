@@ -62,7 +62,6 @@ export class FunyiApp {
       {
         root: dom.appShell,
         dragSurface: dom.captionStrip,
-        historyButton: dom.historyButton,
         resizeHandles: dom.resizeHandles,
       },
       {

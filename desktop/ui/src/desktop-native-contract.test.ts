@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { AUDIO_CAPTURE_ERROR_EVENT, AUDIO_FRAME_EVENT } from "./audio-capture-events.js";
 import { DESKTOP_COMMANDS } from "./desktop-host.js";
-import { OVERLAY_MODES, RESIZE_DIRECTIONS } from "./overlay-contract.js";
+import { RESIZE_DIRECTIONS } from "./overlay-contract.js";
 import { rustEnumVariants, rustStringConst, rustTauriCommandNames } from "./test-contract-parsers.fixture.js";
 import { readDesktopFile } from "./test-project-files.fixture.js";
 
@@ -22,13 +22,7 @@ test("native audio event names match the Rust event contract", () => {
   assert.equal(rustStringConst(RUST_AUDIO_SOURCE, "AUDIO_CAPTURE_ERROR_EVENT"), AUDIO_CAPTURE_ERROR_EVENT);
 });
 
-test("front-end overlay values match Rust serde enums", () => {
-  assert.deepEqual(
-    [...OVERLAY_MODES].sort(),
-    rustEnumVariants(RUST_OVERLAY_SOURCE, "OverlayMode")
-      .map((variant) => variant.toLowerCase())
-      .sort(),
-  );
+test("front-end resize values match Rust serde enums", () => {
   assert.deepEqual([...RESIZE_DIRECTIONS].sort(), rustEnumVariants(RUST_OVERLAY_SOURCE, "ResizeDirection").sort());
 });
 

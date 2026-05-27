@@ -1,10 +1,8 @@
 use std::sync::Mutex;
 
-use tauri::{
-    AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewWindow, Window, WindowEvent,
-};
+use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewWindow};
 
-use crate::overlay::{self, Frame, OverlayLayout, OverlayMode, Point, ResizeDirection, WorkBounds};
+use crate::overlay::{self, Frame, Point, ResizeDirection, WorkBounds};
 
 #[cfg(target_os = "macos")]
 #[path = "overlay_window/macos.rs"]
@@ -34,55 +32,16 @@ struct OverlayResize {
     pointer_start_y: f64,
     visible_start: Frame,
     direction: ResizeDirection,
-    mode: OverlayMode,
     scale: f64,
 }
 
 #[derive(Default)]
 pub struct OverlayResizeState(Mutex<Option<OverlayResize>>);
 
-#[derive(Default)]
-pub struct OverlayModeState(Mutex<OverlayMode>);
-
-#[derive(Default)]
-pub struct OverlayLayoutState(Mutex<OverlayLayout>);
-
 pub fn setup_window(window: &WebviewWindow) -> Result<(), String> {
-    set_overlay_window_layout(window, OverlayMode::Compact)
-}
-
-pub fn handle_window_event(window: &Window, event: &WindowEvent) {
-    if window.label() != "main" {
-        return;
-    }
-    if !is_relevant_window_event(event) {
-        return;
-    }
-
-    let app = window.app_handle();
-    let Some(webview) = app.get_webview_window("main") else {
-        return;
-    };
-    let mode_state = app.state::<OverlayModeState>();
-    let Ok(mode) = mode_state.0.lock().map(|mode| *mode) else {
-        return;
-    };
-    let layout_state = app.state::<OverlayLayoutState>();
-
-    let _ = sync_overlay_layout_from_window(&webview, mode, &layout_state);
-}
-
-pub fn set_overlay_mode(
-    app: AppHandle,
-    state: tauri::State<'_, OverlayModeState>,
-    layout_state: tauri::State<'_, OverlayLayoutState>,
-    mode: OverlayMode,
-) -> Result<(), String> {
-    let window = main_window(&app)?;
-    let layout = *layout_state.0.lock().map_err(|error| error.to_string())?;
-    resize_overlay_window(&window, mode, layout)?;
-    *state.0.lock().map_err(|error| error.to_string())? = mode;
-    Ok(())
+    let (width, height) = overlay::collapsed_logical_size();
+    set_window_logical_size(window, width, height)?;
+    position_window_near_bottom(window, width, height)
 }
 
 pub fn start_overlay_drag(
@@ -110,11 +69,9 @@ pub fn end_overlay_drag(
 pub fn start_overlay_resize(
     app: AppHandle,
     state: tauri::State<'_, OverlayResizeState>,
-    mode_state: tauri::State<'_, OverlayModeState>,
     direction: ResizeDirection,
 ) -> Result<(), String> {
     let window = main_window(&app)?;
-    let mode = *mode_state.0.lock().map_err(|error| error.to_string())?;
     let cursor = app.cursor_position().map_err(|error| error.to_string())?;
     let monitor = window_monitor(&window)?;
     let scale = monitor_scale(monitor.as_ref());
@@ -124,7 +81,6 @@ pub fn start_overlay_resize(
         pointer_start_y: cursor.y,
         visible_start: current_window_frame(&window)?,
         direction,
-        mode,
         scale,
     });
     Ok(())
@@ -133,26 +89,24 @@ pub fn start_overlay_resize(
 pub fn update_overlay_resize(
     app: AppHandle,
     state: tauri::State<'_, OverlayResizeState>,
-    layout_state: tauri::State<'_, OverlayLayoutState>,
 ) -> Result<(), String> {
     let resize = *state.0.lock().map_err(|error| error.to_string())?;
     let Some(resize) = resize else {
         return Ok(());
     };
-    apply_overlay_resize(&app, resize, &layout_state)
+    apply_overlay_resize(&app, resize)
 }
 
 pub fn end_overlay_resize(
     app: AppHandle,
     state: tauri::State<'_, OverlayResizeState>,
-    layout_state: tauri::State<'_, OverlayLayoutState>,
 ) -> Result<(), String> {
     let resize = {
         let mut state = state.0.lock().map_err(|error| error.to_string())?;
         state.take()
     };
     if let Some(resize) = resize {
-        apply_overlay_resize(&app, resize, &layout_state)?;
+        apply_overlay_resize(&app, resize)?;
     }
     Ok(())
 }
@@ -169,103 +123,26 @@ pub fn close_overlay(app: AppHandle) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-fn current_logical_size(window: &WebviewWindow) -> Result<(f64, f64), String> {
-    let outer = window.outer_size().map_err(|error| error.to_string())?;
-    let scale = current_monitor_scale(window)?;
-    Ok((outer.width as f64 / scale, outer.height as f64 / scale))
-}
-
-fn sync_overlay_layout_from_window(
-    window: &WebviewWindow,
-    mode: OverlayMode,
-    state: &OverlayLayoutState,
-) -> Result<OverlayLayout, String> {
-    let (_, height) = current_logical_size(window)?;
-    let mut layout = state.0.lock().map_err(|error| error.to_string())?;
-    layout.set_height(mode, height);
-    Ok(*layout)
-}
-
-fn apply_overlay_resize(
-    app: &AppHandle,
-    resize: OverlayResize,
-    layout_state: &OverlayLayoutState,
-) -> Result<(), String> {
+fn apply_overlay_resize(app: &AppHandle, resize: OverlayResize) -> Result<(), String> {
     let window = main_window(app)?;
     let cursor = app.cursor_position().map_err(|error| error.to_string())?;
     let dx = (cursor.x - resize.pointer_start_x).round() as i32;
     let dy = (cursor.y - resize.pointer_start_y).round() as i32;
     let frame =
         overlay::resized_frame(resize.visible_start, resize.direction, dx, dy, resize.scale);
-    apply_resized_visible_frame(&window, resize.mode, frame, layout_state, resize.scale)
-}
-
-fn is_relevant_window_event(event: &WindowEvent) -> bool {
-    matches!(
-        event,
-        WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }
-    )
-}
-
-fn set_overlay_window_layout(window: &WebviewWindow, mode: OverlayMode) -> Result<(), String> {
-    let (width, height) = mode.logical_size();
-    set_window_logical_size(window, width, height)?;
-    position_window_near_bottom(window, width, height)
-}
-
-fn resize_overlay_window(
-    window: &WebviewWindow,
-    mode: OverlayMode,
-    layout: OverlayLayout,
-) -> Result<(), String> {
-    let (width, _) = current_logical_size(window)?;
-    resize_overlay_window_to_logical(window, width, layout.height(mode))
-}
-
-fn resize_overlay_window_to_logical(
-    window: &WebviewWindow,
-    width: f64,
-    height: f64,
-) -> Result<(), String> {
-    let monitor = window_monitor(window)?;
-    let scale = monitor_scale(monitor.as_ref());
-    let (target_width, target_height) = (
-        (width * scale).round() as i32,
-        (height * scale).round() as i32,
-    );
-    let plan = overlay::resize_plan(
-        current_window_frame(window)?,
-        target_width,
-        target_height,
-        monitor.as_ref().map(work_bounds),
-    );
-
-    if plan.move_before_resize {
-        set_window_position(window, plan.frame.x, plan.frame.y)?;
-        set_window_logical_size(window, width, height)?;
-    } else {
-        set_window_logical_size(window, width, height)?;
-        set_window_position(window, plan.frame.x, plan.frame.y)?;
-    }
-    Ok(())
+    apply_resized_visible_frame(&window, frame, resize.scale)
 }
 
 fn apply_resized_visible_frame(
     window: &WebviewWindow,
-    mode: OverlayMode,
     visible_frame: Frame,
-    layout_state: &OverlayLayoutState,
     scale: f64,
 ) -> Result<(), String> {
     let width = overlay::logical_width(visible_frame.width, scale);
-    let layout = {
-        let mut layout = layout_state.0.lock().map_err(|error| error.to_string())?;
-        layout.set_height(mode, visible_frame.height as f64 / scale);
-        *layout
-    };
+    let height = overlay::logical_height(visible_frame.height, scale);
 
     set_window_position(window, visible_frame.x, visible_frame.y)?;
-    set_window_logical_size(window, width, layout.height(mode))
+    set_window_logical_size(window, width, height)
 }
 
 fn position_window_near_bottom(
@@ -295,10 +172,6 @@ fn work_bounds(monitor: &tauri::Monitor) -> WorkBounds {
         right: left + work_area.size.width as i32,
         bottom: top + work_area.size.height as i32,
     }
-}
-
-fn current_monitor_scale(window: &WebviewWindow) -> Result<f64, String> {
-    Ok(monitor_scale(window_monitor(window)?.as_ref()))
 }
 
 fn monitor_scale(monitor: Option<&tauri::Monitor>) -> f64 {

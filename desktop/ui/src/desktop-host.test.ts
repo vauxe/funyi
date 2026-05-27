@@ -19,7 +19,6 @@ test("defines the Tauri command contract in one place", () => {
     endOverlayResize: "end_overlay_resize",
     listAudioSources: "list_audio_sources",
     minimizeOverlay: "minimize_overlay",
-    setOverlayMode: "set_overlay_mode",
     startAudioCapture: "start_audio_capture",
     startOverlayDrag: "start_overlay_drag",
     startOverlayResize: "start_overlay_resize",
@@ -92,7 +91,6 @@ test("uses Tauri commands and events for native capture", async () => {
 test("uses Tauri commands for overlay window operations", async () => {
   const runtime = installFakeTauriRuntime();
 
-  await desktopHost.setOverlayMode("history");
   await desktopHost.startOverlayDrag();
   await desktopHost.updateOverlayDrag();
   await desktopHost.endOverlayDrag();
@@ -103,7 +101,6 @@ test("uses Tauri commands for overlay window operations", async () => {
   await desktopHost.closeOverlay();
 
   assert.deepEqual(runtime.invocations, [
-    { command: DESKTOP_COMMANDS.setOverlayMode, args: { mode: "history" } },
     { command: DESKTOP_COMMANDS.startOverlayDrag, args: undefined },
     { command: DESKTOP_COMMANDS.updateOverlayDrag, args: undefined },
     { command: DESKTOP_COMMANDS.endOverlayDrag, args: undefined },

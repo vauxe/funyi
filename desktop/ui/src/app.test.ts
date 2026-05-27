@@ -23,20 +23,17 @@ test.afterEach(() => {
   clearBrowserGlobals("document", "Element", "HTMLElement", "window", "WebSocket");
 });
 
-test("history button switches overlay mode and inline settings drive start payload", async () => {
+test("window height switches history mode and inline settings drive start payload", async () => {
   const elements = installDocument();
-  const { overlay } = await bootApp();
+  const { overlay, windowRuntime } = await bootApp();
 
-  elements["history-button"]!.click();
+  windowRuntime.setInnerHeight(320);
+  windowRuntime.dispatch("resize", {});
   await nextTick();
 
   assert.equal(elements["app-shell"]!.attributes.get("data-overlay-mode"), "history");
-  assert.equal(elements["history-button"]!.className, "is-expanded");
-  assert.equal(elements["history-button"]!.attributes.get("aria-expanded"), "true");
-  assert.deepEqual(overlay.invocations.at(-1), {
-    method: "setOverlayMode",
-    args: { mode: "history" },
-  });
+  assert.equal("history-button" in elements, false);
+  assert.deepEqual(overlay.invocations, []);
   assert.equal(elements["session-status"]!.textContent, "");
   assert.equal(elements["audio-source"]!.children[0]?.textContent, "Sys · Audio");
   assert.deepEqual(selectValues(elements["language"]!), ["", ...ASR_LANGUAGE_OPTIONS]);

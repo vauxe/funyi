@@ -20,24 +20,26 @@ test.afterEach(() => {
   clearBrowserGlobals("document", "Element", "HTMLElement", "window");
 });
 
-test("history button applies one overlay mode contract and syncs button state", async () => {
+test("window height switches overlay mode without a history button command", async () => {
   const harness = createHarness();
   harness.controller.bind();
+  harness.windowRuntime.setInnerHeight(320);
+  harness.windowRuntime.dispatch("resize", {});
 
-  harness.elements.historyButton.click();
   await nextTick();
 
-  assert.deepEqual(harness.invocations, [{ method: "setOverlayMode", args: { mode: "history" } }]);
+  assert.deepEqual(harness.invocations, []);
   assert.equal(harness.controller.mode, "history");
   assert.equal(harness.elements.root.attributes.get("data-overlay-mode"), "history");
   assert.equal(harness.elements.root.dataset.overlayMode, "history");
-  assert.equal(harness.elements.root.dataset.overlayTransitioning, "true");
-  assert.equal(harness.elements.historyButton.attributes.get("aria-expanded"), "true");
   assert.deepEqual(harness.appliedModes, ["history"]);
 
-  harness.windowRuntime.runNextTimeout();
+  harness.windowRuntime.setInnerHeight(220);
+  harness.windowRuntime.dispatch("resize", {});
 
-  assert.equal("overlayTransitioning" in harness.elements.root.dataset, false);
+  assert.equal(harness.controller.mode, "compact");
+  assert.equal(harness.elements.root.attributes.get("data-overlay-mode"), "compact");
+  assert.deepEqual(harness.appliedModes, ["history", "compact"]);
 });
 
 test("drag emits start update end commands and clears drag state", async () => {
@@ -79,7 +81,27 @@ test("drag ignores interactive targets inside the drag surface", async () => {
   assert.equal(harness.elements.root.className, "");
 });
 
-test("compact resize updates local css height and uses resize commands", async () => {
+test("drag ignores editable history text inside the drag surface", async () => {
+  const harness = createHarness();
+  harness.controller.bind();
+  const historyText = new FakeElement("div");
+  historyText.setAttribute("contenteditable", "plaintext-only");
+  harness.elements.dragSurface.append(historyText);
+
+  harness.elements.dragSurface.dispatch(
+    "pointerdown",
+    pointerEvent({
+      pointerId: 7,
+      target: historyText,
+    }),
+  );
+  await nextTick();
+
+  assert.deepEqual(harness.invocations, []);
+  assert.equal(harness.elements.root.className, "");
+});
+
+test("compact resize delegates window size changes to native resize commands", async () => {
   const harness = createHarness();
   harness.controller.bind();
 
@@ -97,7 +119,7 @@ test("compact resize updates local css height and uses resize commands", async (
   harness.windowRuntime.dispatch("pointerup", pointerEvent({ pointerId: 9, clientY: 80 }));
   await nextTick();
 
-  assert.equal(harness.elements.root.styleValues.get("--compact-height"), "200px");
+  assert.equal(harness.elements.root.styleValues.has("--compact-height"), false);
   assert.deepEqual(
     harness.invocations.map((item) => item.method),
     ["startOverlayResize", "updateOverlayResize", "endOverlayResize"],
@@ -111,7 +133,6 @@ function createHarness(): {
   elements: {
     dragSurface: FakeElement;
     editable: FakeElement;
-    historyButton: FakeElement;
     resizeNorth: FakeElement;
     root: FakeElement;
   };
@@ -125,13 +146,11 @@ function createHarness(): {
   const appliedModes: OverlayMode[] = [];
   const root = new FakeElement();
   const dragSurface = new FakeElement();
-  const historyButton = new FakeElement();
   const resizeNorth = new FakeElement();
   const controller = new OverlayController(
     host,
     {
       dragSurface: asDomElement(dragSurface),
-      historyButton: asDomElement<HTMLButtonElement>(historyButton),
       resizeHandles: [{ element: asDomElement(resizeNorth), direction: "North" }],
       root: asDomElement(root),
     },
@@ -151,7 +170,6 @@ function createHarness(): {
     elements: {
       dragSurface,
       editable: new FakeElement("input"),
-      historyButton,
       resizeNorth,
       root,
     },

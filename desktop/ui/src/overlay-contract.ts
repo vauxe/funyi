@@ -1,6 +1,4 @@
-export const OVERLAY_MODES = ["compact", "history"] as const;
-
-export type OverlayMode = (typeof OVERLAY_MODES)[number];
+export type OverlayMode = "compact" | "history";
 
 export const RESIZE_DIRECTION_ATTRIBUTE = "data-resize-direction";
 export const RESIZE_HANDLE_SELECTOR = `[${RESIZE_DIRECTION_ATTRIBUTE}]`;

@@ -7,8 +7,8 @@ and emits `pcm_s16le` frames at 16 kHz. This keeps ASR, translation, and CUDA
 runtime behavior in the Python service.
 
 The default window is a compact, always-on-top caption strip near the bottom of
-the display. Detailed connection settings and stable subtitle history are shown
-only when the details control expands the window.
+the display. Detailed connection settings stay inline, and stable subtitle
+history appears automatically when the window is tall enough.
 
 ## Status
 

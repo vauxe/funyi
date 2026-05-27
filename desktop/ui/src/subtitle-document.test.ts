@@ -165,6 +165,30 @@ test("current translation preview survives repeated partial revisions", () => {
   assert.equal(document.window().current?.translation, "next translation");
 });
 
+test("current translation preview survives same-timed partial rewrites", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 0,
+    stable_appends: [],
+    partial: partialSegment("we start with this wording", { startMs: 1000, endMs: 1800 }),
+  });
+  document.applyEvent({ type: "translation_preview", source_revision: 1, text: "translated wording" });
+
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 2,
+    stable_base: 0,
+    stable_count: 0,
+    stable_appends: [],
+    partial: partialSegment("we began with another wording", { startMs: 1000, endMs: 2200 }),
+  });
+
+  assert.equal(document.window().current?.translation, "translated wording");
+});
+
 test("current translation preview is not carried to a different partial", () => {
   const document = new SubtitleDocument();
   document.applyEvent({

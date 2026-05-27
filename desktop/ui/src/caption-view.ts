@@ -61,7 +61,7 @@ export class CaptionView {
         this.elements.historyList.append(historyItem);
       }
       if (translationChanged || this.renderedHistoryLines[index] !== line) {
-        updateHistoryItem(historyItem, line, document.translationEnabled);
+        updateHistoryItem(historyItem, line, document.translationEnabled, this.renderedHistoryLines[index] || null);
       }
       historyItem.classList.toggle("is-latest", index === lines.length - 1);
     }
@@ -89,38 +89,70 @@ function createHistoryItem(): HTMLElement {
   const time = document.createElement("div");
   time.className = "history-time";
 
-  const source = document.createElement("div");
-  source.className = "history-source";
-
-  const translation = document.createElement("div");
-  translation.className = "history-translation";
+  const source = createEditableHistoryText("history-source", "Source transcript");
+  const translation = createEditableHistoryText("history-translation", "Translation");
 
   item.append(time, source, translation);
   return item;
 }
 
-function updateHistoryItem(item: HTMLElement, line: SubtitleLine, translationEnabled: boolean): void {
+function createEditableHistoryText(className: string, label: string): HTMLElement {
+  const element = document.createElement("div");
+  element.className = className;
+  element.setAttribute("contenteditable", "plaintext-only");
+  element.setAttribute("role", "textbox");
+  element.setAttribute("aria-label", label);
+  element.setAttribute("aria-multiline", "true");
+  element.setAttribute("spellcheck", "false");
+  element.setAttribute("tabindex", "0");
+  element.addEventListener("input", () => {
+    element.dataset.userEdited = "true";
+  });
+  return element;
+}
+
+function updateHistoryItem(
+  item: HTMLElement,
+  line: SubtitleLine,
+  translationEnabled: boolean,
+  previousLine: SubtitleLine | null,
+): void {
   const [time, source, translation] = Array.from(item.children) as HTMLElement[];
-  if (time) {
-    setTextIfChanged(time, formatRange(line.startMs, line.endMs, line.timingStatus));
+  if (previousLine && !isSameHistoryLine(previousLine, line)) {
+    delete source?.dataset.userEdited;
+    delete translation?.dataset.userEdited;
   }
-  if (source) {
-    setTextIfChanged(source, line.text);
-  }
-  if (translation) {
-    setTextIfChanged(translation, translationEnabled ? line.translation || line.translationMessage || "" : "");
+  setTextIfChanged(time, formatRange(line.startMs, line.endMs, line.timingStatus));
+  setEditableTextIfChanged(source, line.text);
+  setEditableTextIfChanged(translation, translationEnabled ? line.translation || line.translationMessage || "" : "");
+}
+
+function setTextIfChanged(element: HTMLElement | undefined, value: string): void {
+  if (element && element.textContent !== value) {
+    element.textContent = value;
   }
 }
 
-function setTextIfChanged(element: HTMLElement, value: string): void {
-  if (element.textContent !== value) {
-    element.textContent = value;
+function setEditableTextIfChanged(element: HTMLElement | undefined, value: string): void {
+  if (!element || element.dataset.userEdited === "true") {
+    return;
   }
+  setTextIfChanged(element, value);
 }
 
 function setCaptionText(element: HTMLElement, value: string): void {
   setTextIfChanged(element, value);
   element.scrollTop = element.scrollHeight;
+}
+
+function isSameHistoryLine(left: SubtitleLine, right: SubtitleLine): boolean {
+  if (left.id || right.id) {
+    return left.id === right.id;
+  }
+  if (isInteger(left.index) || isInteger(right.index)) {
+    return left.index === right.index;
+  }
+  return left === right;
 }
 
 function formatRange(startMs: number | null, endMs: number | null, status: string | null): string {
