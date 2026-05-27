@@ -338,12 +338,11 @@ must not treat model-carried prefix text as user-visible stable history.
 
 - transport frames are not ASR chunks or transcript segments;
 - every accepted PCM sample advances the connection timeline;
-- speech audio is the only visible ASR input; short retained pauses may be
-  represented as hidden silence to preserve the ASR epoch clock, while idle
-  silence must not produce partial or stable text;
+- speech audio is the only ASR model input; VAD-suppressed pauses advance the
+  connection source clock but must not be fed to the model as hidden silence;
 - clients should use replaceable `partial` text for the live subtitle line;
-- one WebSocket session owns one continuous transcript history and may keep ASR
-  context across short VAD pauses;
+- one WebSocket session owns one continuous transcript history, while each VAD
+  speech turn owns a separate ASR model epoch;
 - `flush` promotes the current active ASR tail but does not end the WebSocket
   session;
 - `set_language` promotes the current tail, then starts future ASR from the new
@@ -363,9 +362,10 @@ Protocol-visible service defaults:
 - one active WebSocket session;
 - Silero voice activity control is on by default; use `--no-vad` only for
   pass-through debugging;
-- VAD speech end starts an idle hold; short pauses keep ASR state, text
-  stability, and sample-clock continuity intact, while long idle or explicit
-  `flush`/`finish` promotes the current tail;
+- VAD speech end promotes the current tail and closes that ASR model epoch;
+  the transcript history and source-clock continuity remain session-scoped, and
+  the next VAD speech start creates a fresh ASR epoch without decoding
+  suppressed silence;
 - stable history delay: `live_stability_delay_ms=12000`; clients should render
   replaceable `partial` in a local compact view for low-latency subtitles;
 - forced-aligner timestamps are off unless `--timestamp-model` is set;
@@ -373,10 +373,26 @@ Protocol-visible service defaults:
   `--timestamp-finish-timeout-ms=30000`, `--timestamp-local-files-only`;
 - translation is available only when the service starts with
   `--translation-model`.
+- startup prewarms enabled model paths before the HTTP/WebSocket interface is
+  created: ASR cuda graph, translation target buckets, and forced-aligner
+  timestamps. Prewarm failure fails startup instead of exposing a cold or
+  partially initialized service.
 
 The local service runtime profile is live20. Its model-window settings are in
 `@docs/streaming_runtime.md`; optimization flags and rejected paths are in
 `@docs/performance_optimization.md`.
+
+For frontend/audio debugging, start the backend with `--log-level debug`. Debug
+logs include throttled PCM duration/RMS/peak summaries, VAD speech events, ASR
+window text, and key outgoing transcript summaries. They are local runtime logs
+and can include recognized transcript text; do not paste private transcript logs
+into public issues.
+
+Add `--save-debug-audio` when you need the backend-received audio written to
+WAV for inspection. Files are saved under
+`local_data/realtime_debug_audio/` by default, or under `--debug-audio-dir` when
+set. The saved WAV is 16 kHz mono PCM after WebSocket decoding, before VAD or
+ASR filtering.
 
 ## Validation
 

@@ -163,14 +163,13 @@ finalization falls back to the last emitted partial; final history must not lose
 a tail the user has already seen.
 
 For realtime service sessions, the WebSocket session owns one continuous sample
-clock and a shared `TranscriptStore`. VAD speech end starts a bounded idle hold
-instead of committing text immediately, so short pauses do not reset
-model-carried text context or promote unstable rewrites. When an ASR epoch is
-retained across a short pause, the suppressed gap is advanced as hidden silence
-so transcript timestamps remain on the original audio clock; long idle does not
-keep running ASR. Speech start includes bounded pre-roll, and long idle or
-explicit `flush`/`finish` promotes the active tail before dropping retained ASR
-state.
+clock and a shared `TranscriptStore`. VAD speech end promotes the active tail
+and closes that ASR model epoch; the next VAD speech start creates a fresh ASR
+epoch. Only speech audio is fed to the model; ASR-local samples are mapped back
+to the connection source clock for transcript timestamps. The suppressed gap
+must not run decode or count as ASR evidence. Speech start includes bounded
+pre-roll, and explicit `flush`/`finish` promotes the active tail without
+rewriting stable history.
 
 The trim policy is explicit:
 

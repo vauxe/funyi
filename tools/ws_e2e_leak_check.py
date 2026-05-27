@@ -581,18 +581,16 @@ async def run_check(args: argparse.Namespace) -> dict[str, Any]:
                 audio_file.seek(int(args.start_sec * audio_file.samplerate))
 
             async with websockets.connect(args.url, max_size=None, ping_interval=None) as ws:
-                await ws.send(
-                    json.dumps(
-                        {
-                            "type": "start",
-                            "session_id": args.session_id,
-                            "sample_rate": 16000,
-                            "audio_format": "pcm_s16le",
-                            "language": args.language,
-                        },
-                        ensure_ascii=False,
-                    )
-                )
+                start_command = {
+                    "type": "start",
+                    "session_id": args.session_id,
+                    "sample_rate": 16000,
+                    "audio_format": "pcm_s16le",
+                    "language": args.language,
+                }
+                if args.target_language:
+                    start_command["target_language"] = args.target_language
+                await ws.send(json.dumps(start_command, ensure_ascii=False))
                 ready = json.loads(await ws.recv())
                 if ready.get("type") != "ready":
                     raise RuntimeError(f"unexpected ready event: {ready}")
@@ -766,6 +764,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pid", type=int, default=None, help="Service PID to monitor via /proc.")
     parser.add_argument("--session-id", default="leak-check")
     parser.add_argument("--language", default="Chinese")
+    parser.add_argument("--target-language", default=None)
     parser.add_argument("--start-sec", type=float, default=0.0)
     parser.add_argument("--max-audio-sec", type=float, default=600.0)
     parser.add_argument("--chunk-sec", type=float, default=1.0)

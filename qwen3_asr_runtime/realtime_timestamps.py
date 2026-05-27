@@ -110,6 +110,11 @@ class TimestampModelActor:
         model = getattr(self.aligner, "model", None)
         return str(getattr(model, "name_or_path", "") or "")
 
+    def warmup(self, audio: np.ndarray, *, text: str, language: str) -> None:
+        audio = normalize_pcm(audio)
+        future = self._executor.submit(self.aligner.align, audio=(audio, SAMPLE_RATE), text=text, language=language)
+        future.result()
+
     async def align_segment(
         self,
         audio: np.ndarray,

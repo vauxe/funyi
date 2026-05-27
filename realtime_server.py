@@ -4,9 +4,15 @@ import argparse
 import asyncio
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 import logging
+from pathlib import Path
+import re
+import time
 from typing import Any, Callable
+from uuid import uuid4
+import wave
 
 import numpy as np
 
@@ -43,8 +49,19 @@ from qwen3_asr_runtime.transcript_store import TranscriptStore
 from qwen3_asr_runtime.utils import SAMPLE_RATE, normalize_language_name, validate_language
 
 _SERVICE_SEND_TIMEOUT_SEC = 5.0
+_SERVICE_DEBUG_PCM_SUMMARY_INTERVAL_MS = 1000
 _SERVICE_TRANSLATION_PREVIEW_DEBOUNCE_MS = 700
 _SERVICE_LIVE_STABILITY_DELAY_MS = 12_000
+_SERVICE_TRANSLATION_PREWARM_TARGET_LANGUAGE = "Chinese"
+_SERVICE_TRANSLATION_PREWARM_TEXTS = (
+    "你好。",
+    "这个地方我先试一下。",
+    "这个地方我先试一下，等会儿看转录和翻译是否正常返回。",
+)
+_SERVICE_TIMESTAMP_PREWARM_LANGUAGE = "Chinese"
+_SERVICE_TIMESTAMP_PREWARM_TEXT = "你好。"
+_SERVICE_TIMESTAMP_PREWARM_DURATION_SEC = 1.0
+_DEFAULT_DEBUG_AUDIO_DIR = "local_data/realtime_debug_audio"
 _START_COMMAND_FIELDS = frozenset(
     {
         "type",
@@ -58,6 +75,7 @@ _START_COMMAND_FIELDS = frozenset(
 )
 _LANGUAGE_COMMAND_FIELDS = frozenset({"type", "language", "target_language"})
 _LOGGER = logging.getLogger(__name__)
+_LOG_LEVELS = ("debug", "info", "warning", "error", "critical")
 
 
 @dataclass(frozen=True)
@@ -81,6 +99,92 @@ class WebSocketSendTimeout(RuntimeError):
     """Raised when a connected client stops consuming server output."""
 
 
+class _PcmDebugSummary:
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        sample_rate: int = SAMPLE_RATE,
+        interval_ms: int = _SERVICE_DEBUG_PCM_SUMMARY_INTERVAL_MS,
+    ) -> None:
+        self.session_id = session_id
+        self.sample_rate = int(sample_rate)
+        self.interval_samples = max(1, int(round(self.sample_rate * int(interval_ms) / 1000)))
+        self.total_samples = 0
+        self._next_log_sample = self.interval_samples
+        self._reset_window()
+
+    def accept(self, audio: np.ndarray, *, byte_count: int) -> str | None:
+        samples, sum_squares, peak, zero_count = _pcm_debug_metrics(audio)
+        if samples == 0:
+            return None
+
+        self.total_samples += samples
+        self._window_frames += 1
+        self._window_bytes += int(byte_count)
+        self._window_samples += samples
+        self._window_sum_squares += sum_squares
+        self._window_peak = max(self._window_peak, peak)
+        self._window_zero_count += zero_count
+
+        if self.total_samples < self._next_log_sample:
+            return None
+        while self._next_log_sample <= self.total_samples:
+            self._next_log_sample += self.interval_samples
+
+        summary = _format_pcm_debug_metrics(
+            samples=self._window_samples,
+            sum_squares=self._window_sum_squares,
+            peak=self._window_peak,
+            zero_count=self._window_zero_count,
+        )
+        message = (
+            f"PCM summary session_id={self.session_id} frames={self._window_frames} "
+            f"bytes={self._window_bytes} total_ms={int(round(1000 * self.total_samples / self.sample_rate))} "
+            f"{summary}"
+        )
+        self._reset_window()
+        return message
+
+    def _reset_window(self) -> None:
+        self._window_frames = 0
+        self._window_bytes = 0
+        self._window_samples = 0
+        self._window_sum_squares = 0.0
+        self._window_peak = 0.0
+        self._window_zero_count = 0
+
+
+class _DebugAudioRecorder:
+    def __init__(self, directory: str | Path, *, session_id: str, sample_rate: int = SAMPLE_RATE) -> None:
+        self.path = _debug_audio_path(directory, session_id=session_id)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._wav = wave.open(str(self.path), "wb")
+        self._wav.setnchannels(1)
+        self._wav.setsampwidth(2)
+        self._wav.setframerate(int(sample_rate))
+        self._sample_rate = int(sample_rate)
+        self._samples = 0
+        _LOGGER.info("Saving realtime debug audio path=%s", self.path)
+
+    def write(self, audio: np.ndarray) -> None:
+        payload = _pcm_s16le_bytes(audio)
+        if not payload:
+            return
+        self._wav.writeframes(payload)
+        self._samples += len(payload) // 2
+
+    def close(self) -> None:
+        self._wav.close()
+        duration_ms = int(round(1000 * self._samples / self._sample_rate))
+        _LOGGER.info(
+            "Saved realtime debug audio path=%s samples=%d duration_ms=%d",
+            self.path,
+            self._samples,
+            duration_ms,
+        )
+
+
 def build_app(
     *,
     model: Any,
@@ -90,6 +194,7 @@ def build_app(
     translation_service_config: TranslationServiceConfig | None = None,
     live_stability_delay_ms: int = _SERVICE_LIVE_STABILITY_DELAY_MS,
     vad_enabled: bool = True,
+    debug_audio_dir: str | Path | None = None,
 ) -> Any:
     try:
         from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -123,6 +228,12 @@ def build_app(
     @app.websocket("/ws/asr")
     async def websocket_asr(websocket: WebSocket) -> None:
         await websocket.accept()
+        event_queue: asyncio.Queue[dict[str, Any] | None] | None = None
+        sender_task: asyncio.Task[None] | None = None
+        timestamp_runtime: RealtimeTimestampRuntime | None = None
+        translation: RealtimeTranslationRuntime | None = None
+        audio_recorder: _DebugAudioRecorder | None = None
+
         reject_connection = False
         async with active_lock:
             if active_connection["open"]:
@@ -166,9 +277,8 @@ def build_app(
                 await _send_error_and_close(websocket, str(exc), code=1011)
                 return
 
-            event_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+            event_queue = asyncio.Queue()
             sender_task = asyncio.create_task(_send_queued_events(websocket, event_queue))
-            timestamp_runtime: RealtimeTimestampRuntime | None = None
             if timestamps_enabled and timestamp_actor is not None and timestamp_config is not None:
                 timestamp_runtime = RealtimeTimestampRuntime(
                     timestamp_actor,
@@ -179,7 +289,6 @@ def build_app(
                     store_lock=store_lock,
                 )
                 await timestamp_runtime.start()
-            translation: RealtimeTranslationRuntime | None = None
             if translation_actor is not None and session_translation_config is not None:
                 translation = RealtimeTranslationRuntime(
                     translation_actor,
@@ -187,6 +296,8 @@ def build_app(
                     event_queue=event_queue,
                 )
                 await translation.start()
+            if debug_audio_dir is not None:
+                audio_recorder = _DebugAudioRecorder(debug_audio_dir, session_id=session_id, sample_rate=SAMPLE_RATE)
 
             ready: dict[str, Any] = {
                 "type": "ready",
@@ -199,6 +310,16 @@ def build_app(
             if translation is not None:
                 ready["translation"] = translation.ready_payload()
             await event_queue.put(ready)
+            _LOGGER.info(
+                "Realtime ASR session started session_id=%s language=%s vad=%s timestamps=%s translation=%s",
+                session_id,
+                config.language or "auto",
+                bool(vad_enabled),
+                timestamp_runtime is not None,
+                translation is not None,
+            )
+
+            pcm_debug_summary = _PcmDebugSummary(session_id=session_id) if _LOGGER.isEnabledFor(logging.DEBUG) else None
 
             while True:
                 message = await _receive_or_sender_failed(websocket, sender_task)
@@ -206,6 +327,12 @@ def build_app(
                     return
                 if message.get("bytes") is not None:
                     audio = decode_pcm_s16le(message["bytes"])
+                    if audio_recorder is not None:
+                        audio_recorder.write(audio)
+                    if pcm_debug_summary is not None:
+                        summary = pcm_debug_summary.accept(audio, byte_count=len(message["bytes"]))
+                        if summary is not None:
+                            _LOGGER.debug(summary)
                     if timestamp_runtime is not None:
                         timestamp_runtime.accept_audio(audio)
                     events = await _run_store_write(store_lock, session.ingest_audio, audio)
@@ -225,9 +352,11 @@ def build_app(
                     continue
                 command_type = command.get("type")
                 if command_type == "flush":
+                    _LOGGER.debug("Realtime command session_id=%s type=flush", session_id)
                     events = await _run_store_write(store_lock, session.flush)
                     await _publish_session_events(event_queue, translation, events, timestamp_runtime, session)
                 elif command_type == "set_language":
+                    _LOGGER.debug("Realtime command session_id=%s type=set_language payload=%s", session_id, command)
                     try:
                         language_update = _parse_language_config_update(
                             command,
@@ -267,6 +396,7 @@ def build_app(
                             await event_queue.put({"type": "error", "error": str(exc)})
                             continue
                 elif command_type == "finish":
+                    _LOGGER.debug("Realtime command session_id=%s type=finish", session_id)
                     if timestamp_runtime is None:
                         events = await _run_store_write(store_lock, session.finish)
                         await _publish_finish_events(event_queue, translation, events)
@@ -296,7 +426,7 @@ def build_app(
         except Exception as exc:
             _LOGGER.exception("Realtime ASR WebSocket session failed.")
             try:
-                if "event_queue" in locals() and "sender_task" in locals() and not sender_task.done():
+                if event_queue is not None and sender_task is not None and not sender_task.done():
                     await event_queue.put({"type": "error", "error": str(exc) or type(exc).__name__, "fatal": True})
                     await event_queue.put(None)
                     await sender_task
@@ -307,17 +437,22 @@ def build_app(
                 _LOGGER.exception("Failed to send realtime ASR error response.")
             return
         finally:
-            if "timestamp_runtime" in locals() and timestamp_runtime is not None:
+            if audio_recorder is not None:
+                try:
+                    audio_recorder.close()
+                except Exception:
+                    _LOGGER.exception("Failed to close realtime debug audio recorder.")
+            if timestamp_runtime is not None:
                 await timestamp_runtime.close()
-            if "translation" in locals() and translation is not None:
+            if translation is not None:
                 await translation.close()
-            if "sender_task" in locals() and not sender_task.done():
+            if sender_task is not None and not sender_task.done():
                 sender_task.cancel()
                 try:
                     await sender_task
                 except asyncio.CancelledError:
                     pass
-            elif "sender_task" in locals():
+            elif sender_task is not None:
                 try:
                     sender_task.result()
                 except Exception:
@@ -334,6 +469,121 @@ def decode_pcm_s16le(payload: bytes) -> np.ndarray:
     if not payload:
         return np.zeros((0,), dtype=np.int16)
     return np.frombuffer(payload, dtype="<i2").copy()
+
+
+def _format_pcm_debug_stats(audio: np.ndarray) -> str:
+    samples, sum_squares, peak, zero_count = _pcm_debug_metrics(audio)
+    return _format_pcm_debug_metrics(
+        samples=samples,
+        sum_squares=sum_squares,
+        peak=peak,
+        zero_count=zero_count,
+    )
+
+
+def _pcm_debug_metrics(audio: np.ndarray) -> tuple[int, float, float, int]:
+    samples = int(audio.shape[0])
+    if samples == 0:
+        return 0, 0.0, 0.0, 0
+
+    if audio.dtype == np.int16:
+        x = audio.astype(np.float32) / 32768.0
+    else:
+        x = audio.astype(np.float32, copy=False)
+    abs_x = np.abs(x)
+    peak = float(abs_x.max(initial=0.0))
+    sum_squares = float(np.sum(x * x))
+    zero_count = int(np.count_nonzero(abs_x <= 1.0e-6))
+    return samples, sum_squares, peak, zero_count
+
+
+def _format_pcm_debug_metrics(
+    *,
+    samples: int,
+    sum_squares: float,
+    peak: float,
+    zero_count: int,
+) -> str:
+    duration_ms = int(round(1000 * int(samples) / SAMPLE_RATE))
+    if int(samples) == 0:
+        return "samples=0 duration_ms=0 rms_db=-inf peak=0.0000 zero_pct=100.0"
+    rms = float(np.sqrt(float(sum_squares) / int(samples)))
+    rms_db = "-inf" if rms <= 0.0 else f"{20 * np.log10(rms):.1f}"
+    zero_pct = 100.0 * int(zero_count) / int(samples)
+    return f"samples={samples} duration_ms={duration_ms} rms_db={rms_db} peak={peak:.4f} zero_pct={zero_pct:.1f}"
+
+
+def _pcm_s16le_bytes(audio: np.ndarray) -> bytes:
+    x = np.asarray(audio)
+    if x.ndim != 1:
+        x = x.reshape(-1)
+    if x.shape[0] == 0:
+        return b""
+    if x.dtype == np.int16:
+        return x.astype("<i2", copy=False).tobytes()
+    clipped = np.clip(x.astype(np.float32, copy=False), -1.0, 1.0)
+    return np.rint(clipped * np.iinfo(np.int16).max).astype("<i2").tobytes()
+
+
+def _debug_audio_path(directory: str | Path, *, session_id: str) -> Path:
+    safe_session_id = _safe_filename_component(session_id)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    suffix = uuid4().hex[:8]
+    return Path(directory) / f"{safe_session_id}-{timestamp}-{suffix}.wav"
+
+
+def _safe_filename_component(value: str, *, limit: int = 64) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "session")).strip("._-")
+    return (cleaned or "session")[:limit]
+
+
+def _truncate_log_text(text: Any, *, limit: int = 80) -> str:
+    value = str(text or "").replace("\n", "\\n")
+    if len(value) <= limit:
+        return value
+    return f"{value[:limit]}..."
+
+
+def _format_event_log_summary(event: dict[str, Any]) -> str:
+    event_type = str(event.get("type") or "")
+    if event_type == "transcript_update":
+        stable_texts = [
+            _truncate_log_text(segment.get("text"))
+            for segment in event.get("stable_appends") or []
+            if isinstance(segment, dict)
+        ]
+        partial = event.get("partial")
+        partial_text = _truncate_log_text(partial.get("text")) if isinstance(partial, dict) else ""
+        return (
+            "type=transcript_update "
+            f"revision={event.get('revision')} stable_base={event.get('stable_base')} "
+            f"stable_count={event.get('stable_count')} stable_texts={stable_texts!r} partial={partial_text!r}"
+        )
+    if event_type == "transcript_final":
+        return f"type=transcript_final stable_count={event.get('stable_count')}"
+    if event_type == "ready":
+        return (
+            "type=ready "
+            f"session_id={event.get('session_id')} sample_rate={event.get('sample_rate')} "
+            f"audio_format={event.get('audio_format')}"
+        )
+    if event_type == "error":
+        return f"type=error fatal={event.get('fatal')} error={_truncate_log_text(event.get('error'))!r}"
+    return f"type={event_type}"
+
+
+def _should_log_realtime_event(event: dict[str, Any]) -> bool:
+    event_type = str(event.get("type") or "")
+    if event_type == "transcript_update":
+        return bool(event.get("stable_appends"))
+    return event_type in {
+        "ready",
+        "error",
+        "transcript_final",
+        "translation_stable",
+        "translation_status",
+        "transcript_timing_update",
+    }
 
 
 async def _run_store_write(store_lock: asyncio.Lock, func: Callable[..., Any], *args: Any) -> Any:
@@ -590,6 +840,8 @@ async def _send_queued_events(
         try:
             if event is None:
                 return
+            if _LOGGER.isEnabledFor(logging.DEBUG) and _should_log_realtime_event(event):
+                _LOGGER.debug("Realtime event %s", _format_event_log_summary(event))
             await _send_json_with_timeout(websocket, event, timeout_sec=send_timeout_sec)
         finally:
             event_queue.task_done()
@@ -660,6 +912,25 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--model", required=True, help="Model path or Hugging Face model id.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument(
+        "--log-level",
+        default="info",
+        choices=_LOG_LEVELS,
+        help="Service log verbosity. Use debug to inspect PCM summaries, VAD/ASR events, and transcript updates.",
+    )
+    parser.add_argument(
+        "--save-debug-audio",
+        action="store_true",
+        help=(
+            "Save backend-received audio as 16 kHz mono WAV files. "
+            f"Default directory: {_DEFAULT_DEBUG_AUDIO_DIR}."
+        ),
+    )
+    parser.add_argument(
+        "--debug-audio-dir",
+        default=_DEFAULT_DEBUG_AUDIO_DIR,
+        help="Directory used by --save-debug-audio.",
+    )
     parser.add_argument("--device-map", default=None, help="Transformers device_map. Default: cuda:0.")
     parser.add_argument(
         "--dtype",
@@ -726,6 +997,28 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--translation-local-files-only", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--translation-trust-remote-code", action="store_true")
     return parser.parse_args()
+
+
+def _configure_logging(level_name: str) -> int:
+    normalized = str(level_name or "info").upper()
+    level = int(getattr(logging, normalized))
+    root_level = logging.INFO if level <= logging.DEBUG else level
+    logging.basicConfig(
+        level=root_level,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    )
+    logging.getLogger().setLevel(root_level)
+    _LOGGER.setLevel(level)
+    logging.getLogger("qwen3_asr_runtime").setLevel(level)
+    logging.getLogger("uvicorn").setLevel(root_level)
+    logging.getLogger("websockets").setLevel(root_level)
+    return level
+
+
+def _uvicorn_log_level(service_log_level: int) -> str:
+    if int(service_log_level) <= logging.DEBUG:
+        return "info"
+    return logging.getLevelName(service_log_level).lower()
 
 
 def _build_model_load(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
@@ -821,6 +1114,61 @@ def _build_timestamp_actor(args: argparse.Namespace) -> tuple[TimestampModelActo
     return TimestampModelActor(aligner), config
 
 
+def _prewarm_translation_runtime(
+    actor: TranslationModelActor,
+    config: TranslationServiceConfig,
+) -> None:
+    stable_batch_size = int(config.stable_batch_size)
+    batch_sizes = (1,) if stable_batch_size == 1 else (1, stable_batch_size)
+    for batch_size in batch_sizes:
+        started = time.perf_counter()
+        _LOGGER.info(
+            "Prewarming translation model target_language=%s batch_size=%d texts=%d",
+            _SERVICE_TRANSLATION_PREWARM_TARGET_LANGUAGE,
+            batch_size,
+            len(_SERVICE_TRANSLATION_PREWARM_TEXTS),
+        )
+        actor.warmup(
+            _SERVICE_TRANSLATION_PREWARM_TEXTS,
+            target_language=_SERVICE_TRANSLATION_PREWARM_TARGET_LANGUAGE,
+            source_language="",
+            max_new_tokens=config.max_new_tokens,
+            sync_cuda=True,
+            batch_size=batch_size,
+        )
+        _LOGGER.info(
+            "Prewarmed translation model target_language=%s batch_size=%d wall_ms=%d",
+            _SERVICE_TRANSLATION_PREWARM_TARGET_LANGUAGE,
+            batch_size,
+            int(round((time.perf_counter() - started) * 1000)),
+        )
+
+
+def _timestamp_prewarm_audio(duration_sec: float = _SERVICE_TIMESTAMP_PREWARM_DURATION_SEC) -> np.ndarray:
+    sample_count = max(1, int(round(float(duration_sec) * SAMPLE_RATE)))
+    t = np.arange(sample_count, dtype=np.float32) / float(SAMPLE_RATE)
+    return (0.01 * np.sin(2.0 * np.pi * 220.0 * t)).astype(np.float32)
+
+
+def _prewarm_timestamp_runtime(actor: TimestampModelActor) -> None:
+    started = time.perf_counter()
+    _LOGGER.info(
+        "Prewarming timestamp model language=%s duration_ms=%d",
+        _SERVICE_TIMESTAMP_PREWARM_LANGUAGE,
+        int(round(_SERVICE_TIMESTAMP_PREWARM_DURATION_SEC * 1000)),
+    )
+    actor.warmup(
+        _timestamp_prewarm_audio(),
+        text=_SERVICE_TIMESTAMP_PREWARM_TEXT,
+        language=_SERVICE_TIMESTAMP_PREWARM_LANGUAGE,
+    )
+    _LOGGER.info(
+        "Prewarmed timestamp model language=%s wall_ms=%d",
+        _SERVICE_TIMESTAMP_PREWARM_LANGUAGE,
+        int(round((time.perf_counter() - started) * 1000)),
+    )
+
+
 def _cuda_graph_enabled(args: argparse.Namespace) -> bool:
     return True if args.cuda_graph is None else bool(args.cuda_graph)
 
@@ -842,8 +1190,20 @@ def _prepare_cuda_graph_runtime(model: Any, args: argparse.Namespace) -> None:
     if not _cuda_graph_enabled(args):
         return
     if args.cuda_graph_prewarm:
+        started = time.perf_counter()
+        _LOGGER.info(
+            "Prewarming ASR cuda graph language=%s window_sec=%.1f prefix_tokens=%d",
+            args.cuda_graph_prewarm_language,
+            float(args.cuda_graph_prewarm_window_sec),
+            int(args.cuda_graph_prewarm_prefix_tokens),
+        )
         if not _prewarm_realtime_cuda_graph(model, args):
             raise RuntimeError("cuda graph prewarm was requested but this backend does not support it")
+        _LOGGER.info(
+            "Prewarmed ASR cuda graph language=%s wall_ms=%d",
+            args.cuda_graph_prewarm_language,
+            int(round((time.perf_counter() - started) * 1000)),
+        )
         return
 
 
@@ -859,24 +1219,38 @@ def main() -> None:
     from qwen3_asr_runtime import Qwen3ASRModel
 
     args = _parse_args()
+    log_level = _configure_logging(args.log_level)
     backend, load_kwargs = _build_model_load(args)
 
+    _LOGGER.info(
+        "Loading Qwen3-ASR model model=%s backend=%s device_map=%s log_level=%s",
+        args.model,
+        backend,
+        load_kwargs.get("device_map"),
+        args.log_level,
+    )
     model = Qwen3ASRModel.from_pretrained(
         args.model,
         backend=backend,
         **load_kwargs,
     )
-    translation_enabled = bool(str(args.translation_model or "").strip())
-    _prepare_cuda_graph_runtime(model, args)
-    translation_capture_lock = _translation_capture_lock(args, translation_enabled=translation_enabled)
-    translator, translation_service_config = _build_translation(args)
-    translation_actor = (
-        TranslationModelActor(translator, capture_lock=translation_capture_lock) if translator is not None else None
-    )
+    translation_actor: TranslationModelActor | None = None
+    translation_service_config: TranslationServiceConfig | None = None
     timestamp_actor: TimestampModelActor | None = None
     timestamp_config: RealtimeTimestampConfig | None = None
     try:
+        _prepare_cuda_graph_runtime(model, args)
+        translator, translation_service_config = _build_translation(args)
+        if translator is not None:
+            translation_actor = TranslationModelActor(
+                translator,
+                capture_lock=_translation_capture_lock(args, translation_enabled=True),
+            )
         timestamp_actor, timestamp_config = _build_timestamp_actor(args)
+        if translation_actor is not None and translation_service_config is not None:
+            _prewarm_translation_runtime(translation_actor, translation_service_config)
+        if timestamp_actor is not None:
+            _prewarm_timestamp_runtime(timestamp_actor)
     except Exception:
         if translation_actor is not None:
             translation_actor.close(wait=True)
@@ -891,6 +1265,7 @@ def main() -> None:
         translation_service_config=translation_service_config,
         live_stability_delay_ms=args.live_stability_delay_ms,
         vad_enabled=bool(args.vad),
+        debug_audio_dir=args.debug_audio_dir if args.save_debug_audio else None,
     )
 
     try:
@@ -898,7 +1273,13 @@ def main() -> None:
     except ImportError as exc:
         raise RuntimeError("Install service dependencies with: uv sync --python 3.12") from exc
 
-    uvicorn.run(app, host=args.host, port=args.port, ws_ping_interval=None)
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        ws_ping_interval=None,
+        log_level=_uvicorn_log_level(log_level),
+    )
 
 
 if __name__ == "__main__":

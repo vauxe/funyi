@@ -4,26 +4,36 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
+import logging
 from pathlib import Path
 import re
 import sys
 from types import SimpleNamespace
 from unittest.mock import patch
+import wave
 
 import numpy as np
 import pytest
 
 from realtime_server import (
     CUDA_GRAPH_CAPTURE_LOCK,
+    _DebugAudioRecorder,
+    _PcmDebugSummary,
     TranslationServiceConfig,
     WebSocketSendTimeout,
     _build_model_load,
     _build_session_config,
     _build_translation,
     _close_websocket,
+    _configure_logging,
+    _format_event_log_summary,
+    _format_pcm_debug_stats,
     _parse_args,
     _parse_language_config_update,
+    _pcm_s16le_bytes,
     _prepare_cuda_graph_runtime,
+    _prewarm_timestamp_runtime,
+    _prewarm_translation_runtime,
     _publish_finish_events,
     _receive_start,
     _publish_session_events,
@@ -31,7 +41,10 @@ from realtime_server import (
     _run_store_write,
     _send_queued_events,
     _session_translation_config,
+    _should_log_realtime_event,
+    _timestamp_prewarm_audio,
     _translation_capture_lock,
+    _uvicorn_log_level,
 )
 from qwen3_asr_runtime.language_support import (
     HYMT_MODEL_CARD_LANGUAGES,
@@ -497,6 +510,128 @@ class TestRealtimeServerCli:
         assert not args.translation_sample
         assert args.live_stability_delay_ms == 12000
         assert args.vad
+        assert args.log_level == "info"
+        assert not args.save_debug_audio
+        assert args.debug_audio_dir == "local_data/realtime_debug_audio"
+
+    def test_debug_log_level_can_be_configured(self) -> None:
+        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--log-level", "debug"]):
+            args = _parse_args()
+
+        assert args.log_level == "debug"
+        root = logging.getLogger()
+        realtime_logger = logging.getLogger("realtime_server")
+        runtime_logger = logging.getLogger("qwen3_asr_runtime")
+        uvicorn_logger = logging.getLogger("uvicorn")
+        websockets_logger = logging.getLogger("websockets")
+        old_root_level = root.level
+        old_realtime_level = realtime_logger.level
+        old_runtime_level = runtime_logger.level
+        old_uvicorn_level = uvicorn_logger.level
+        old_websockets_level = websockets_logger.level
+        try:
+            with patch("realtime_server.logging.basicConfig") as basic_config:
+                assert _configure_logging(args.log_level) == logging.DEBUG
+            basic_config.assert_called_once()
+            assert root.level == logging.INFO
+            assert realtime_logger.level == logging.DEBUG
+            assert runtime_logger.level == logging.DEBUG
+            assert uvicorn_logger.level == logging.INFO
+            assert websockets_logger.level == logging.INFO
+        finally:
+            root.setLevel(old_root_level)
+            realtime_logger.setLevel(old_realtime_level)
+            runtime_logger.setLevel(old_runtime_level)
+            uvicorn_logger.setLevel(old_uvicorn_level)
+            websockets_logger.setLevel(old_websockets_level)
+
+    def test_uvicorn_stays_info_when_service_debug_is_enabled(self) -> None:
+        assert _uvicorn_log_level(logging.DEBUG) == "info"
+        assert _uvicorn_log_level(logging.WARNING) == "warning"
+
+    def test_pcm_debug_stats_describe_frame_level_audio(self) -> None:
+        audio = np.array([0, 32767, -32768], dtype=np.int16)
+
+        stats = _format_pcm_debug_stats(audio)
+
+        assert "samples=3" in stats
+        assert "duration_ms=0" in stats
+        assert "peak=1.0000" in stats
+        assert "zero_pct=33.3" in stats
+
+    def test_pcm_debug_summary_throttles_frame_logs(self) -> None:
+        summary = _PcmDebugSummary(session_id="s1", sample_rate=16_000, interval_ms=1000)
+        half_second = np.ones(8000, dtype=np.float32) * 0.5
+
+        assert summary.accept(half_second, byte_count=16_000) is None
+        message = summary.accept(half_second, byte_count=16_000)
+
+        assert message is not None
+        assert "PCM summary session_id=s1" in message
+        assert "frames=2" in message
+        assert "bytes=32000" in message
+        assert "total_ms=1000" in message
+        assert "samples=16000" in message
+
+    def test_transcript_event_log_summary_includes_text_snapshot(self) -> None:
+        summary = _format_event_log_summary(
+            {
+                "type": "transcript_update",
+                "revision": 2,
+                "stable_base": 0,
+                "stable_count": 1,
+                "stable_appends": [{"text": "稳定"}],
+                "partial": {"text": "这这这"},
+            }
+        )
+
+        assert "type=transcript_update" in summary
+        assert "stable_texts=['稳定']" in summary
+        assert "partial='这这这'" in summary
+
+    def test_realtime_event_debug_log_filter_skips_partial_only_updates(self) -> None:
+        assert not _should_log_realtime_event({"type": "transcript_update", "partial": {"text": "draft"}})
+        assert _should_log_realtime_event({"type": "transcript_update", "stable_appends": [{"text": "done"}]})
+        assert _should_log_realtime_event({"type": "error", "error": "bad"})
+        assert not _should_log_realtime_event({"type": "translation_preview", "text": "draft"})
+
+    def test_save_debug_audio_cli_uses_default_directory(self) -> None:
+        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--save-debug-audio"]):
+            args = _parse_args()
+
+        assert args.save_debug_audio
+        assert args.debug_audio_dir == "local_data/realtime_debug_audio"
+
+    def test_debug_audio_directory_can_be_configured(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            ["realtime_server.py", "--model", "model", "--save-debug-audio", "--debug-audio-dir", "/tmp/funyi-audio"],
+        ):
+            args = _parse_args()
+
+        assert args.save_debug_audio
+        assert args.debug_audio_dir == "/tmp/funyi-audio"
+
+    def test_pcm_s16le_bytes_preserves_int16_samples(self) -> None:
+        audio = np.array([0, 32767, -32768], dtype=np.int16)
+
+        assert _pcm_s16le_bytes(audio) == b"\x00\x00\xff\x7f\x00\x80"
+
+    def test_debug_audio_recorder_writes_wav_file(self, tmp_path: Path) -> None:
+        recorder = _DebugAudioRecorder(tmp_path, session_id="bad/session id")
+        recorder.write(np.array([0, 32767, -32768], dtype=np.int16))
+        path = recorder.path
+        recorder.close()
+
+        assert path.parent == tmp_path
+        assert path.name.startswith("bad_session_id-")
+        with wave.open(str(path), "rb") as wav:
+            assert wav.getnchannels() == 1
+            assert wav.getsampwidth() == 2
+            assert wav.getframerate() == 16000
+            assert wav.getnframes() == 3
+            assert wav.readframes(3) == b"\x00\x00\xff\x7f\x00\x80"
 
     def test_live_stability_delay_can_be_configured(self) -> None:
         with patch.object(
@@ -545,6 +680,58 @@ class TestRealtimeServerCli:
         assert built_translator is translator
         assert config is not None
         assert translator_class.call_args.args[0] == 'local/hymt'
+
+    def test_translation_prewarm_uses_actor_and_configured_target_buckets(self) -> None:
+        class FakeTranslationActor:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def warmup(self, texts: list[str], **kwargs: object) -> list[object]:
+                self.calls.append({"texts": list(texts), **kwargs})
+                return [object() for _ in texts]
+
+        actor = FakeTranslationActor()
+
+        _prewarm_translation_runtime(
+            actor,  # type: ignore[arg-type]
+            TranslationServiceConfig(max_new_tokens=16, stable_batch_size=2),
+        )
+
+        assert [(call["target_language"], call["batch_size"]) for call in actor.calls] == [
+            ("Chinese", 1),
+            ("Chinese", 2),
+        ]
+        assert all(call["source_language"] == "" for call in actor.calls)
+        assert all(call["max_new_tokens"] == 16 for call in actor.calls)
+        assert all(call["sync_cuda"] is True for call in actor.calls)
+        assert all(len(call["texts"]) == 3 for call in actor.calls)
+
+    def test_timestamp_prewarm_uses_actor_before_service_ready(self) -> None:
+        class FakeTimestampActor:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def warmup(self, audio: np.ndarray, *, text: str, language: str) -> None:
+                self.calls.append({"audio": audio, "text": text, "language": language})
+
+        actor = FakeTimestampActor()
+
+        _prewarm_timestamp_runtime(actor)  # type: ignore[arg-type]
+
+        assert len(actor.calls) == 1
+        assert actor.calls[0]["text"] == "你好。"
+        assert actor.calls[0]["language"] == "Chinese"
+        audio = actor.calls[0]["audio"]
+        assert isinstance(audio, np.ndarray)
+        assert audio.dtype == np.float32
+        assert audio.shape == (16000,)
+
+    def test_timestamp_prewarm_audio_is_synthetic_float32(self) -> None:
+        audio = _timestamp_prewarm_audio(0.25)
+
+        assert audio.dtype == np.float32
+        assert audio.shape == (4000,)
+        assert float(np.max(np.abs(audio))) <= 0.011
 
     def test_asr_supported_languages_follow_qwen_model_card(self) -> None:
         assert tuple(SUPPORTED_LANGUAGES) == QWEN3_ASR_MODEL_CARD_LANGUAGES
@@ -1221,6 +1408,31 @@ class TestRealtimeASRSession:
         assert stable[0]['end_ms'] == 3000
         assert_transcript_update_invariants(events)
 
+    def test_noncontiguous_source_audio_maps_timestamps_without_model_silence(self) -> None:
+        model = FakeStreamingModel(outputs=["第一秒", "第一秒第二秒"])
+        session = RealtimeASRSession(
+            model,
+            config=RealtimeASRConfig(
+                language="Chinese",
+                live_stability_delay_ms=0,
+            ),
+        )
+        speech = np.ones(16_000, dtype=np.float32) * 0.2
+
+        first_events = session.ingest_audio(speech, source_start_sample=0)
+        resume_events = session.ingest_audio(speech, source_start_sample=32_000)
+
+        stable = stable_appends(first_events + resume_events)
+        updates = transcript_updates(resume_events)
+        assert [segment['text'] for segment in stable] == ['第一秒']
+        assert stable[0]['start_ms'] == 0
+        assert stable[0]['end_ms'] == 1000
+        assert updates[-1]['partial']['text'] == '第二秒'  # type: ignore[index]
+        assert updates[-1]['partial']['start_ms'] == 2000  # type: ignore[index]
+        assert updates[-1]['partial']['end_ms'] == 3000  # type: ignore[index]
+        assert model.stream_audio_lengths == [16_000, 16_000]
+        assert_transcript_update_invariants(first_events + resume_events)
+
 
 class TestRealtimeConnectionSession:
     def test_initial_silence_does_not_start_asr_or_emit_partial(self) -> None:
@@ -1239,8 +1451,8 @@ class TestRealtimeConnectionSession:
         assert model.init_count == 0
         assert model.stream_calls == 0
 
-    def test_speech_end_keeps_short_pause_context_without_model_finish(self) -> None:
-        model = FakeStreamingModel(outputs=["开头"], finish_text="开头")
+    def test_speech_end_closes_model_epoch_without_closing_transcript(self) -> None:
+        model = FakeStreamingModel(outputs=["开头", "后续"], finish_text="开头")
         session = RealtimeConnectionSession(
             model,
             config=RealtimeASRConfig(language="Chinese"),
@@ -1253,7 +1465,7 @@ class TestRealtimeConnectionSession:
                         VadDecision(speech_started=True, speech_active=True, speech_start_sample=48_000),
                     ]
                 ),
-                config=SpeechGateConfig(pre_roll_ms=400),
+                config=SpeechGateConfig(pre_roll_ms=0),
             ),
         )
 
@@ -1262,22 +1474,24 @@ class TestRealtimeConnectionSession:
         events.extend(session.ingest_audio(np.ones(16_000, dtype=np.float32) * 0.2))
         events.extend(session.ingest_audio(np.zeros(16_000, dtype=np.float32)))
 
-        assert stable_appends(events) == []
-        assert model.finish_calls == 0
+        assert [segment['text'] for segment in stable_appends(events)] == ['开头']
+        assert model.finish_calls == 1
         assert model.init_count == 1
-        assert session.active_asr is not None
+        assert session.active_asr is None
         assert_transcript_update_invariants(events)
         stream_calls_after_flush = model.stream_calls
+        first_turn_events = events
 
-        events = session.ingest_audio(np.ones(16_000, dtype=np.float32) * 0.2)
+        resume_events = session.ingest_audio(np.ones(16_000, dtype=np.float32) * 0.2)
 
-        assert model.init_count == 1
+        assert session.store.stable_count == 1
+        assert model.init_count == 2
         assert model.stream_calls > stream_calls_after_flush
         assert session.active_asr is not None
-        assert_transcript_update_invariants(events)
+        assert_transcript_update_invariants(first_turn_events + resume_events)
 
     def test_short_vad_pause_advances_timeline_without_publishing_silence(self) -> None:
-        model = FakeStreamingModel(outputs=["第一秒", "第一秒", "第一秒第二秒"])
+        model = FakeStreamingModel(outputs=["第一秒", "第二秒"], finish_text="第一秒")
         session = RealtimeConnectionSession(
             model,
             config=RealtimeASRConfig(language="Chinese", live_stability_delay_ms=0),
@@ -1298,25 +1512,24 @@ class TestRealtimeConnectionSession:
         resume_events = session.ingest_audio(np.ones(16_000, dtype=np.float32) * 0.2)
 
         assert stable_appends(first_events) == []
-        assert pause_events == []
-        stable = stable_appends(resume_events)
+        stable = stable_appends(pause_events)
         updates = transcript_updates(resume_events)
         assert [segment['text'] for segment in stable] == ['第一秒']
         assert stable[0]['start_ms'] == 0
         assert stable[0]['end_ms'] == 1000
         assert updates[-1]['partial']['text'] == '第二秒'  # type: ignore[index]
+        assert updates[-1]['partial']['start_ms'] == 2000  # type: ignore[index]
         assert updates[-1]['partial']['end_ms'] == 3000  # type: ignore[index]
-        assert model.finish_calls == 0
-        assert model.init_count == 1
-        assert model.stream_audio_lengths == [16000, 16000, 16000]
+        assert model.finish_calls == 1
+        assert model.init_count == 2
+        assert model.stream_audio_lengths == [16000, 16000]
         assert_transcript_update_invariants(first_events + pause_events + resume_events)
 
-    def test_speech_context_expiry_flushes_and_closes_after_long_idle(self) -> None:
+    def test_speech_end_flushes_and_closes_active_epoch(self) -> None:
         model = FakeStreamingModel(outputs=["开头"], finish_text="开头")
         session = RealtimeConnectionSession(
             model,
             config=RealtimeASRConfig(language="Chinese"),
-            speech_context_hold_ms=500,
             speech_gate=SpeechGate(
                 vad=FakeVadAdapter(
                     [

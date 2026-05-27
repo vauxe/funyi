@@ -74,6 +74,16 @@ class TestRealtimeTimestampRuntime:
         assert 'Japanese' in ready['allowed_source_languages']
         assert 'Arabic' not in ready['allowed_source_languages']
 
+    def test_model_actor_warmup_uses_aligner_without_requiring_items(self, timestamp_actor) -> None:
+        aligner = FakeAligner([])
+        actor = timestamp_actor(aligner)
+
+        actor.warmup(np.zeros(4000, dtype=np.float32), text="你好。", language="Chinese")
+
+        assert len(aligner.calls) == 1
+        assert aligner.calls[0][0].shape == (4000,)
+        assert aligner.calls[0][1:] == ("你好。", "Chinese")
+
     def test_audio_timeline_buffer_crops_across_appended_chunks(self) -> None:
         buffer = AudioTimelineBuffer()
         buffer.append(np.arange(0, 5, dtype=np.float32))
