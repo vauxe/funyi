@@ -22,6 +22,7 @@ test("non-visual control groups and resize handles stay screen-reader coherent",
   assert.deepEqual(namedGroup(".caption-controls"), { role: "group", "aria-label": "Session controls" });
   assert.deepEqual(namedGroup(".language-settings"), { role: "group", "aria-label": "Language settings" });
   assert.equal(htmlElementById(APP_HTML, "session-status").id, "session-status");
+  assert.equal(htmlElementById(APP_HTML, "volume-indicator")["aria-hidden"], "true");
 
   const resizeHandles = htmlElements(APP_HTML, "div").filter((element) => RESIZE_DIRECTION_ATTRIBUTE in element);
   assert.ok(resizeHandles.length > 0, "expected resize handles");

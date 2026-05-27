@@ -2,7 +2,7 @@ use serde::Deserialize;
 
 const COLLAPSED_WINDOW_WIDTH: f64 = 960.0;
 const COLLAPSED_WINDOW_HEIGHT: f64 = 180.0;
-const MIN_OVERLAY_WIDTH: f64 = 520.0;
+const MIN_OVERLAY_WIDTH: f64 = 280.0;
 const MIN_OVERLAY_HEIGHT: f64 = 128.0;
 #[cfg(any(target_os = "windows", test))]
 const SNAP_EDGE_MARGIN_PX: i32 = 42;

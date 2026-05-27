@@ -21,6 +21,7 @@ export const APP_ELEMENT_SELECTORS = {
   sessionButton: "#session-button",
   sessionStatus: "#session-status",
   translationTargetLanguage: "#translation-target-language",
+  volumeIndicator: "#volume-indicator",
 } as const;
 
 export interface AppElements {
@@ -34,6 +35,7 @@ export interface AppElements {
   minimizeButton: HTMLButtonElement;
   closeButton: HTMLButtonElement;
   sessionStatus: HTMLSpanElement;
+  volumeIndicator: HTMLElement;
   previousSource: HTMLDivElement;
   previousTranslation: HTMLDivElement;
   currentSource: HTMLDivElement;
@@ -54,6 +56,7 @@ export function getAppElements(): AppElements {
     minimizeButton: requireElement<HTMLButtonElement>(APP_ELEMENT_SELECTORS.minimizeButton),
     closeButton: requireElement<HTMLButtonElement>(APP_ELEMENT_SELECTORS.closeButton),
     sessionStatus: requireElement<HTMLSpanElement>(APP_ELEMENT_SELECTORS.sessionStatus),
+    volumeIndicator: requireElement<HTMLElement>(APP_ELEMENT_SELECTORS.volumeIndicator),
     previousSource: requireElement<HTMLDivElement>(APP_ELEMENT_SELECTORS.previousSource),
     previousTranslation: requireElement<HTMLDivElement>(APP_ELEMENT_SELECTORS.previousTranslation),
     currentSource: requireElement<HTMLDivElement>(APP_ELEMENT_SELECTORS.currentSource),

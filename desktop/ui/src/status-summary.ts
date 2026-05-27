@@ -1,4 +1,4 @@
-import { parseAudioStatsState, type AudioLevelState } from "./audio-level.js";
+import { parseAudioStatsState, type AudioLevelState, type AudioStatsState } from "./audio-level.js";
 import { audioSourceKindFromAudioHealthStatus, type AudioSourceKind } from "./audio-source-kind.js";
 import type { SessionState } from "./session-state.js";
 import { FINAL_TRANSCRIPT_CANCELLED_MESSAGE, NO_AUDIO_SOURCE_MESSAGE, type StatusValues } from "./session-status.js";
@@ -9,6 +9,7 @@ export interface StatusSummary {
   text: string;
   tone: StatusTone;
   level?: AudioLevelState;
+  volume?: number;
 }
 
 interface UserFacingErrorRule {
@@ -49,29 +50,41 @@ const USER_FACING_ERROR_RULES: UserFacingErrorRule[] = [
 
 export function summarizeStatus(statusValues: StatusValues, sessionState: SessionState): StatusSummary {
   const error = currentUserVisibleError(statusValues, sessionState);
-  if (error) {
-    return { text: userFacingError(error), tone: "error" };
-  }
-  if (sessionState === "connecting") {
-    return { text: "Connecting...", tone: "active" };
-  }
-  if (sessionState === "finishing") {
-    return { text: "Finishing...", tone: "active" };
-  }
   if (sessionState !== "running") {
+    if (error) {
+      return { text: userFacingError(error), tone: "error" };
+    }
+    if (sessionState === "connecting") {
+      return { text: "Connecting...", tone: "active" };
+    }
+    if (sessionState === "finishing") {
+      return { text: "Finishing...", tone: "active" };
+    }
     return { text: "", tone: "idle" };
   }
 
   const audioStats = parseAudioStatsState(statusValues.audioStats);
+  if (error) {
+    return withAudioStats({ text: userFacingError(error), tone: "error" }, audioStats);
+  }
   if (audioStats.hasDroppedFrames) {
-    return { text: "Audio lagging", tone: "warn", level: audioStats.level };
+    return { text: "Audio lagging", tone: "warn", level: audioStats.level, volume: audioStats.volume };
   }
   const silentSourceKind = audioSourceKindFromAudioHealthStatus(statusValues.audioHealth);
   if (silentSourceKind) {
-    return { text: silentCaptureSummary(silentSourceKind), tone: "warn", level: audioStats.level };
+    return {
+      text: silentCaptureSummary(silentSourceKind),
+      tone: "warn",
+      level: audioStats.level,
+      volume: audioStats.volume,
+    };
   }
 
-  return { text: "", tone: "idle", level: audioStats.level };
+  return withAudioStats({ text: "", tone: "idle" }, audioStats);
+}
+
+function withAudioStats(summary: StatusSummary, audioStats: AudioStatsState): StatusSummary {
+  return { ...summary, level: audioStats.level, volume: audioStats.volume };
 }
 
 function currentUserVisibleError(statusValues: StatusValues, sessionState: SessionState): string {

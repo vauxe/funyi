@@ -59,7 +59,7 @@ function elementTag(id: string): string {
   if (id.startsWith("resize-")) {
     return "div";
   }
-  if (id === "session-status") {
+  if (id === "session-status" || id === "volume-indicator") {
     return "span";
   }
   if (id.includes("source") || id.includes("translation")) {

@@ -24,6 +24,7 @@ test("summarizes connection lifecycle without redundant running text", () => {
     text: "",
     tone: "idle",
     level: "silent",
+    volume: 0,
   });
 });
 
@@ -83,7 +84,7 @@ test("reports audio health warnings while preserving level state", () => {
       },
       "running",
     ),
-    { text: "No mic audio", tone: "warn", level: "low" },
+    { text: "No mic audio", tone: "warn", level: "low", volume: 0.53 },
   );
 
   assert.deepEqual(
@@ -94,7 +95,7 @@ test("reports audio health warnings while preserving level state", () => {
       },
       "running",
     ),
-    { text: "No system audio", tone: "warn", level: "silent" },
+    { text: "No system audio", tone: "warn", level: "silent", volume: 0 },
   );
 
   assert.deepEqual(
@@ -105,7 +106,7 @@ test("reports audio health warnings while preserving level state", () => {
       },
       "running",
     ),
-    { text: "Audio lagging", tone: "warn", level: "live" },
+    { text: "Audio lagging", tone: "warn", level: "live", volume: 1 },
   );
 
   assert.deepEqual(
@@ -117,6 +118,6 @@ test("reports audio health warnings while preserving level state", () => {
       },
       "running",
     ),
-    { text: "", tone: "idle", level: "silent" },
+    { text: "", tone: "idle", level: "silent", volume: 0 },
   );
 });

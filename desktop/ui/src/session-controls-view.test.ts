@@ -30,7 +30,7 @@ test("renders status summary datasets and clears stale level", () => {
   const elements = createElements();
   const view = new SessionControlsView(sessionControlsElements(elements));
 
-  view.renderStatus({ text: "Audio lagging", tone: "warn", level: "low" });
+  view.renderStatus({ text: "Audio lagging", tone: "warn", level: "low", volume: 0.53 });
   view.renderStatus({ text: "", tone: "idle" });
 
   assert.equal(elements.appShell.dataset.statusActive, "false");
@@ -39,6 +39,22 @@ test("renders status summary datasets and clears stale level", () => {
   assert.equal(elements.sessionStatus.dataset.tone, "idle");
   assert.equal("level" in elements.sessionStatus.dataset, false);
   assert.equal(elements.sessionStatus.attributes.get("aria-label"), "");
+  assert.equal(elements.volumeIndicator.dataset.level, "silent");
+  assert.equal(elements.volumeIndicator.styleValues.get("--volume-bar-low"), "0.18");
+  assert.equal(elements.volumeIndicator.styleValues.get("--volume-bar-mid"), "0.12");
+  assert.equal(elements.volumeIndicator.styleValues.get("--volume-bar-high"), "0.08");
+});
+
+test("renders volume indicator from audio level summaries", () => {
+  const elements = createElements();
+  const view = new SessionControlsView(sessionControlsElements(elements));
+
+  view.renderStatus({ text: "", tone: "idle", level: "live", volume: 0.75 });
+
+  assert.equal(elements.volumeIndicator.dataset.level, "live");
+  assert.equal(elements.volumeIndicator.styleValues.get("--volume-bar-low"), "0.49");
+  assert.equal(elements.volumeIndicator.styleValues.get("--volume-bar-mid"), "0.66");
+  assert.equal(elements.volumeIndicator.styleValues.get("--volume-bar-high"), "0.77");
 });
 
 function createElements(): Record<
@@ -48,7 +64,8 @@ function createElements(): Record<
   | "serverUrl"
   | "sessionButton"
   | "sessionStatus"
-  | "translationTargetLanguage",
+  | "translationTargetLanguage"
+  | "volumeIndicator",
   FakeElement
 > {
   return {
@@ -59,6 +76,7 @@ function createElements(): Record<
     sessionButton: new FakeElement(),
     sessionStatus: new FakeElement(),
     translationTargetLanguage: new FakeElement(),
+    volumeIndicator: new FakeElement(),
   };
 }
 
@@ -73,5 +91,6 @@ function sessionControlsElements(
     sessionButton: asDomElement<HTMLButtonElement>(elements.sessionButton),
     sessionStatus: asDomElement(elements.sessionStatus),
     translationTargetLanguage: asDomElement<HTMLSelectElement>(elements.translationTargetLanguage),
+    volumeIndicator: asDomElement(elements.volumeIndicator),
   };
 }

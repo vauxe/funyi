@@ -9,6 +9,7 @@ interface SessionControlsElements {
   sessionButton: HTMLButtonElement;
   sessionStatus: HTMLElement;
   translationTargetLanguage: HTMLSelectElement;
+  volumeIndicator: HTMLElement;
 }
 
 export class SessionControlsView {
@@ -30,8 +31,9 @@ export class SessionControlsView {
     this.elements.audioSource.disabled = active;
   }
 
-  renderStatus({ text, tone, level }: StatusSummary): void {
+  renderStatus({ text, tone, level, volume = 0 }: StatusSummary): void {
     const active = text !== "";
+    const audioLevel = level ?? "silent";
     this.elements.appShell.dataset.statusActive = String(active);
     this.elements.sessionStatus.textContent = text;
     this.elements.sessionStatus.dataset.active = String(active);
@@ -43,7 +45,20 @@ export class SessionControlsView {
     }
     this.elements.sessionStatus.title = text;
     this.elements.sessionStatus.setAttribute("aria-label", text);
+    this.renderVolumeIndicator(audioLevel, volume);
   }
+
+  private renderVolumeIndicator(level: NonNullable<StatusSummary["level"]>, volume: number): void {
+    const normalizedVolume = Math.min(1, Math.max(0, volume));
+    this.elements.volumeIndicator.dataset.level = level;
+    this.elements.volumeIndicator.style.setProperty("--volume-bar-low", volumeBarScale(normalizedVolume, 0.18, 0.42));
+    this.elements.volumeIndicator.style.setProperty("--volume-bar-mid", volumeBarScale(normalizedVolume, 0.12, 0.72));
+    this.elements.volumeIndicator.style.setProperty("--volume-bar-high", volumeBarScale(normalizedVolume, 0.08, 0.92));
+  }
+}
+
+function volumeBarScale(volume: number, base: number, range: number): string {
+  return (base + volume * range).toFixed(2);
 }
 
 function buttonLabelForState(state: SessionState): string {

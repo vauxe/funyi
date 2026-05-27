@@ -19,8 +19,8 @@ test("renders summaries from session state and status values", () => {
 
   assert.deepEqual(summaries, [
     { text: "Connecting...", tone: "active" },
-    { text: "", tone: "idle", level: "silent" },
-    { text: "Audio lagging", tone: "warn", level: "live" },
+    { text: "", tone: "idle", level: "silent", volume: 0 },
+    { text: "Audio lagging", tone: "warn", level: "live", volume: 1 },
   ]);
 });
 

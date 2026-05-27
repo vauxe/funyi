@@ -46,6 +46,7 @@ export class FunyiApp {
       sessionButton: dom.sessionButton,
       sessionStatus: dom.sessionStatus,
       translationTargetLanguage: dom.translationTargetLanguage,
+      volumeIndicator: dom.volumeIndicator,
     });
     this.statusController = new StatusController({
       render: (summary) => this.sessionControlsView.renderStatus(summary),

@@ -3,6 +3,7 @@ export type AudioLevelState = "silent" | "low" | "live";
 export interface AudioStatsState {
   hasDroppedFrames: boolean;
   level: AudioLevelState;
+  volume: number;
 }
 
 export function pcmLevelDb(bytes: Uint8Array): number | null {
@@ -38,10 +39,12 @@ export function formatAudioStats(levelDb: number | null, droppedAudioFrames: num
 }
 
 export function parseAudioStatsState(value: string): AudioStatsState {
+  const levelDb = audioLevelDb(value);
   const droppedFrames = droppedFrameCount(value);
   return {
     hasDroppedFrames: droppedFrames > 0,
-    level: audioLevelState(value),
+    level: audioLevelState(value, levelDb),
+    volume: audioVolume(levelDb),
   };
 }
 
@@ -56,16 +59,28 @@ function formatAudioLevel(levelDb: number | null): string {
   return `${Math.round(levelDb)}dB`;
 }
 
-function audioLevelState(value: string): AudioLevelState {
+function audioLevelState(value: string, levelDb: number | null): AudioLevelState {
   if (/^silent$/i.test(value)) {
     return "silent";
   }
-  const match = value.match(/(-?\d+)dB/i);
-  const level = match ? Number.parseInt(match[1] || "", 10) : Number.NaN;
-  if (!Number.isFinite(level) || level < -60) {
+  if (levelDb === null || levelDb < -60) {
     return "silent";
   }
-  return level < -42 ? "low" : "live";
+  return levelDb < -42 ? "low" : "live";
+}
+
+function audioLevelDb(value: string): number | null {
+  const match = value.match(/(-?\d+)dB/i);
+  const level = match ? Number.parseInt(match[1] || "", 10) : Number.NaN;
+  return Number.isFinite(level) ? level : null;
+}
+
+function audioVolume(levelDb: number | null): number {
+  if (levelDb === null || levelDb < -80) {
+    return 0;
+  }
+  const normalized = Math.min(1, Math.max(0, (levelDb + 80) / 60));
+  return Math.round(normalized * 100) / 100;
 }
 
 function droppedFrameCount(value: string): number {

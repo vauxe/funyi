@@ -17,7 +17,7 @@
         "title": "Funyi Live Captions",
         "width": 960,
         "height": 180,
-        "minWidth": 520,
+        "minWidth": 280,
         "minHeight": 128,
         "resizable": true,
         "decorations": false,

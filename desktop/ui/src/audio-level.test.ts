@@ -25,9 +25,9 @@ test("formats audio stats with dropped frame count", () => {
 });
 
 test("reads formatted audio stats into display state", () => {
-  assert.deepEqual(parseAudioStatsState(""), { level: "silent", hasDroppedFrames: false });
-  assert.deepEqual(parseAudioStatsState("Silent"), { level: "silent", hasDroppedFrames: false });
-  assert.deepEqual(parseAudioStatsState("-48dB"), { level: "low", hasDroppedFrames: false });
-  assert.deepEqual(parseAudioStatsState("-20dB, dropped 3"), { level: "live", hasDroppedFrames: true });
-  assert.deepEqual(parseAudioStatsState("-20dB, dropped 0"), { level: "live", hasDroppedFrames: false });
+  assert.deepEqual(parseAudioStatsState(""), { level: "silent", volume: 0, hasDroppedFrames: false });
+  assert.deepEqual(parseAudioStatsState("Silent"), { level: "silent", volume: 0, hasDroppedFrames: false });
+  assert.deepEqual(parseAudioStatsState("-48dB"), { level: "low", volume: 0.53, hasDroppedFrames: false });
+  assert.deepEqual(parseAudioStatsState("-20dB, dropped 3"), { level: "live", volume: 1, hasDroppedFrames: true });
+  assert.deepEqual(parseAudioStatsState("-20dB, dropped 0"), { level: "live", volume: 1, hasDroppedFrames: false });
 });
