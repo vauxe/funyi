@@ -2,52 +2,22 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { AsrClient } from "./asr-client.js";
-
-class FakeWebSocket {
-  static CONNECTING = 0;
-  static CLOSING = 2;
-  static OPEN = 1;
-  static CLOSED = 3;
-  static instances: FakeWebSocket[] = [];
-
-  binaryType = "";
-  bufferedAmount = 0;
-  closeCalls = 0;
-  onclose?: (event: CloseEvent) => void;
-  onerror?: (event: Event) => void;
-  onmessage?: (event: MessageEvent) => void;
-  onopen?: () => void;
-  readyState = FakeWebSocket.CONNECTING;
-  sent: Array<string | Uint8Array> = [];
-  url: string;
-
-  constructor(url: string) {
-    this.url = url;
-    FakeWebSocket.instances.push(this);
-  }
-
-  send(payload: string | Uint8Array): void {
-    this.sent.push(payload);
-  }
-
-  close(): void {
-    this.closeCalls += 1;
-    this.readyState = FakeWebSocket.CLOSING;
-  }
-
-  emitClose(code = 1000): void {
-    this.readyState = FakeWebSocket.CLOSED;
-    this.onclose?.({ code } as CloseEvent);
-  }
-}
+import type { RealtimeStartPayload } from "./realtime-events.js";
+import type { LiveSessionClient } from "./session-client.js";
+import { nextTick } from "./test-async.fixture.js";
+import { clearBrowserGlobals } from "./test-browser-globals.fixture.js";
+import { FakeWebSocket } from "./test-websocket.fixture.js";
 
 test.beforeEach(() => {
-  FakeWebSocket.instances = [];
-  globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+  FakeWebSocket.install();
+});
+
+test.afterEach(() => {
+  clearBrowserGlobals("WebSocket");
 });
 
 test("connect sends start payload after socket opens", async () => {
-  const statuses: Array<[string, AsrClient]> = [];
+  const statuses: Array<[string, LiveSessionClient]> = [];
   const client = new AsrClient({
     url: "ws://127.0.0.1:8000/ws/asr",
     onStatus: (status, source) => statuses.push([status, source]),
@@ -61,7 +31,7 @@ test("connect sends start payload after socket opens", async () => {
 });
 
 test("connect rejects if socket closes before open", async () => {
-  let closedBy: AsrClient | null = null;
+  let closedBy: LiveSessionClient | null = null;
   const client = new AsrClient({
     url: "ws://127.0.0.1:8000/ws/asr",
     onClose: (_event, source) => {
@@ -69,7 +39,7 @@ test("connect rejects if socket closes before open", async () => {
     },
   });
 
-  const pending = client.connect({ type: "start" });
+  const pending = client.connect({ type: "start", sample_rate: 16000 });
   const socket = FakeWebSocket.instances[0];
   assert.ok(socket);
   socket.emitClose(1006);
@@ -106,10 +76,28 @@ test("reports async message handler failures", async () => {
   });
   const socket = await connectOpened(client);
 
-  socket.onmessage?.({ data: JSON.stringify({ type: "ready" }) } as MessageEvent);
+  socket.message({ type: "ready" });
   await nextTick();
 
   assert.equal(statuses.at(-1), "event handler failed: handler boom");
+});
+
+test("rejects non-object websocket messages before event handlers", async () => {
+  const statuses: string[] = [];
+  const events: unknown[] = [];
+  const client = new AsrClient({
+    url: "ws://127.0.0.1:8000/ws/asr",
+    onEvent: (event) => {
+      events.push(event);
+    },
+    onStatus: (status) => statuses.push(status),
+  });
+  const socket = await connectOpened(client);
+
+  socket.message("[]");
+
+  assert.equal(events.length, 0);
+  assert.equal(statuses.at(-1), "invalid event: event payload must be an object");
 });
 
 test("reports async close handler failures", async () => {
@@ -165,21 +153,15 @@ test("setLanguageConfig sends runtime language command", async () => {
   });
 });
 
-function nextTick(): Promise<void> {
-  return new Promise((resolve) => {
-    setImmediate(resolve);
-  });
-}
-
 async function connectOpened(
   client: AsrClient,
-  payload: Record<string, unknown> = { type: "start" },
+  payload: RealtimeStartPayload = { type: "start", sample_rate: 16000 },
 ): Promise<FakeWebSocket> {
   const pending = client.connect(payload);
   const socket = FakeWebSocket.instances[0];
   assert.ok(socket);
   socket.readyState = FakeWebSocket.OPEN;
-  socket.onopen?.();
+  socket.open();
   await pending;
   return socket;
 }

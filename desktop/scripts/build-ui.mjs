@@ -14,8 +14,19 @@ execFileSync(process.execPath, [join(root, "node_modules", "typescript", "bin", 
   stdio: "inherit",
 });
 
-const html = readFileSync(join(root, "ui", "index.html"), "utf8")
-  .replace("./src/styles.css", "./styles.css")
-  .replace("./dist/app.js", "./app.js");
+const html = [
+  ["./src/styles.css", "./styles.css"],
+  ["./dist/app.js", "./app.js"],
+].reduce(
+  (content, [from, to]) => replaceRequired(content, from, to),
+  readFileSync(join(root, "ui", "index.html"), "utf8"),
+);
 writeFileSync(join(distDir, "index.html"), html);
 copyFileSync(join(root, "ui", "src", "styles.css"), join(distDir, "styles.css"));
+
+function replaceRequired(content, from, to) {
+  if (!content.includes(from)) {
+    throw new Error(`ui/index.html is missing required build placeholder: ${from}`);
+  }
+  return content.replace(from, to);
+}

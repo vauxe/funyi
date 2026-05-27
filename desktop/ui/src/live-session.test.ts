@@ -1,16 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import {
-  LiveSession,
-  type LiveSessionClient,
-  type LiveSessionClientCallbacks,
-  type LanguageConfigUpdate,
-  type RealtimeEvent,
-  type AudioAdapter,
-  type AudioFrame,
-  type Unlisten,
-} from "./live-session.js";
+import type { AudioSourceKind } from "./audio-source-kind.js";
+import { LiveSession } from "./live-session.js";
+import type { LanguageConfigUpdate, RealtimeEvent, RealtimeStartPayload } from "./realtime-events.js";
+import type { LiveSessionClient, LiveSessionClientCallbacks } from "./session-client.js";
+import { createFakeAudioAdapter } from "./test-audio-adapter.fixture.js";
+import { nextTick } from "./test-async.fixture.js";
 
 class FakeAsrClient implements LiveSessionClient {
   closed = false;
@@ -23,7 +19,7 @@ class FakeAsrClient implements LiveSessionClient {
   onStatus: LiveSessionClientCallbacks["onStatus"];
   sendPcmResult = true;
   sentPcm: Uint8Array[] = [];
-  startPayload: Record<string, unknown> | null = null;
+  startPayload: RealtimeStartPayload | null = null;
   url: string;
 
   constructor({ url, onClose, onError, onEvent, onStatus }: LiveSessionClientCallbacks) {
@@ -34,7 +30,7 @@ class FakeAsrClient implements LiveSessionClient {
     this.url = url;
   }
 
-  async connect(startPayload: Record<string, unknown>): Promise<void> {
+  async connect(startPayload: RealtimeStartPayload): Promise<void> {
     this.startPayload = startPayload;
     this.onStatus?.("WS OK", this);
   }
@@ -72,42 +68,7 @@ interface HarnessOptions {
 function createHarness({ onReady, onTranscriptEvent }: HarnessOptions = {}) {
   const clients: FakeAsrClient[] = [];
   const statuses = new Map<string, string>();
-  const audio = {
-    captureErrorHandler: null as ((payload: { message?: string } | null | undefined) => void) | null,
-    frameHandler: null as ((frame: AudioFrame) => void) | null,
-    startCalls: [] as string[],
-    stopCalls: 0,
-    unlistenCaptureErrors: 0,
-    unlistenFrames: 0,
-    decodePcm: (base64: string) => new Uint8Array([base64.length]),
-    listenCaptureErrors: async (handler: (payload: { message?: string } | null | undefined) => void): Promise<Unlisten> => {
-      audio.captureErrorHandler = handler;
-      return () => {
-        audio.captureErrorHandler = null;
-        audio.unlistenCaptureErrors += 1;
-      };
-    },
-    listenFrames: async (handler: (frame: AudioFrame) => void): Promise<Unlisten> => {
-      audio.frameHandler = handler;
-      return () => {
-        audio.frameHandler = null;
-        audio.unlistenFrames += 1;
-      };
-    },
-    startCapture: async (sourceId: string) => {
-      audio.startCalls.push(sourceId);
-    },
-    stopCapture: async () => {
-      audio.stopCalls += 1;
-    },
-  } satisfies AudioAdapter & {
-    captureErrorHandler: ((payload: { message?: string } | null | undefined) => void) | null;
-    frameHandler: ((frame: AudioFrame) => void) | null;
-    startCalls: string[];
-    stopCalls: number;
-    unlistenCaptureErrors: number;
-    unlistenFrames: number;
-  };
+  const audio = createFakeAudioAdapter();
   const clock = {
     scheduled: null as { callback: () => void | Promise<void>; delay: number; id: symbol } | null,
     clearTimeout(id: unknown): void {
@@ -140,20 +101,16 @@ function createHarness({ onReady, onTranscriptEvent }: HarnessOptions = {}) {
 async function startRunningSession(
   harness: ReturnType<typeof createHarness>,
   audioSourceId = "system_default",
+  audioSourceKind: AudioSourceKind = "system",
 ): Promise<void> {
   harness.session.setAudioAvailable(true);
   await harness.session.start({
     audioSourceId,
+    audioSourceKind,
     startPayload: { type: "start", sample_rate: 16000 },
     url: "ws://127.0.0.1:8000/ws/asr",
   });
   await harness.clients[0]!.emit({ type: "ready", sample_rate: 16000 });
-}
-
-function nextTick(): Promise<void> {
-  return new Promise((resolve) => {
-    setImmediate(resolve);
-  });
 }
 
 test("starts capture after ready and forwards only valid pcm frames", async () => {
@@ -208,7 +165,7 @@ test("fatal service errors abort the active session", async () => {
   assert.equal(harness.statuses.get("connectionStatus"), "Realtime ASR session failed.");
 });
 
-test("warns when macOS capture keeps delivering silent pcm", async () => {
+test("warns when system capture keeps delivering silent pcm", async () => {
   const harness = createHarness();
   await startRunningSession(harness);
 
@@ -220,6 +177,7 @@ test("warns when macOS capture keeps delivering silent pcm", async () => {
     harness.statuses.get("captureStatus") || "",
     /Sys silent/,
   );
+  assert.equal(harness.statuses.get("audioHealth"), "systemSilent");
 });
 
 test("reports dropped frames when websocket backpressure refuses pcm", async () => {
@@ -243,6 +201,7 @@ test("ready callback errors abort before capture starts", async () => {
   harness.session.setAudioAvailable(true);
   await harness.session.start({
     audioSourceId: "system_default",
+    audioSourceKind: "system",
     startPayload: { type: "start", sample_rate: 16000 },
     url: "ws://127.0.0.1:8000/ws/asr",
   });
@@ -257,7 +216,7 @@ test("ready callback errors abort before capture starts", async () => {
 
 test("uses microphone-specific capture status and silent warning", async () => {
   const harness = createHarness();
-  await startRunningSession(harness, "macos_microphone:built-in");
+  await startRunningSession(harness, "opaque-mic-device", "microphone");
 
   assert.equal(harness.statuses.get("captureStatus"), "Mic");
   for (let index = 0; index < 30; index += 1) {
@@ -268,6 +227,13 @@ test("uses microphone-specific capture status and silent warning", async () => {
     harness.statuses.get("captureStatus") || "",
     /Mic silent/,
   );
+});
+
+test("uses audio source kind without parsing platform-specific ids", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness, "opaque-device-id", "microphone");
+
+  assert.equal(harness.statuses.get("captureStatus"), "Mic");
 });
 
 test("finish sends final command, times out cleanly, and restores idle state", async () => {
@@ -299,6 +265,19 @@ test("stop while finishing cancels the final wait", async () => {
   assert.equal(harness.clients[0]!.closed, true);
   assert.equal(harness.clock.scheduled, null);
   assert.equal(harness.statuses.get("connectionStatus"), "Final transcript cancelled.");
+});
+
+test("transcript final completes the active session through the event path", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness);
+
+  await harness.clients[0]!.emit({ type: "transcript_final", segments: [] });
+
+  assert.equal(harness.session.getState(), "idle");
+  assert.equal(harness.clients[0]!.closed, true);
+  assert.equal(harness.audio.frameHandler, null);
+  assert.equal(harness.audio.captureErrorHandler, null);
+  assert.equal(harness.statuses.get("captureStatus"), "Done");
 });
 
 test("immediate stop waits for socket close before returning to idle", async () => {

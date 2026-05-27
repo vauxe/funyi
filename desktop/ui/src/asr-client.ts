@@ -1,30 +1,30 @@
-export type AsrEvent = Record<string, unknown> & {
-  type?: string;
-};
+import { errorMessage } from "./error-message.js";
+import {
+  parseRealtimeEventMessage,
+  type LanguageConfigUpdate,
+  type RealtimeStartPayload,
+} from "./realtime-events.js";
+import type { LiveSessionClient, LiveSessionClientCallbacks } from "./session-client.js";
 
-export type AsrStartPayload = Record<string, unknown>;
-
-type AsrEventCallback = (event: AsrEvent, source: AsrClient) => void | Promise<void>;
-type AsrSocketCallback<TEvent> = (event: TEvent, source: AsrClient) => void | Promise<void>;
-type StatusCallback = (status: string, source: AsrClient) => void;
+type ClientCallback<K extends keyof LiveSessionClientCallbacks> = LiveSessionClientCallbacks[K];
 
 export interface AsrClientOptions {
   url: string;
-  onEvent?: AsrEventCallback;
-  onStatus?: StatusCallback;
-  onError?: AsrSocketCallback<Event>;
-  onClose?: AsrSocketCallback<CloseEvent>;
+  onEvent?: ClientCallback<"onEvent">;
+  onStatus?: ClientCallback<"onStatus">;
+  onError?: ClientCallback<"onError">;
+  onClose?: ClientCallback<"onClose">;
   maxBufferedBytes?: number;
   closeTimeoutMs?: number;
 }
 
-export class AsrClient {
+export class AsrClient implements LiveSessionClient {
   private readonly closeTimeoutMs: number;
   private readonly maxBufferedBytes: number;
-  private readonly onClose?: AsrSocketCallback<CloseEvent>;
-  private readonly onError?: AsrSocketCallback<Event>;
-  private readonly onEvent?: AsrEventCallback;
-  private readonly onStatus?: StatusCallback;
+  private readonly onClose?: ClientCallback<"onClose">;
+  private readonly onError?: ClientCallback<"onError">;
+  private readonly onEvent?: ClientCallback<"onEvent">;
+  private readonly onStatus?: ClientCallback<"onStatus">;
   private readonly url: string;
   private closeWait: Promise<void> | null = null;
   private finishCloseWait: (() => void) | null = null;
@@ -48,7 +48,7 @@ export class AsrClient {
     this.closeTimeoutMs = closeTimeoutMs;
   }
 
-  connect(startPayload: AsrStartPayload): Promise<void> {
+  connect(startPayload: RealtimeStartPayload): Promise<void> {
     return new Promise((resolve, reject) => {
       let settled = false;
       const ws = new WebSocket(this.url);
@@ -86,7 +86,7 @@ export class AsrClient {
           return;
         }
         try {
-          const event = JSON.parse(message.data);
+          const event = parseRealtimeEventMessage(message.data);
           this.runCallback("event handler", () => this.onEvent?.(event, this));
         } catch (error) {
           this.emitStatus(`invalid event: ${errorMessage(error)}`);
@@ -110,7 +110,7 @@ export class AsrClient {
     this.sendPayload({ type: "finish" });
   }
 
-  setLanguageConfig(config: { language?: string | null; target_language?: string | null }): void {
+  setLanguageConfig(config: LanguageConfigUpdate): void {
     this.sendPayload({ type: "set_language", ...config });
   }
 
@@ -175,8 +175,4 @@ export class AsrClient {
       this.emitStatus(`${label} failed: ${errorMessage(error)}`);
     }
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

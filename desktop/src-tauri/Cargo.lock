@@ -878,7 +878,6 @@ dependencies = [
  "tauri",
  "tauri-build",
  "wasapi",
- "windows 0.61.3",
 ]
 
 [[package]]

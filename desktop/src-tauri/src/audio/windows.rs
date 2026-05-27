@@ -3,14 +3,13 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use std::thread;
 
 use tauri::AppHandle;
 use wasapi::{initialize_mta, DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat};
 
 use super::{
-    emit_audio_capture_error, emit_audio_frame, make_handle, AudioSource, CaptureHandle,
-    FRAME_BYTES, OUTPUT_BITS, OUTPUT_CHANNELS, OUTPUT_SAMPLE_RATE,
+    emit_pending_audio_frames, spawn_capture_thread, AudioSource, AudioSourceKind, CaptureHandle,
+    OUTPUT_BITS, OUTPUT_CHANNELS, OUTPUT_SAMPLE_RATE,
 };
 
 const SOURCE_ID: &str = "system_default";
@@ -18,10 +17,10 @@ const SOURCE_ID: &str = "system_default";
 pub fn list_audio_sources() -> Vec<AudioSource> {
     vec![AudioSource {
         id: SOURCE_ID.to_string(),
-        name: "Default system output (WASAPI loopback)".to_string(),
-        kind: "system".to_string(),
+        name: "Audio".to_string(),
+        kind: AudioSourceKind::System,
         is_available: true,
-        detail: "Captures audio currently playing on the default Windows playback device."
+        detail: "Captures audio currently playing on the default Windows playback device with WASAPI loopback."
             .to_string(),
     }]
 }
@@ -31,17 +30,9 @@ pub fn start_audio_capture(app: AppHandle, source_id: &str) -> Result<CaptureHan
         return Err(format!("unsupported audio source: {source_id}"));
     }
 
-    let stop = Arc::new(AtomicBool::new(false));
-    let thread_stop = Arc::clone(&stop);
-    let join = thread::Builder::new()
-        .name("funyi-wasapi-loopback".to_string())
-        .spawn(move || {
-            if let Err(error) = capture_loop(app.clone(), thread_stop) {
-                emit_audio_capture_error(&app, error.to_string());
-            }
-        })
-        .map_err(|error| error.to_string())?;
-    Ok(make_handle(stop, join))
+    spawn_capture_thread("funyi-wasapi-loopback", app, |app, stop| {
+        capture_loop(app, stop).map_err(|error| error.to_string())
+    })
 }
 
 fn capture_loop(app: AppHandle, stop: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
@@ -76,14 +67,7 @@ fn capture_loop(app: AppHandle, stop: Arc<AtomicBool>) -> Result<(), Box<dyn std
     audio_client.start_stream()?;
     while !stop.load(Ordering::SeqCst) {
         capture_client.read_from_device_to_deque(&mut sample_queue)?;
-        while sample_queue.len() >= FRAME_BYTES {
-            let mut chunk = vec![0_u8; FRAME_BYTES];
-            for byte in chunk.iter_mut() {
-                *byte = sample_queue.pop_front().unwrap_or(0);
-            }
-            emit_audio_frame(&app, seq, &chunk)?;
-            seq = seq.saturating_add(1);
-        }
+        emit_pending_audio_frames(&app, &mut sample_queue, &mut seq)?;
         let _ = event.wait_for_event(100);
     }
     audio_client.stop_stream()?;

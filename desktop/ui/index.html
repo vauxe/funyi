@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="./src/styles.css" />
   </head>
   <body>
-    <main id="app-shell" class="app-shell" data-overlay-mode="compact" data-window-model="direct">
+    <main id="app-shell" class="app-shell" data-overlay-mode="compact">
       <section id="caption-strip" class="caption-strip drag-surface" aria-label="Live caption window">
         <section class="history-panel" aria-label="Subtitle history">
           <section id="history-list" class="history-list" aria-label="Stable subtitle history"></section>
@@ -24,7 +24,7 @@
           </div>
         </section>
 
-        <div class="caption-controls" aria-label="Session controls">
+        <div class="caption-controls" role="group" aria-label="Session controls">
           <button
             id="session-button"
             class="icon-button session-control"

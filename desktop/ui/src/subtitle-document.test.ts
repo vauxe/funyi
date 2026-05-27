@@ -198,6 +198,52 @@ test("stale stable base is rejected", () => {
   }, /stable cursor mismatch/);
 });
 
+test("invalid transcript segment shapes are rejected", () => {
+  const document = new SubtitleDocument();
+
+  assert.throws(() => {
+    document.applyEvent({
+      type: "transcript_update",
+      revision: 1,
+      stable_base: 0,
+      stable_count: 1,
+      stable_appends: {},
+      partial: null,
+    });
+  }, /stable_appends must be an array/);
+
+  assert.throws(() => {
+    document.applyEvent({
+      type: "transcript_update",
+      revision: 1,
+      stable_base: 0,
+      stable_count: 1,
+      stable_appends: [[]],
+      partial: null,
+    });
+  }, /stable_appends item must be an object/);
+
+  assert.throws(() => {
+    document.applyEvent({
+      type: "transcript_update",
+      revision: 1,
+      stable_base: 0,
+      stable_count: 0,
+      stable_appends: [],
+      partial: [],
+    });
+  }, /partial must be an object/);
+
+  assert.throws(() => {
+    document.applyEvent({
+      type: "transcript_final",
+      revision: 1,
+      stable_count: 1,
+      segments: [[]],
+    });
+  }, /segments item must be an object/);
+});
+
 test("final snapshot clears current and preserves stable translation", () => {
   const document = new SubtitleDocument();
   document.applyEvent({

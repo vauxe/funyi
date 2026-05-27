@@ -1,33 +1,22 @@
+use serde::Deserialize;
+
 const COLLAPSED_WINDOW_WIDTH: f64 = 960.0;
 const COLLAPSED_WINDOW_HEIGHT: f64 = 180.0;
 const HISTORY_WINDOW_WIDTH: f64 = 960.0;
 const HISTORY_WINDOW_HEIGHT: f64 = 430.0;
 const MIN_OVERLAY_WIDTH: f64 = 520.0;
 const MIN_OVERLAY_HEIGHT: f64 = 128.0;
-#[cfg(any(windows, test))]
 const SNAP_EDGE_MARGIN_PX: i32 = 42;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum OverlayMode {
+    #[default]
     Compact,
     History,
 }
 
-impl Default for OverlayMode {
-    fn default() -> Self {
-        Self::Compact
-    }
-}
-
 impl OverlayMode {
-    pub fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "compact" => Ok(Self::Compact),
-            "history" => Ok(Self::History),
-            _ => Err(format!("unknown overlay mode: {value}")),
-        }
-    }
-
     pub fn logical_size(self) -> (f64, f64) {
         match self {
             Self::Compact => (COLLAPSED_WINDOW_WIDTH, COLLAPSED_WINDOW_HEIGHT),
@@ -72,7 +61,8 @@ impl OverlayLayout {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "PascalCase")]
 pub enum ResizeDirection {
     East,
     North,
@@ -85,20 +75,6 @@ pub enum ResizeDirection {
 }
 
 impl ResizeDirection {
-    pub fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "East" => Ok(Self::East),
-            "North" => Ok(Self::North),
-            "NorthEast" => Ok(Self::NorthEast),
-            "NorthWest" => Ok(Self::NorthWest),
-            "South" => Ok(Self::South),
-            "SouthEast" => Ok(Self::SouthEast),
-            "SouthWest" => Ok(Self::SouthWest),
-            "West" => Ok(Self::West),
-            _ => Err(format!("unknown resize direction: {value}")),
-        }
-    }
-
     fn has_east(self) -> bool {
         matches!(self, Self::East | Self::NorthEast | Self::SouthEast)
     }
@@ -132,14 +108,12 @@ pub struct WorkBounds {
     pub bottom: i32,
 }
 
-#[cfg(any(windows, target_os = "macos", test))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Point {
     pub x: i32,
     pub y: i32,
 }
 
-#[cfg(any(target_os = "macos", test))]
 impl WorkBounds {
     fn contains_frame(self, frame: Frame) -> bool {
         frame.x >= self.left
@@ -208,38 +182,12 @@ pub fn logical_width(physical_width: i32, scale: f64) -> f64 {
     (physical_width as f64 / scale).max(MIN_OVERLAY_WIDTH)
 }
 
-#[cfg(any(windows, test))]
-pub fn compact_visible_frame(full_frame: Frame, height: i32) -> Frame {
-    Frame {
-        y: full_frame.y + full_frame.height - height,
-        height,
-        ..full_frame
-    }
-}
-
-#[cfg(any(windows, test))]
-pub fn full_position_from_visible_frame(
-    mode: OverlayMode,
-    full_frame: Frame,
-    visible_frame: Frame,
-) -> (i32, i32) {
-    if mode == OverlayMode::History {
-        return (visible_frame.x, visible_frame.y);
-    }
-    (
-        visible_frame.x,
-        visible_frame.y - (full_frame.height - visible_frame.height),
-    )
-}
-
-#[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ResizePlan {
     pub frame: Frame,
     pub move_before_resize: bool,
 }
 
-#[cfg(any(target_os = "macos", test))]
 pub fn resize_plan(
     current: Frame,
     target_width: i32,
@@ -260,7 +208,6 @@ pub fn resize_plan(
     }
 }
 
-#[cfg(any(windows, test))]
 pub fn snapped_frame_near_point(
     frame: Frame,
     bounds: Option<WorkBounds>,
@@ -297,7 +244,6 @@ pub fn snapped_frame_near_point(
     snapped
 }
 
-#[cfg(any(target_os = "macos", test))]
 pub fn frame_in_single_work_area_near_point(
     frame: Frame,
     work_areas: &[WorkBounds],
@@ -354,7 +300,6 @@ fn clamped_position(
     (x.clamp(bounds.left, max_x), y.clamp(bounds.top, max_y))
 }
 
-#[cfg(any(windows, test))]
 fn snapped_clamped_position(bounds: WorkBounds, frame: Frame) -> (i32, i32) {
     let mut x = frame.x;
     let mut y = frame.y;
@@ -374,13 +319,11 @@ fn snapped_clamped_position(bounds: WorkBounds, frame: Frame) -> (i32, i32) {
     clamped_position(Some(bounds), x, y, frame.width, frame.height)
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn clamped_frame_to_work_area(frame: Frame, bounds: WorkBounds) -> Frame {
     let (x, y) = clamped_position(Some(bounds), frame.x, frame.y, frame.width, frame.height);
     Frame { x, y, ..frame }
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn best_work_area_for_frame(frame: Frame, work_areas: &[WorkBounds]) -> Option<WorkBounds> {
     work_areas.iter().copied().max_by_key(|area| {
         (
@@ -390,21 +333,18 @@ fn best_work_area_for_frame(frame: Frame, work_areas: &[WorkBounds]) -> Option<W
     })
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn frame_intersection_area(frame: Frame, area: WorkBounds) -> i64 {
     let width = (frame.x + frame.width).min(area.right) - frame.x.max(area.left);
     let height = (frame.y + frame.height).min(area.bottom) - frame.y.max(area.top);
     i64::from(width.max(0)) * i64::from(height.max(0))
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn frame_distance_to_area_squared(frame: Frame, area: WorkBounds) -> i64 {
     let dx = range_distance(frame.x, frame.x + frame.width, area.left, area.right);
     let dy = range_distance(frame.y, frame.y + frame.height, area.top, area.bottom);
     dx * dx + dy * dy
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn range_distance(start_a: i32, end_a: i32, start_b: i32, end_b: i32) -> i64 {
     if end_a < start_b {
         i64::from(start_b - end_a)
@@ -496,31 +436,6 @@ mod tests {
 
         assert_eq!(layout.height(OverlayMode::Compact), 600.0);
         assert_eq!(layout.height(OverlayMode::History), 600.0);
-    }
-
-    #[test]
-    fn compact_snap_uses_visible_frame_and_offsets_full_window() {
-        let full_frame = Frame {
-            x: 100,
-            y: -230,
-            width: 960,
-            height: 430,
-        };
-        let visible_frame = compact_visible_frame(full_frame, 180);
-
-        let snapped_visible = snapped_frame_near_point(
-            visible_frame,
-            Some(LEFT_SCREEN),
-            Some(Point { x: 200, y: 10 }),
-        );
-        let (_, full_y) =
-            full_position_from_visible_frame(OverlayMode::Compact, full_frame, snapped_visible);
-
-        assert_eq!(snapped_visible.y, LEFT_SCREEN.top);
-        assert_eq!(
-            full_y,
-            LEFT_SCREEN.top - (full_frame.height - visible_frame.height)
-        );
     }
 
     #[test]

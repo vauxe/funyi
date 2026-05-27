@@ -1,158 +1,31 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { AsrClient } from "./asr-client.js";
+import { createFunyiApp } from "./app-controller.js";
+import { getAppElements } from "./app-dom.js";
+import type { AudioSource } from "./audio-source.js";
 import { ASR_LANGUAGE_OPTIONS, TRANSLATION_TARGET_LANGUAGE_OPTIONS } from "./languages.js";
-
-type Listener = (event?: unknown) => void;
-type Invocation = { command: string; args?: Record<string, unknown> };
-
-class FakeElement {
-  attributes = new Map<string, string>();
-  blurred = false;
-  checked = false;
-  children: FakeElement[] = [];
-  classList = {
-    add: (name: string): void => {
-      const classes = new Set(this.className.split(/\s+/).filter(Boolean));
-      classes.add(name);
-      this.className = [...classes].join(" ");
-    },
-    remove: (name: string): void => {
-      const classes = new Set(this.className.split(/\s+/).filter(Boolean));
-      classes.delete(name);
-      this.className = [...classes].join(" ");
-    },
-    toggle: (name: string, enabled: boolean): void => {
-      const classes = new Set(this.className.split(/\s+/).filter(Boolean));
-      if (enabled) {
-        classes.add(name);
-      } else {
-        classes.delete(name);
-      }
-      this.className = [...classes].join(" ");
-    },
-  };
-  className = "";
-  dataset: Record<string, string> = {};
-  disabled = false;
-  listeners = new Map<string, Listener[]>();
-  textContent = "";
-  title = "";
-  value = "";
-
-  constructor(readonly tagName: string, readonly id = "") {}
-
-  addEventListener(type: string, listener: Listener): void {
-    const listeners = this.listeners.get(type) || [];
-    listeners.push(listener);
-    this.listeners.set(type, listeners);
-  }
-
-  append(...children: FakeElement[]): void {
-    this.children.push(...children);
-    if (this.tagName === "select" && !this.value && children[0]?.value) {
-      this.value = children[0].value;
-    }
-  }
-
-  blur(): void {
-    this.blurred = true;
-  }
-
-  click(): void {
-    for (const listener of this.listeners.get("click") || []) {
-      listener();
-    }
-  }
-
-  dispatch(type: string, event: unknown): void {
-    for (const listener of this.listeners.get(type) || []) {
-      listener(event);
-    }
-  }
-
-  replaceChildren(...children: FakeElement[]): void {
-    this.children = [];
-    if (this.tagName === "select") {
-      this.value = "";
-    }
-    this.append(...children);
-  }
-
-  setAttribute(name: string, value: string): void {
-    this.attributes.set(name, value);
-  }
-}
-
-class FakeDocument {
-  activeElement: FakeElement | null = null;
-  readonly elements: Record<string, FakeElement>;
-
-  constructor(elements: Record<string, FakeElement>) {
-    this.elements = elements;
-  }
-
-  createElement(tagName: string): FakeElement {
-    return new FakeElement(tagName);
-  }
-
-  querySelector(selector: string): FakeElement | null {
-    return selector.startsWith("#") ? this.elements[selector.slice(1)] || null : null;
-  }
-}
-
-class FakeWebSocket {
-  static CONNECTING = 0;
-  static OPEN = 1;
-  static instances: FakeWebSocket[] = [];
-
-  binaryType = "";
-  bufferedAmount = 0;
-  onclose?: (event: CloseEvent) => void;
-  onerror?: (event: Event) => void;
-  onmessage?: (event: MessageEvent) => void;
-  onopen?: () => void;
-  readyState = FakeWebSocket.CONNECTING;
-  sent: Array<string | Uint8Array> = [];
-
-  constructor(readonly url: string) {
-    FakeWebSocket.instances.push(this);
-  }
-
-  send(payload: string | Uint8Array): void {
-    this.sent.push(payload);
-  }
-
-  open(): void {
-    this.readyState = FakeWebSocket.OPEN;
-    this.onopen?.();
-  }
-
-  message(event: Record<string, unknown>): void {
-    this.onmessage?.({ data: JSON.stringify(event) } as MessageEvent);
-  }
-
-  close(): void {
-    this.onclose?.({ code: 1000 } as CloseEvent);
-  }
-}
+import { installFakeAppDocument } from "./test-app-document.fixture.js";
+import { nextTick } from "./test-async.fixture.js";
+import { clearBrowserGlobals } from "./test-browser-globals.fixture.js";
+import { FakeElement, installedFakeDocument } from "./test-dom.fixture.js";
+import { createFakeAudioAdapter } from "./test-audio-adapter.fixture.js";
+import { createFakeOverlayHost, type FakeOverlayHost } from "./test-overlay-host.fixture.js";
+import { pointerEvent } from "./test-pointer-event.fixture.js";
+import { FakeWebSocket } from "./test-websocket.fixture.js";
+import { installFakeWindowRuntime, type FakeWindowRuntime } from "./test-window.fixture.js";
 
 test.beforeEach(() => {
-  FakeWebSocket.instances = [];
-  globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+  FakeWebSocket.install({ closeBehavior: "emit" });
 });
 
 test.afterEach(() => {
-  Reflect.deleteProperty(globalThis, "document");
-  Reflect.deleteProperty(globalThis, "Element");
-  Reflect.deleteProperty(globalThis, "window");
+  clearBrowserGlobals("document", "Element", "HTMLElement", "window", "WebSocket");
 });
 
 test("history button switches overlay mode and inline settings drive start payload", async () => {
   const elements = installDocument();
-  const invocations = installTauriRuntime();
-
-  await importApp("history");
-  await nextTick();
+  const { overlay } = await bootApp();
 
   elements["history-button"]!.click();
   await nextTick();
@@ -160,8 +33,8 @@ test("history button switches overlay mode and inline settings drive start paylo
   assert.equal(elements["app-shell"]!.attributes.get("data-overlay-mode"), "history");
   assert.equal(elements["history-button"]!.className, "is-expanded");
   assert.equal(elements["history-button"]!.attributes.get("aria-expanded"), "true");
-  assert.deepEqual(invocations.at(-1), {
-    command: "set_overlay_mode",
+  assert.deepEqual(overlay.invocations.at(-1), {
+    method: "setOverlayMode",
     args: { mode: "history" },
   });
   assert.equal(elements["session-status"]!.textContent, "");
@@ -196,10 +69,8 @@ test("history button switches overlay mode and inline settings drive start paylo
 
 test("empty translation target starts without translation request", async () => {
   const elements = installDocument();
-  installTauriRuntime();
 
-  await importApp("default-translation-target");
-  await nextTick();
+  await bootApp();
 
   elements["session-button"]!.click();
   const socket = FakeWebSocket.instances[0];
@@ -211,12 +82,31 @@ test("empty translation target starts without translation request", async () => 
   assert.equal(elements["session-status"]!.textContent, "Connecting...");
 });
 
+test("audio source listing failures keep the UI in a disabled idle state", async () => {
+  const elements = installDocument();
+
+  await bootApp({ listSourcesError: new Error("audio source probe failed") });
+
+  assert.equal(elements["session-button"]!.disabled, true);
+  assert.equal(elements["session-status"]!.textContent, "audio source probe failed");
+});
+
+test("invalid selected audio source is rejected before opening a websocket", async () => {
+  const elements = installDocument();
+
+  await bootApp();
+
+  elements["audio-source"]!.value = "missing";
+  elements["session-button"]!.click();
+
+  assert.equal(FakeWebSocket.instances.length, 0);
+  assert.equal(elements["session-status"]!.textContent, "Selected audio source is invalid.");
+});
+
 test("normal running sessions do not show redundant status text", async () => {
   const elements = installDocument();
-  installTauriRuntime();
 
-  await importApp("ready-translation-target");
-  await nextTick();
+  await bootApp();
 
   elements["translation-target-language"]!.value = "Japanese";
   elements["session-button"]!.click();
@@ -246,10 +136,8 @@ test("normal running sessions do not show redundant status text", async () => {
 
 test("active server session errors are shown as a retryable user status", async () => {
   const elements = installDocument();
-  installTauriRuntime();
 
-  await importApp("active-server-session");
-  await nextTick();
+  await bootApp();
 
   elements["session-button"]!.click();
   const socket = FakeWebSocket.instances[0];
@@ -264,10 +152,8 @@ test("active server session errors are shown as a retryable user status", async 
 
 test("language controls stay editable while running and send runtime updates", async () => {
   const elements = installDocument();
-  installTauriRuntime();
 
-  await importApp("runtime-language-switch");
-  await nextTick();
+  await bootApp();
 
   elements["language"]!.value = "Chinese";
   elements["translation-target-language"]!.value = "English";
@@ -305,10 +191,8 @@ test("language controls stay editable while running and send runtime updates", a
 
 test("recoverable command errors remain visible while running", async () => {
   const elements = installDocument();
-  installTauriRuntime();
 
-  await importApp("recoverable-command-error");
-  await nextTick();
+  await bootApp();
 
   elements["session-button"]!.click();
   const socket = FakeWebSocket.instances[0];
@@ -325,169 +209,73 @@ test("recoverable command errors remain visible while running", async () => {
   assert.equal(elements["session-button"]!.title, "Stop");
 });
 
-test("macOS native drag does not run manual drag release commands", async () => {
+test("drag uses one start/update/end contract across platforms", async () => {
   const elements = installDocument();
-  const invocations = installTauriRuntime({ platform: "macos" });
+  const { overlay, windowRuntime } = await bootApp();
 
-  await importApp("macos-native-drag");
-  await nextTick();
-
-  (globalThis.document as unknown as FakeDocument).activeElement = elements["server-url"]!;
-  elements["caption-strip"]!.dispatch("pointerdown", {
-    button: 0,
-    pointerId: 7,
-    preventDefault: () => {},
-    target: null,
-  });
+  installedFakeDocument().activeElement = elements["server-url"]!;
+  elements["caption-strip"]!.dispatch("pointerdown", pointerEvent({ pointerId: 7 }));
   await nextTick();
 
   assert.equal(elements["server-url"]!.blurred, true);
   assert.equal(elements["app-shell"]!.className, "is-dragging");
-  dispatchWindow("pointerup", { pointerId: 7 });
+  windowRuntime.dispatch("pointerup", pointerEvent({ pointerId: 7 }));
   await nextTick();
 
-  const dragCommands = invocations
-    .map((invocation) => invocation.command)
-    .filter((command) => command.includes("overlay_drag"));
-  assert.deepEqual(dragCommands, ["start_overlay_drag", "finish_native_overlay_drag"]);
+  const dragMethods = overlay.invocations
+    .map((invocation) => invocation.method)
+    .filter((method) => method.endsWith("OverlayDrag"));
+  assert.deepEqual(dragMethods, ["startOverlayDrag", "updateOverlayDrag", "endOverlayDrag"]);
   assert.equal(elements["app-shell"]!.className, "");
 });
 
 function installDocument(): Record<string, FakeElement> {
-  const elements = Object.fromEntries(
-    [
-      "server-url",
-      "app-shell",
-      "caption-strip",
-      "language",
-      "translation-target-language",
-      "audio-source",
-      "session-button",
-      "history-button",
-      "minimize-button",
-      "close-button",
-      "resize-north",
-      "resize-east",
-      "resize-south",
-      "resize-west",
-      "resize-north-east",
-      "resize-north-west",
-      "resize-south-east",
-      "resize-south-west",
-      "session-status",
-      "previous-source",
-      "previous-translation",
-      "current-source",
-      "current-translation",
-      "history-list",
-    ].map((id) => [id, new FakeElement(elementTag(id), id)]),
-  );
-
+  const elements = installFakeAppDocument();
   elements["server-url"]!.value = "ws://127.0.0.1:8000/ws/asr";
   elements["language"]!.value = "";
   elements["translation-target-language"]!.value = "English";
-
-  Object.defineProperty(globalThis, "document", {
-    configurable: true,
-    value: new FakeDocument(elements),
-    writable: true,
-  });
-  Object.defineProperty(globalThis, "Element", {
-    configurable: true,
-    value: FakeElement,
-    writable: true,
-  });
   return elements;
-}
-
-function installTauriRuntime(
-  options: { platform?: string } = {},
-): Invocation[] {
-  const invocations: Invocation[] = [];
-  const windowListeners = new Map<string, Listener[]>();
-  Object.defineProperty(globalThis, "window", {
-    configurable: true,
-    value: {
-      addEventListener(type: string, listener: Listener): void {
-        const listeners = windowListeners.get(type) || [];
-        listeners.push(listener);
-        windowListeners.set(type, listeners);
-      },
-      clearTimeout,
-      dispatch(type: string, event: unknown): void {
-        for (const listener of windowListeners.get(type) || []) {
-          listener(event);
-        }
-      },
-      removeEventListener(type: string, listener: Listener): void {
-        const listeners = windowListeners.get(type) || [];
-        windowListeners.set(
-          type,
-          listeners.filter((item) => item !== listener),
-        );
-      },
-      setTimeout,
-      __TAURI__: {
-        core: {
-          async invoke<TResult>(command: string, args?: Record<string, unknown>): Promise<TResult> {
-            invocations.push({ command, args });
-            if (command === "desktop_platform") {
-              return options.platform as TResult;
-            }
-            if (command === "list_audio_sources") {
-              return [
-                {
-                  id: "system_default",
-                  name: "System audio",
-                  kind: "system",
-                  isAvailable: true,
-                  detail: "available",
-                },
-              ] as unknown as TResult;
-            }
-            return undefined as TResult;
-          },
-        },
-        event: {
-          async listen(): Promise<() => void> {
-            return () => {};
-          },
-        },
-      },
-    },
-    writable: true,
-  });
-  return invocations;
-}
-
-function elementTag(id: string): string {
-  if (id === "audio-source" || id === "language" || id === "translation-target-language") {
-    return "select";
-  }
-  if (id === "app-shell" || id === "caption-strip") {
-    return "main";
-  }
-  if (id.endsWith("button")) {
-    return "button";
-  }
-  return "input";
 }
 
 function selectValues(element: FakeElement): string[] {
   return element.children.map((child) => child.value);
 }
 
-function nextTick(): Promise<void> {
-  return new Promise((resolve) => {
-    setImmediate(resolve);
+interface AppHarness {
+  overlay: FakeOverlayHost;
+  windowRuntime: FakeWindowRuntime;
+}
+
+interface BootAppOptions {
+  listSourcesError?: Error | null;
+  sources?: AudioSource[];
+}
+
+async function bootApp({
+  listSourcesError = null,
+  sources = defaultAudioSources(),
+}: BootAppOptions = {}): Promise<AppHarness> {
+  const audio = createFakeAudioAdapter({ listSourcesError, sources });
+  const overlay = createFakeOverlayHost();
+  const windowRuntime = installFakeWindowRuntime({ timerBehavior: "real" });
+  const app = createFunyiApp({
+    audio,
+    dom: getAppElements(),
+    overlay,
+    createClient: ({ url, ...callbacks }) => new AsrClient({ url, ...callbacks }),
   });
+  await app.boot();
+  return { overlay, windowRuntime };
 }
 
-async function importApp(testName: string): Promise<void> {
-  await import(`./app.js?${testName}-${Date.now()}`);
-}
-
-function dispatchWindow(type: string, event: unknown): void {
-  (globalThis.window as unknown as { dispatch: (type: string, event: unknown) => void })
-    .dispatch(type, event);
+function defaultAudioSources(): AudioSource[] {
+  return [
+    {
+      id: "system_default",
+      name: "Audio",
+      kind: "system",
+      isAvailable: true,
+      detail: "available",
+    },
+  ];
 }

@@ -1,18 +1,20 @@
 use std::sync::Mutex;
 
-use tauri::{AppHandle, Manager, PhysicalPosition, WebviewWindow, Window, WindowEvent};
+use tauri::{
+    AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewWindow, Window, WindowEvent,
+};
 
-use crate::overlay::{self, Frame, OverlayLayout, OverlayMode, ResizeDirection, WorkBounds};
+use crate::overlay::{self, Frame, OverlayLayout, OverlayMode, Point, ResizeDirection, WorkBounds};
 
 #[cfg(target_os = "macos")]
 #[path = "overlay_window/macos.rs"]
 mod platform;
-#[cfg(windows)]
+#[cfg(target_os = "windows")]
 #[path = "overlay_window/windows.rs"]
 mod platform;
 
 #[derive(Clone, Copy)]
-#[cfg(windows)]
+#[cfg(target_os = "windows")]
 struct OverlayDrag {
     pointer_start_x: f64,
     pointer_start_y: f64,
@@ -21,12 +23,10 @@ struct OverlayDrag {
 }
 
 #[derive(Default)]
-#[cfg(windows)]
-pub struct OverlayDragState(Mutex<Option<OverlayDrag>>);
-
-#[derive(Default)]
-#[cfg(target_os = "macos")]
-pub struct OverlayDragState;
+pub struct OverlayDragState {
+    #[cfg(target_os = "windows")]
+    drag: Mutex<Option<OverlayDrag>>,
+}
 
 #[derive(Clone, Copy)]
 struct OverlayResize {
@@ -47,19 +47,15 @@ pub struct OverlayModeState(Mutex<OverlayMode>);
 #[derive(Default)]
 pub struct OverlayLayoutState(Mutex<OverlayLayout>);
 
-pub fn desktop_platform() -> &'static str {
-    std::env::consts::OS
-}
-
 pub fn setup_window(window: &WebviewWindow) -> Result<(), String> {
-    platform::set_overlay_window_layout(window, OverlayMode::Compact, OverlayLayout::default())
+    set_overlay_window_layout(window, OverlayMode::Compact)
 }
 
 pub fn handle_window_event(window: &Window, event: &WindowEvent) {
     if window.label() != "main" {
         return;
     }
-    if !platform::is_relevant_window_event(event) {
+    if !is_relevant_window_event(event) {
         return;
     }
 
@@ -73,19 +69,18 @@ pub fn handle_window_event(window: &Window, event: &WindowEvent) {
     };
     let layout_state = app.state::<OverlayLayoutState>();
 
-    platform::sync_after_window_event(&webview, event, mode, &layout_state);
+    let _ = sync_overlay_layout_from_window(&webview, mode, &layout_state);
 }
 
 pub fn set_overlay_mode(
     app: AppHandle,
     state: tauri::State<'_, OverlayModeState>,
     layout_state: tauri::State<'_, OverlayLayoutState>,
-    mode: String,
+    mode: OverlayMode,
 ) -> Result<(), String> {
     let window = main_window(&app)?;
-    let mode = OverlayMode::parse(&mode)?;
     let layout = *layout_state.0.lock().map_err(|error| error.to_string())?;
-    platform::resize_overlay_window(&window, mode, layout)?;
+    resize_overlay_window(&window, mode, layout)?;
     *state.0.lock().map_err(|error| error.to_string())? = mode;
     Ok(())
 }
@@ -108,39 +103,26 @@ pub fn update_overlay_drag(
 pub fn end_overlay_drag(
     app: AppHandle,
     state: tauri::State<'_, OverlayDragState>,
-    mode_state: tauri::State<'_, OverlayModeState>,
-    layout_state: tauri::State<'_, OverlayLayoutState>,
 ) -> Result<(), String> {
-    platform::end_overlay_drag(app, state, mode_state, layout_state)
-}
-
-pub fn finish_native_overlay_drag(app: AppHandle) -> Result<(), String> {
-    platform::finish_native_overlay_drag(app)
+    platform::end_overlay_drag(app, state)
 }
 
 pub fn start_overlay_resize(
     app: AppHandle,
     state: tauri::State<'_, OverlayResizeState>,
     mode_state: tauri::State<'_, OverlayModeState>,
-    layout_state: tauri::State<'_, OverlayLayoutState>,
-    direction: String,
+    direction: ResizeDirection,
 ) -> Result<(), String> {
     let window = main_window(&app)?;
     let mode = *mode_state.0.lock().map_err(|error| error.to_string())?;
-    let direction = ResizeDirection::parse(&direction)?;
-    let layout = *layout_state.0.lock().map_err(|error| error.to_string())?;
     let cursor = app.cursor_position().map_err(|error| error.to_string())?;
     let monitor = window_monitor(&window)?;
-    let scale = monitor
-        .as_ref()
-        .map_or(1.0, |monitor| monitor.scale_factor());
-    let full_frame = current_window_frame(&window)?;
-    let visible_start = platform::visible_resize_start(&window, mode, layout, full_frame, scale)?;
+    let scale = monitor_scale(monitor.as_ref());
 
     *state.0.lock().map_err(|error| error.to_string())? = Some(OverlayResize {
         pointer_start_x: cursor.x,
         pointer_start_y: cursor.y,
-        visible_start,
+        visible_start: current_window_frame(&window)?,
         direction,
         mode,
         scale,
@@ -189,10 +171,7 @@ pub fn close_overlay(app: AppHandle) -> Result<(), String> {
 
 fn current_logical_size(window: &WebviewWindow) -> Result<(f64, f64), String> {
     let outer = window.outer_size().map_err(|error| error.to_string())?;
-    let monitor = window_monitor(window)?;
-    let scale = monitor
-        .as_ref()
-        .map_or(1.0, |monitor| monitor.scale_factor());
+    let scale = current_monitor_scale(window)?;
     Ok((outer.width as f64 / scale, outer.height as f64 / scale))
 }
 
@@ -203,7 +182,7 @@ fn sync_overlay_layout_from_window(
 ) -> Result<OverlayLayout, String> {
     let (_, height) = current_logical_size(window)?;
     let mut layout = state.0.lock().map_err(|error| error.to_string())?;
-    layout.set_height(platform::resized_layout_mode(mode), height);
+    layout.set_height(mode, height);
     Ok(*layout)
 }
 
@@ -218,7 +197,75 @@ fn apply_overlay_resize(
     let dy = (cursor.y - resize.pointer_start_y).round() as i32;
     let frame =
         overlay::resized_frame(resize.visible_start, resize.direction, dx, dy, resize.scale);
-    platform::apply_resized_visible_frame(&window, resize.mode, frame, layout_state, resize.scale)
+    apply_resized_visible_frame(&window, resize.mode, frame, layout_state, resize.scale)
+}
+
+fn is_relevant_window_event(event: &WindowEvent) -> bool {
+    matches!(
+        event,
+        WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }
+    )
+}
+
+fn set_overlay_window_layout(window: &WebviewWindow, mode: OverlayMode) -> Result<(), String> {
+    let (width, height) = mode.logical_size();
+    set_window_logical_size(window, width, height)?;
+    position_window_near_bottom(window, width, height)
+}
+
+fn resize_overlay_window(
+    window: &WebviewWindow,
+    mode: OverlayMode,
+    layout: OverlayLayout,
+) -> Result<(), String> {
+    let (width, _) = current_logical_size(window)?;
+    resize_overlay_window_to_logical(window, width, layout.height(mode))
+}
+
+fn resize_overlay_window_to_logical(
+    window: &WebviewWindow,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    let monitor = window_monitor(window)?;
+    let scale = monitor_scale(monitor.as_ref());
+    let (target_width, target_height) = (
+        (width * scale).round() as i32,
+        (height * scale).round() as i32,
+    );
+    let plan = overlay::resize_plan(
+        current_window_frame(window)?,
+        target_width,
+        target_height,
+        monitor.as_ref().map(work_bounds),
+    );
+
+    if plan.move_before_resize {
+        set_window_position(window, plan.frame.x, plan.frame.y)?;
+        set_window_logical_size(window, width, height)?;
+    } else {
+        set_window_logical_size(window, width, height)?;
+        set_window_position(window, plan.frame.x, plan.frame.y)?;
+    }
+    Ok(())
+}
+
+fn apply_resized_visible_frame(
+    window: &WebviewWindow,
+    mode: OverlayMode,
+    visible_frame: Frame,
+    layout_state: &OverlayLayoutState,
+    scale: f64,
+) -> Result<(), String> {
+    let width = overlay::logical_width(visible_frame.width, scale);
+    let layout = {
+        let mut layout = layout_state.0.lock().map_err(|error| error.to_string())?;
+        layout.set_height(mode, visible_frame.height as f64 / scale);
+        *layout
+    };
+
+    set_window_position(window, visible_frame.x, visible_frame.y)?;
+    set_window_logical_size(window, width, layout.height(mode))
 }
 
 fn position_window_near_bottom(
@@ -250,6 +297,14 @@ fn work_bounds(monitor: &tauri::Monitor) -> WorkBounds {
     }
 }
 
+fn current_monitor_scale(window: &WebviewWindow) -> Result<f64, String> {
+    Ok(monitor_scale(window_monitor(window)?.as_ref()))
+}
+
+fn monitor_scale(monitor: Option<&tauri::Monitor>) -> f64 {
+    monitor.map_or(1.0, |monitor| monitor.scale_factor())
+}
+
 fn main_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     app.get_webview_window("main")
         .ok_or_else(|| "main window was not found".to_string())
@@ -264,7 +319,26 @@ fn available_work_bounds(window: &WebviewWindow) -> Result<Vec<WorkBounds>, Stri
         .collect())
 }
 
-#[cfg(windows)]
+fn cursor_point(app: &AppHandle) -> Option<Point> {
+    app.cursor_position().ok().map(|position| Point {
+        x: position.x.round() as i32,
+        y: position.y.round() as i32,
+    })
+}
+
+fn finish_overlay_drag<F>(app: AppHandle, resolve_frame: F) -> Result<(), String>
+where
+    F: FnOnce(Frame, &[WorkBounds], Option<Point>) -> Frame,
+{
+    let window = main_window(&app)?;
+    let frame = current_window_frame(&window)?;
+    let work_areas = available_work_bounds(&window)?;
+    let cursor = cursor_point(&app);
+    let frame = resolve_frame(frame, &work_areas, cursor);
+    set_window_position(&window, frame.x, frame.y)
+}
+
+#[cfg(target_os = "windows")]
 fn combined_work_bounds(bounds: &[WorkBounds]) -> Option<WorkBounds> {
     let (first, rest) = bounds.split_first()?;
     Some(
@@ -297,6 +371,12 @@ fn set_window_position(window: &WebviewWindow, x: i32, y: i32) -> Result<(), Str
     }
     window
         .set_position(PhysicalPosition::new(x, y))
+        .map_err(|error| error.to_string())
+}
+
+fn set_window_logical_size(window: &WebviewWindow, width: f64, height: f64) -> Result<(), String> {
+    window
+        .set_size(LogicalSize::new(width, height))
         .map_err(|error| error.to_string())
 }
 

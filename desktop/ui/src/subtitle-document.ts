@@ -1,6 +1,5 @@
-export type SubtitleEvent = Record<string, unknown> & {
-  type?: unknown;
-};
+import type { RealtimeEvent } from "./realtime-events.js";
+import { optionalRecord, recordArray } from "./runtime-guards.js";
 
 interface SubtitleLineInit {
   id?: string | null;
@@ -21,7 +20,21 @@ export interface SubtitleWindow {
   current: SubtitleLine | null;
 }
 
-export class SubtitleLine {
+export interface SubtitleLine {
+  readonly id: string | null;
+  readonly index: number | null;
+  readonly startMs: number | null;
+  readonly endMs: number | null;
+  readonly text: string;
+  readonly language: string;
+  readonly sourceRevision: number | null;
+  readonly timingStatus: string | null;
+  readonly translation: string | null;
+  readonly translationStatus: string | null;
+  readonly translationMessage: string | null;
+}
+
+class SubtitleLineRecord implements SubtitleLine {
   readonly id: string | null;
   readonly index: number | null;
   readonly startMs: number | null;
@@ -60,56 +73,72 @@ export class SubtitleLine {
     this.translationMessage = translationMessage;
   }
 
-  withPatch(patch: SubtitleLineInit): SubtitleLine {
-    return new SubtitleLine({ ...this, ...patch });
+  withPatch(patch: SubtitleLineInit): SubtitleLineRecord {
+    return new SubtitleLineRecord({ ...this, ...patch });
   }
 }
 
 export class SubtitleDocument {
-  translationEnabled: boolean;
-  revision: number;
-  stableLines: SubtitleLine[];
-  current: SubtitleLine | null;
+  private currentLine: SubtitleLineRecord | null;
+  private revision: number;
+  private stableLineList: SubtitleLineRecord[];
+  private translationEnabledValue: boolean;
 
   constructor({ translationEnabled = true }: { translationEnabled?: boolean } = {}) {
-    this.translationEnabled = Boolean(translationEnabled);
+    this.translationEnabledValue = Boolean(translationEnabled);
     this.revision = 0;
-    this.stableLines = [];
-    this.current = null;
+    this.stableLineList = [];
+    this.currentLine = null;
+  }
+
+  get stableLines(): readonly SubtitleLine[] {
+    return this.stableLineList;
+  }
+
+  get translationEnabled(): boolean {
+    return this.translationEnabledValue;
   }
 
   setTranslationEnabled(enabled: boolean): void {
-    this.translationEnabled = Boolean(enabled);
+    this.translationEnabledValue = Boolean(enabled);
   }
 
-  applyEvent(event: SubtitleEvent): void {
-    const eventType = String(event?.type || "");
-    if (eventType === "transcript_update") {
-      this.applyTranscriptUpdate(event);
-    } else if (eventType === "transcript_timing_update") {
-      this.applyTranscriptTimingUpdate(event);
-    } else if (eventType === "transcript_final") {
-      this.applyTranscriptFinal(event);
-    } else if (eventType === "translation_stable") {
-      this.applyStableTranslation(event);
-    } else if (eventType === "translation_preview") {
-      this.applyPreviewTranslation(event);
-    } else if (eventType === "translation_status") {
-      this.applyTranslationStatus(event);
+  applyEvent(event: RealtimeEvent): void {
+    switch (event.type) {
+      case "transcript_update":
+        this.applyTranscriptUpdate(event);
+        return;
+      case "transcript_timing_update":
+        this.applyTranscriptTimingUpdate(event);
+        return;
+      case "transcript_final":
+        this.applyTranscriptFinal(event);
+        return;
+      case "translation_stable":
+        this.applyStableTranslation(event);
+        return;
+      case "translation_preview":
+        this.applyPreviewTranslation(event);
+        return;
+      case "translation_status":
+        this.applyTranslationStatus(event);
+        return;
+      default:
+        return;
     }
   }
 
-  window({ includeTranslation = this.translationEnabled }: { includeTranslation?: boolean } = {}): SubtitleWindow {
+  window({ includeTranslation = this.translationEnabledValue }: { includeTranslation?: boolean } = {}): SubtitleWindow {
     return {
-      previous: renderLine(this.stableLines.at(-1) || null, includeTranslation),
-      current: renderLine(this.current, includeTranslation),
+      previous: renderLine(this.stableLineList.at(-1) || null, includeTranslation),
+      current: renderLine(this.currentLine, includeTranslation),
     };
   }
 
-  toSrt({ includeTranslation = this.translationEnabled }: { includeTranslation?: boolean } = {}): string {
+  toSrt({ includeTranslation = this.translationEnabledValue }: { includeTranslation?: boolean } = {}): string {
     const blocks = [];
     let number = 1;
-    for (const line of this.stableLines) {
+    for (const line of this.stableLineList) {
       if (!isInteger(line.startMs) || !isInteger(line.endMs)) {
         continue;
       }
@@ -129,12 +158,12 @@ export class SubtitleDocument {
     return blocks.length ? `${blocks.join("\n\n")}\n` : "";
   }
 
-  private applyTranscriptUpdate(event: SubtitleEvent): void {
+  private applyTranscriptUpdate(event: RealtimeEvent): void {
     const stableBase = toInt(event.stable_base, 0);
-    const stableAppends = Array.isArray(event.stable_appends) ? event.stable_appends : [];
+    const stableAppends = recordArray(event.stable_appends, "stable_appends");
     const stableCount = toInt(event.stable_count, 0);
-    if (stableBase !== this.stableLines.length) {
-      throw new Error(`stable cursor mismatch: stable_base=${stableBase}, local_count=${this.stableLines.length}`);
+    if (stableBase !== this.stableLineList.length) {
+      throw new Error(`stable cursor mismatch: stable_base=${stableBase}, local_count=${this.stableLineList.length}`);
     }
     if (stableBase + stableAppends.length !== stableCount) {
       throw new Error(
@@ -143,24 +172,21 @@ export class SubtitleDocument {
     }
 
     const revision = toInt(event.revision, this.revision);
-    const previousCurrent = this.current;
+    const previousCurrent = this.currentLine;
     const resetCurrentPreview = stableAppends.length > 0;
     for (const segment of stableAppends) {
-      if (isRecord(segment)) {
-        this.stableLines.push(preserveStableTranslation(lineFromSegment(segment, revision), previousCurrent));
-      }
+      this.stableLineList.push(preserveStableTranslation(lineFromSegment(segment, revision), previousCurrent));
     }
 
-    const nextCurrent = isRecord(event.partial)
-      ? lineFromSegment(event.partial, revision)
-      : null;
-    this.current = resetCurrentPreview
+    const partial = optionalRecord(event.partial, "partial");
+    const nextCurrent = partial ? lineFromSegment(partial, revision) : null;
+    this.currentLine = resetCurrentPreview
       ? nextCurrent
       : preserveCurrentTranslation(nextCurrent, previousCurrent);
     this.revision = revision;
   }
 
-  private applyTranscriptTimingUpdate(event: SubtitleEvent): void {
+  private applyTranscriptTimingUpdate(event: RealtimeEvent): void {
     const index = this.stableIndex(event);
     if (index === null) {
       return;
@@ -172,31 +198,24 @@ export class SubtitleDocument {
     });
   }
 
-  private applyTranscriptFinal(event: SubtitleEvent): void {
-    const existing = new Map(this.stableLines.filter((line) => line.id).map((line) => [line.id as string, line]));
+  private applyTranscriptFinal(event: RealtimeEvent): void {
+    const existing = new Map(this.stableLineList.filter((line) => line.id).map((line) => [line.id as string, line]));
     const revision = toInt(event.revision, this.revision);
     const lines = [];
-    for (const segment of Array.isArray(event.segments) ? event.segments : []) {
-      if (!isRecord(segment)) {
-        continue;
-      }
+    for (const segment of recordArray(event.segments, "segments")) {
       let line = lineFromSegment(segment, revision);
       const previous = line.id ? existing.get(line.id) : undefined;
       if (previous) {
-        line = line.withPatch({
-          translation: previous.translation,
-          translationStatus: previous.translationStatus,
-          translationMessage: previous.translationMessage,
-        });
+        line = line.withPatch(translationPatch(previous));
       }
       lines.push(line);
     }
-    this.stableLines = lines;
-    this.current = null;
+    this.stableLineList = lines;
+    this.currentLine = null;
     this.revision = revision;
   }
 
-  private applyStableTranslation(event: SubtitleEvent): void {
+  private applyStableTranslation(event: RealtimeEvent): void {
     const index = this.stableIndex(event);
     const text = String(event.text || "").trim();
     if (index === null || !text) {
@@ -209,18 +228,18 @@ export class SubtitleDocument {
     });
   }
 
-  private applyPreviewTranslation(event: SubtitleEvent): void {
-    if (!this.current) {
+  private applyPreviewTranslation(event: RealtimeEvent): void {
+    if (!this.currentLine) {
       return;
     }
     const sourceRevision = toInt(event.source_revision, 0);
     const text = String(event.text || "").trim();
-    if (text && this.current.sourceRevision === sourceRevision) {
-      this.current = this.current.withPatch({ translation: text });
+    if (text && this.currentLine.sourceRevision === sourceRevision) {
+      this.currentLine = this.currentLine.withPatch({ translation: text });
     }
   }
 
-  private applyTranslationStatus(event: SubtitleEvent): void {
+  private applyTranslationStatus(event: RealtimeEvent): void {
     const index = this.stableIndex(event);
     if (index === null) {
       return;
@@ -231,30 +250,30 @@ export class SubtitleDocument {
     });
   }
 
-  private stableIndex(event: SubtitleEvent): number | null {
+  private stableIndex(event: RealtimeEvent): number | null {
     const segmentId = String(event.source_segment_id || "");
     if (segmentId) {
-      const index = this.stableLines.findIndex((line) => line.id === segmentId);
+      const index = this.stableLineList.findIndex((line) => line.id === segmentId);
       return index >= 0 ? index : null;
     }
     const segmentIndex = optionalInt(event.source_segment_index);
     if (!segmentIndex || segmentIndex <= 0) {
       return null;
     }
-    const index = this.stableLines.findIndex((line) => line.index === segmentIndex);
+    const index = this.stableLineList.findIndex((line) => line.index === segmentIndex);
     return index >= 0 ? index : null;
   }
 
   private patchStableLine(index: number, patch: SubtitleLineInit): void {
-    const line = this.stableLines[index];
+    const line = this.stableLineList[index];
     if (line) {
-      this.stableLines[index] = line.withPatch(patch);
+      this.stableLineList[index] = line.withPatch(patch);
     }
   }
 }
 
-function lineFromSegment(segment: Record<string, unknown>, revision: number): SubtitleLine {
-  return new SubtitleLine({
+function lineFromSegment(segment: Record<string, unknown>, revision: number): SubtitleLineRecord {
+  return new SubtitleLineRecord({
     id: stringOrNull(segment.id),
     index: optionalInt(segment.index),
     startMs: optionalInt(segment.start_ms),
@@ -266,7 +285,7 @@ function lineFromSegment(segment: Record<string, unknown>, revision: number): Su
   });
 }
 
-function renderLine(line: SubtitleLine | null, includeTranslation: boolean): SubtitleLine | null {
+function renderLine(line: SubtitleLineRecord | null, includeTranslation: boolean): SubtitleLine | null {
   if (!line || includeTranslation) {
     return line;
   }
@@ -278,31 +297,31 @@ function renderLine(line: SubtitleLine | null, includeTranslation: boolean): Sub
 }
 
 function preserveCurrentTranslation(
-  next: SubtitleLine | null,
-  previous: SubtitleLine | null,
-): SubtitleLine | null {
+  next: SubtitleLineRecord | null,
+  previous: SubtitleLineRecord | null,
+): SubtitleLineRecord | null {
   if (!next || !previous?.translation || !isSamePartialLine(next, previous)) {
     return next;
   }
-  return next.withPatch({
-    translation: previous.translation,
-    translationStatus: previous.translationStatus,
-    translationMessage: previous.translationMessage,
-  });
+  return next.withPatch(translationPatch(previous));
 }
 
 function preserveStableTranslation(
-  next: SubtitleLine,
-  previous: SubtitleLine | null,
-): SubtitleLine {
+  next: SubtitleLineRecord,
+  previous: SubtitleLineRecord | null,
+): SubtitleLineRecord {
   if (!previous?.translation || !isSamePartialLine(next, previous)) {
     return next;
   }
-  return next.withPatch({
-    translation: previous.translation,
-    translationStatus: previous.translationStatus,
-    translationMessage: previous.translationMessage,
-  });
+  return next.withPatch(translationPatch(previous));
+}
+
+function translationPatch(line: SubtitleLine): SubtitleLineInit {
+  return {
+    translation: line.translation,
+    translationStatus: line.translationStatus,
+    translationMessage: line.translationMessage,
+  };
 }
 
 function isSamePartialLine(left: SubtitleLine, right: SubtitleLine): boolean {
@@ -353,10 +372,6 @@ function toInt(value: unknown, fallback: number): number {
 function stringOrNull(value: unknown): string | null {
   const text = String(value || "");
   return text ? text : null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object";
 }
 
 function isInteger(value: unknown): value is number {

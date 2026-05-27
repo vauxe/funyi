@@ -2,22 +2,18 @@ mod audio;
 mod overlay;
 mod overlay_window;
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 compile_error!("Funyi desktop supports only Windows and macOS.");
 
 use tauri::{AppHandle, Manager};
 
 use audio::AudioCaptureState;
+use overlay::{OverlayMode, ResizeDirection};
 use overlay_window::{OverlayDragState, OverlayLayoutState, OverlayModeState, OverlayResizeState};
 
 #[tauri::command]
 fn list_audio_sources() -> Vec<audio::AudioSource> {
     audio::list_audio_sources()
-}
-
-#[tauri::command]
-fn desktop_platform() -> &'static str {
-    overlay_window::desktop_platform()
 }
 
 #[tauri::command]
@@ -39,7 +35,7 @@ fn set_overlay_mode(
     app: AppHandle,
     state: tauri::State<'_, OverlayModeState>,
     layout_state: tauri::State<'_, OverlayLayoutState>,
-    mode: String,
+    mode: OverlayMode,
 ) -> Result<(), String> {
     overlay_window::set_overlay_mode(app, state, layout_state, mode)
 }
@@ -64,15 +60,8 @@ fn update_overlay_drag(
 fn end_overlay_drag(
     app: AppHandle,
     state: tauri::State<'_, OverlayDragState>,
-    mode_state: tauri::State<'_, OverlayModeState>,
-    layout_state: tauri::State<'_, OverlayLayoutState>,
 ) -> Result<(), String> {
-    overlay_window::end_overlay_drag(app, state, mode_state, layout_state)
-}
-
-#[tauri::command]
-fn finish_native_overlay_drag(app: AppHandle) -> Result<(), String> {
-    overlay_window::finish_native_overlay_drag(app)
+    overlay_window::end_overlay_drag(app, state)
 }
 
 #[tauri::command]
@@ -80,10 +69,9 @@ fn start_overlay_resize(
     app: AppHandle,
     state: tauri::State<'_, OverlayResizeState>,
     mode_state: tauri::State<'_, OverlayModeState>,
-    layout_state: tauri::State<'_, OverlayLayoutState>,
-    direction: String,
+    direction: ResizeDirection,
 ) -> Result<(), String> {
-    overlay_window::start_overlay_resize(app, state, mode_state, layout_state, direction)
+    overlay_window::start_overlay_resize(app, state, mode_state, direction)
 }
 
 #[tauri::command]
@@ -133,14 +121,12 @@ fn main() {
         .on_window_event(overlay_window::handle_window_event)
         .invoke_handler(tauri::generate_handler![
             list_audio_sources,
-            desktop_platform,
             start_audio_capture,
             stop_audio_capture,
             set_overlay_mode,
             start_overlay_drag,
             update_overlay_drag,
             end_overlay_drag,
-            finish_native_overlay_drag,
             start_overlay_resize,
             update_overlay_resize,
             end_overlay_resize,

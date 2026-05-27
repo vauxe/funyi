@@ -1,8 +1,9 @@
+use std::collections::VecDeque;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
-use std::thread::JoinHandle;
+use std::thread::{self, JoinHandle};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
@@ -22,9 +23,17 @@ pub const FRAME_BYTES: usize = OUTPUT_SAMPLE_RATE * FRAME_MS / 1000 * 2;
 pub struct AudioSource {
     pub id: String,
     pub name: String,
-    pub kind: String,
+    pub kind: AudioSourceKind,
     pub is_available: bool,
     pub detail: String,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+pub enum AudioSourceKind {
+    System,
+    Microphone,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -50,37 +59,18 @@ pub struct AudioCaptureState {
 pub struct CaptureHandle {
     stop: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
-    shutdown: Option<Box<dyn FnOnce() + Send + 'static>>,
 }
 
 impl CaptureHandle {
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
     fn new(stop: Arc<AtomicBool>, join: JoinHandle<()>) -> Self {
         Self {
             stop,
             join: Some(join),
-            shutdown: None,
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn new_with_shutdown(
-        stop: Arc<AtomicBool>,
-        join: JoinHandle<()>,
-        shutdown: Box<dyn FnOnce() + Send + 'static>,
-    ) -> Self {
-        Self {
-            stop,
-            join: Some(join),
-            shutdown: Some(shutdown),
         }
     }
 
     fn stop(mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        if let Some(shutdown) = self.shutdown.take() {
-            shutdown();
-        }
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
@@ -90,9 +80,6 @@ impl CaptureHandle {
 impl Drop for CaptureHandle {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        if let Some(shutdown) = self.shutdown.take() {
-            shutdown();
-        }
     }
 }
 
@@ -131,21 +118,25 @@ pub fn stop_audio_capture(state: &AudioCaptureState) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-pub fn make_handle(stop: Arc<AtomicBool>, join: JoinHandle<()>) -> CaptureHandle {
-    CaptureHandle::new(stop, join)
-}
-
-#[cfg(target_os = "linux")]
-pub fn make_handle_with_shutdown<F>(
-    stop: Arc<AtomicBool>,
-    join: JoinHandle<()>,
-    shutdown: F,
-) -> CaptureHandle
+pub(crate) fn spawn_capture_thread<F>(
+    name: &str,
+    app: AppHandle,
+    run: F,
+) -> Result<CaptureHandle, String>
 where
-    F: FnOnce() + Send + 'static,
+    F: FnOnce(AppHandle, Arc<AtomicBool>) -> Result<(), String> + Send + 'static,
 {
-    CaptureHandle::new_with_shutdown(stop, join, Box::new(shutdown))
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::clone(&stop);
+    let join = thread::Builder::new()
+        .name(name.to_string())
+        .spawn(move || {
+            if let Err(error) = run(app.clone(), thread_stop) {
+                emit_audio_capture_error(&app, error);
+            }
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(CaptureHandle::new(stop, join))
 }
 
 pub fn emit_audio_frame(app: &AppHandle, seq: u64, data: &[u8]) -> Result<(), tauri::Error> {
@@ -163,6 +154,25 @@ pub fn emit_audio_frame(app: &AppHandle, seq: u64, data: &[u8]) -> Result<(), ta
     )
 }
 
+pub fn emit_pending_audio_frames(
+    app: &AppHandle,
+    pending: &mut VecDeque<u8>,
+    seq: &mut u64,
+) -> Result<(), tauri::Error> {
+    while let Some(frame) = next_audio_frame(pending) {
+        emit_audio_frame(app, *seq, &frame)?;
+        *seq = (*seq).saturating_add(1);
+    }
+    Ok(())
+}
+
+fn next_audio_frame(pending: &mut VecDeque<u8>) -> Option<Vec<u8>> {
+    if pending.len() < FRAME_BYTES {
+        return None;
+    }
+    Some(pending.drain(..FRAME_BYTES).collect())
+}
+
 pub fn emit_audio_capture_error(app: &AppHandle, message: impl Into<String>) {
     let _ = app.emit(
         AUDIO_CAPTURE_ERROR_EVENT,
@@ -175,6 +185,8 @@ pub fn emit_audio_capture_error(app: &AppHandle, message: impl Into<String>) {
 #[cfg(target_os = "windows")]
 mod windows;
 
+mod pcm;
+
 #[cfg(target_os = "windows")]
 use windows as platform;
 
@@ -184,27 +196,18 @@ mod macos;
 #[cfg(target_os = "macos")]
 use macos as platform;
 
-#[cfg(target_os = "linux")]
-mod linux;
-
-#[cfg(target_os = "linux")]
-use linux as platform;
-
-#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-mod platform {
+#[cfg(test)]
+mod tests {
     use super::*;
 
-    pub fn list_audio_sources() -> Vec<AudioSource> {
-        vec![AudioSource {
-            id: "system_default".to_string(),
-            name: "System audio".to_string(),
-            kind: "system".to_string(),
-            is_available: false,
-            detail: "Native system audio capture is not implemented for this platform.".to_string(),
-        }]
-    }
+    #[test]
+    fn next_audio_frame_leaves_partial_tail_pending() {
+        let mut pending = VecDeque::from(vec![7_u8; FRAME_BYTES + 2]);
 
-    pub fn start_audio_capture(_app: AppHandle, _source_id: &str) -> Result<CaptureHandle, String> {
-        Err("native system audio capture is not implemented for this platform yet".to_string())
+        let frame = next_audio_frame(&mut pending);
+
+        assert_eq!(frame.as_ref().map(Vec::len), Some(FRAME_BYTES));
+        assert_eq!(pending.len(), 2);
+        assert!(next_audio_frame(&mut pending).is_none());
     }
 }
