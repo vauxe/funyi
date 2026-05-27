@@ -183,6 +183,18 @@ corepack pnpm run build
 Linux desktop bundles are not supported until the overlay window layer has Linux
 support.
 
+## Check Desktop Changes
+
+From the repository root:
+
+```bash
+make desktop-check
+make desktop-format
+```
+
+`desktop-check` runs the desktop lint, format, TypeScript, UI test, and Rust
+test gates.
+
 ## Data And Privacy
 
 The ASR service runs locally on your machine. Audio sent to

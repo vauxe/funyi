@@ -1,12 +1,7 @@
 import type { AudioAdapter } from "./audio-adapter.js";
 import type { AudioSourceKind } from "./audio-source-kind.js";
 import { errorMessage } from "./error-message.js";
-import {
-  DEFAULT_CLOCK,
-  DEFAULT_FINISH_TIMEOUT_MS,
-  FinishTimeout,
-  type Clock,
-} from "./finish-timeout.js";
+import { DEFAULT_CLOCK, DEFAULT_FINISH_TIMEOUT_MS, FinishTimeout, type Clock } from "./finish-timeout.js";
 import { LiveAudioCapture } from "./live-audio-capture.js";
 import type { LanguageConfigUpdate, RealtimeEvent } from "./realtime-events.js";
 import type { LiveSessionClient, LiveSessionClientCallbacks } from "./session-client.js";
@@ -223,9 +218,10 @@ export class LiveSession {
       return;
     }
 
-    const reason = this.state === "finishing"
-      ? `WebSocket closed before transcript_final: ${event.code}`
-      : `WebSocket closed: ${event.code}`;
+    const reason =
+      this.state === "finishing"
+        ? `WebSocket closed before transcript_final: ${event.code}`
+        : `WebSocket closed: ${event.code}`;
     await this.abort(reason, { closeSocket: false });
   }
 

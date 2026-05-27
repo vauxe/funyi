@@ -22,9 +22,7 @@ export class AudioSourceSelect {
 
   render(sources: AudioSource[]): void {
     this.sourceKinds = new Map(
-      sources
-        .filter((source) => source.isAvailable)
-        .map((source) => [source.id, source.kind]),
+      sources.filter((source) => source.isAvailable).map((source) => [source.id, source.kind]),
     );
     this.fallbackUnavailableDetail = sources[0]?.detail || "";
     replaceSelectOptions(

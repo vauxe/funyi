@@ -42,7 +42,13 @@ test("renders status summary datasets and clears stale level", () => {
 });
 
 function createElements(): Record<
-  "appShell" | "audioSource" | "language" | "serverUrl" | "sessionButton" | "sessionStatus" | "translationTargetLanguage",
+  | "appShell"
+  | "audioSource"
+  | "language"
+  | "serverUrl"
+  | "sessionButton"
+  | "sessionStatus"
+  | "translationTargetLanguage",
   FakeElement
 > {
   return {
@@ -56,7 +62,9 @@ function createElements(): Record<
   };
 }
 
-function sessionControlsElements(elements: ReturnType<typeof createElements>): ConstructorParameters<typeof SessionControlsView>[0] {
+function sessionControlsElements(
+  elements: ReturnType<typeof createElements>,
+): ConstructorParameters<typeof SessionControlsView>[0] {
   return {
     appShell: asDomElement(elements.appShell),
     audioSource: asDomElement<HTMLSelectElement>(elements.audioSource),

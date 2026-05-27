@@ -9,7 +9,11 @@ const testDistDir = join(root, "ui", "test-dist");
 rmSync(testDistDir, { force: true, recursive: true });
 mkdirSync(testDistDir, { recursive: true });
 
-execFileSync(process.execPath, [join(root, "node_modules", "typescript", "bin", "tsc"), "-p", "ui/tsconfig.test.json"], {
-  cwd: root,
-  stdio: "inherit",
-});
+execFileSync(
+  process.execPath,
+  [join(root, "node_modules", "typescript", "bin", "tsc"), "-p", "ui/tsconfig.test.json"],
+  {
+    cwd: root,
+    stdio: "inherit",
+  },
+);

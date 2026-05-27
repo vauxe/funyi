@@ -16,7 +16,10 @@ test("collects app elements and resize handles from stable selectors", () => {
   const dom = getAppElements();
 
   assert.equal(dom.appShell, elements["app-shell"]);
-  assert.deepEqual(dom.resizeHandles.map((handle) => handle.direction), [...RESIZE_DIRECTIONS]);
+  assert.deepEqual(
+    dom.resizeHandles.map((handle) => handle.direction),
+    [...RESIZE_DIRECTIONS],
+  );
   assert.equal(elements["app-shell"]!.tagName, "main");
   assert.equal(elements["caption-strip"]!.tagName, "section");
   assert.equal(elements["history-list"]!.tagName, "section");

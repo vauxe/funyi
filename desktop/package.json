@@ -8,10 +8,22 @@
     "build:ui": "node scripts/build-ui.mjs",
     "dev": "tauri dev",
     "build": "tauri build",
+    "lint": "pnpm run lint:ui && pnpm run lint:rust",
+    "lint:ui": "biome lint --diagnostic-level=warn --error-on-warnings .",
+    "lint:rust": "cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",
+    "format": "pnpm run format:ui && pnpm run format:rust",
+    "format:ui": "biome format --write .",
+    "format:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml",
+    "format:check": "pnpm run format:ui:check && pnpm run format:rust:check",
+    "format:ui:check": "biome format .",
+    "format:rust:check": "cargo fmt --check --manifest-path src-tauri/Cargo.toml",
     "test": "node scripts/build-ui.mjs && node scripts/build-ui-tests.mjs && node scripts/run-ui-tests.mjs",
-    "typecheck": "tsc -p ui/tsconfig.test.json --noEmit"
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "typecheck": "tsc -p ui/tsconfig.test.json --noEmit",
+    "check": "pnpm run lint && pnpm run format:check && pnpm run typecheck && pnpm run test && pnpm run test:rust"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.4.15",
     "@tauri-apps/cli": "2.11.1",
     "@types/node": "24.12.2",
     "typescript": "5.9.3"

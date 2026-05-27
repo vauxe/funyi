@@ -1,4 +1,4 @@
-import { SubtitleDocument, type SubtitleLine } from "./subtitle-document.js";
+import type { SubtitleDocument, SubtitleLine } from "./subtitle-document.js";
 
 interface CaptionViewElements {
   previousSource: HTMLElement;
@@ -108,10 +108,7 @@ function updateHistoryItem(item: HTMLElement, line: SubtitleLine, translationEna
     setTextIfChanged(source, line.text);
   }
   if (translation) {
-    setTextIfChanged(
-      translation,
-      translationEnabled ? line.translation || line.translationMessage || "" : "",
-    );
+    setTextIfChanged(translation, translationEnabled ? line.translation || line.translationMessage || "" : "");
   }
 }
 
@@ -122,9 +119,7 @@ function setTextIfChanged(element: HTMLElement, value: string): void {
 }
 
 function formatRange(startMs: number | null, endMs: number | null, status: string | null): string {
-  const prefix = isInteger(startMs) && isInteger(endMs)
-    ? `${formatClock(startMs)} - ${formatClock(endMs)}`
-    : "pending";
+  const prefix = isInteger(startMs) && isInteger(endMs) ? `${formatClock(startMs)} - ${formatClock(endMs)}` : "pending";
   return status ? `${prefix} ${status}` : prefix;
 }
 

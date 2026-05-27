@@ -261,7 +261,12 @@ export class OverlayController {
   }
 }
 
-function syncModeButton(button: HTMLButtonElement, expanded: boolean, expandedLabel: string, collapsedLabel: string): void {
+function syncModeButton(
+  button: HTMLButtonElement,
+  expanded: boolean,
+  expandedLabel: string,
+  collapsedLabel: string,
+): void {
   const label = expanded ? expandedLabel : collapsedLabel;
   button.classList.toggle("is-expanded", expanded);
   button.title = label;
@@ -270,8 +275,7 @@ function syncModeButton(button: HTMLButtonElement, expanded: boolean, expandedLa
 }
 
 function isInteractiveTarget(target: EventTarget | null): boolean {
-  return target instanceof Element
-    && Boolean(target.closest("button,input,select,textarea,a,label"));
+  return target instanceof Element && Boolean(target.closest("button,input,select,textarea,a,label"));
 }
 
 function blurActiveEditableControl(): void {

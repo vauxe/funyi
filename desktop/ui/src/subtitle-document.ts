@@ -103,11 +103,7 @@ export class SubtitleDocument {
         textLines.push(line.translation);
       }
       blocks.push(
-        [
-          String(number),
-          `${formatSrtTime(line.startMs)} --> ${formatSrtTime(line.endMs)}`,
-          ...textLines,
-        ].join("\n"),
+        [String(number), `${formatSrtTime(line.startMs)} --> ${formatSrtTime(line.endMs)}`, ...textLines].join("\n"),
       );
       number += 1;
     }
@@ -136,9 +132,7 @@ export class SubtitleDocument {
 
     const partial = optionalRecord(event.partial, "partial");
     const nextCurrent = partial ? lineFromSegment(partial, revision) : null;
-    this.currentLine = resetCurrentPreview
-      ? nextCurrent
-      : preserveCurrentTranslation(nextCurrent, previousCurrent);
+    this.currentLine = resetCurrentPreview ? nextCurrent : preserveCurrentTranslation(nextCurrent, previousCurrent);
     this.revision = revision;
   }
 
@@ -252,20 +246,14 @@ function renderLine(line: SubtitleLine | null, includeTranslation: boolean): Sub
   });
 }
 
-function preserveCurrentTranslation(
-  next: SubtitleLine | null,
-  previous: SubtitleLine | null,
-): SubtitleLine | null {
+function preserveCurrentTranslation(next: SubtitleLine | null, previous: SubtitleLine | null): SubtitleLine | null {
   if (!next || !previous?.translation || !isSamePartialLine(next, previous)) {
     return next;
   }
   return patchLine(next, translationPatch(previous));
 }
 
-function preserveStableTranslation(
-  next: SubtitleLine,
-  previous: SubtitleLine | null,
-): SubtitleLine {
+function preserveStableTranslation(next: SubtitleLine, previous: SubtitleLine | null): SubtitleLine {
   if (!previous?.translation || !isSamePartialLine(next, previous)) {
     return next;
   }
@@ -322,8 +310,10 @@ function isSamePartialLine(left: SubtitleLine, right: SubtitleLine): boolean {
 
   const leftText = left.text.trim();
   const rightText = right.text.trim();
-  return Boolean(leftText && rightText)
-    && (leftText === rightText || leftText.startsWith(rightText) || rightText.startsWith(leftText));
+  return (
+    Boolean(leftText && rightText) &&
+    (leftText === rightText || leftText.startsWith(rightText) || rightText.startsWith(leftText))
+  );
 }
 
 function formatSrtTime(ms: number): string {

@@ -23,14 +23,15 @@ export function htmlElementById(source: string, id: string): HtmlAttributes {
 
 export function htmlElements(source: string, tagName?: string): HtmlAttributes[] {
   const tagPattern = tagName ? escapeRegExp(tagName) : "[a-z][a-z0-9-]*";
-  return [...source.matchAll(new RegExp(`<${tagPattern}\\b([\\s\\S]*?)>`, "giu"))]
-    .map((match) => parseHtmlAttributes(match[1] || ""));
+  return [...source.matchAll(new RegExp(`<${tagPattern}\\b([\\s\\S]*?)>`, "giu"))].map((match) =>
+    parseHtmlAttributes(match[1] || ""),
+  );
 }
 
 export function rustEnumVariants(source: string, name: string): string[] {
   const match = new RegExp(`pub enum ${name} \\{([\\s\\S]*?)\\n\\}`, "u").exec(source);
   assert.ok(match?.[1], `missing Rust enum ${name}`);
-  return [...match[1].matchAll(/^    ([A-Z][A-Za-z0-9]*),$/gmu)]
+  return [...match[1].matchAll(/^ {4}([A-Z][A-Za-z0-9]*),$/gmu)]
     .map((variant) => variant[1])
     .filter((variant): variant is string => Boolean(variant));
 }

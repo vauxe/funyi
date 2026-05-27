@@ -5,7 +5,13 @@ import { OverlayController } from "./overlay-controller.js";
 import type { OverlayMode } from "./overlay-contract.js";
 import { nextTick } from "./test-async.fixture.js";
 import { clearBrowserGlobals } from "./test-browser-globals.fixture.js";
-import { asDomElement, FakeDocument, FakeElement, installFakeDocument, installFakeElementConstructors } from "./test-dom.fixture.js";
+import {
+  asDomElement,
+  FakeDocument,
+  FakeElement,
+  installFakeDocument,
+  installFakeElementConstructors,
+} from "./test-dom.fixture.js";
 import { createFakeOverlayHost, type FakeOverlayInvocation } from "./test-overlay-host.fixture.js";
 import { pointerEvent } from "./test-pointer-event.fixture.js";
 import { installFakeWindowRuntime } from "./test-window.fixture.js";
@@ -44,11 +50,10 @@ test("drag emits start update end commands and clears drag state", async () => {
   harness.windowRuntime.dispatch("pointerup", pointerEvent({ pointerId: 7 }));
   await nextTick();
 
-  assert.deepEqual(harness.invocations.map((item) => item.method), [
-    "startOverlayDrag",
-    "updateOverlayDrag",
-    "endOverlayDrag",
-  ]);
+  assert.deepEqual(
+    harness.invocations.map((item) => item.method),
+    ["startOverlayDrag", "updateOverlayDrag", "endOverlayDrag"],
+  );
   assert.equal(harness.elements.editable.blurred, true);
   assert.equal(harness.elements.root.className, "");
   assert.equal(harness.elements.dragSurface.pointerCapture, null);
@@ -61,10 +66,13 @@ test("drag ignores interactive targets inside the drag surface", async () => {
   const labelText = new FakeElement("span");
   label.append(labelText);
 
-  harness.elements.dragSurface.dispatch("pointerdown", pointerEvent({
-    pointerId: 7,
-    target: labelText,
-  }));
+  harness.elements.dragSurface.dispatch(
+    "pointerdown",
+    pointerEvent({
+      pointerId: 7,
+      target: labelText,
+    }),
+  );
   await nextTick();
 
   assert.deepEqual(harness.invocations, []);
@@ -75,11 +83,14 @@ test("compact resize updates local css height and uses resize commands", async (
   const harness = createHarness();
   harness.controller.bind();
 
-  harness.elements.resizeNorth.dispatch("pointerdown", pointerEvent({
-    currentTarget: harness.elements.resizeNorth,
-    pointerId: 9,
-    clientY: 100,
-  }));
+  harness.elements.resizeNorth.dispatch(
+    "pointerdown",
+    pointerEvent({
+      currentTarget: harness.elements.resizeNorth,
+      pointerId: 9,
+      clientY: 100,
+    }),
+  );
   await nextTick();
   harness.windowRuntime.dispatch("pointermove", pointerEvent({ pointerId: 9, clientY: 80 }));
   harness.windowRuntime.runNextTimeout();
@@ -87,11 +98,10 @@ test("compact resize updates local css height and uses resize commands", async (
   await nextTick();
 
   assert.equal(harness.elements.root.styleValues.get("--compact-height"), "200px");
-  assert.deepEqual(harness.invocations.map((item) => item.method), [
-    "startOverlayResize",
-    "updateOverlayResize",
-    "endOverlayResize",
-  ]);
+  assert.deepEqual(
+    harness.invocations.map((item) => item.method),
+    ["startOverlayResize", "updateOverlayResize", "endOverlayResize"],
+  );
 });
 
 function createHarness(): {
@@ -122,9 +132,7 @@ function createHarness(): {
     {
       dragSurface: asDomElement(dragSurface),
       historyButton: asDomElement<HTMLButtonElement>(historyButton),
-      resizeHandles: [
-        { element: asDomElement(resizeNorth), direction: "North" },
-      ],
+      resizeHandles: [{ element: asDomElement(resizeNorth), direction: "North" }],
       root: asDomElement(root),
     },
     {

@@ -25,8 +25,14 @@ test("renders language selectors with stable defaults", () => {
 
   assert.equal(language.children[0]?.textContent, "Auto");
   assert.equal(translationTarget.children[0]?.textContent, "Off");
-  assert.equal(translationTarget.children.some((option) => option.value === "Traditional Chinese"), true);
-  assert.equal(translationTarget.children.some((option) => option.value === "Swedish"), false);
+  assert.equal(
+    translationTarget.children.some((option) => option.value === "Traditional Chinese"),
+    true,
+  );
+  assert.equal(
+    translationTarget.children.some((option) => option.value === "Swedish"),
+    false,
+  );
   assert.equal(controls.asrLanguage, null);
   assert.equal(controls.targetLanguage, "");
   assert.equal(controls.translationEnabled, false);

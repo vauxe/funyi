@@ -1,7 +1,8 @@
-.PHONY: help backend backend-download backend-asr desktop desktop-install
+.PHONY: help backend backend-download backend-asr desktop desktop-install desktop-lint desktop-format desktop-format-check desktop-check
 
 BACKEND_ARGS ?=
 START_BACKEND := ./scripts/start_backend.sh
+DESKTOP_PNPM := cd desktop && corepack pnpm
 
 help:
 	@printf '%s\n' \
@@ -10,7 +11,10 @@ help:
 	  '  make backend-download   Start full backend and allow model downloads' \
 	  '  make backend-asr        Start ASR only, without translation or timestamps' \
 	  '  make desktop            Start the desktop client' \
-	  '  make desktop-install    Install desktop dependencies'
+	  '  make desktop-install    Install desktop dependencies' \
+	  '  make desktop-lint       Run desktop lint gates' \
+	  '  make desktop-format     Format desktop code' \
+	  '  make desktop-check      Run desktop lint, format, type, and test gates'
 
 backend:
 	$(START_BACKEND) $(BACKEND_ARGS)
@@ -22,7 +26,19 @@ backend-asr:
 	FUNYI_TRANSLATION_MODEL= FUNYI_TIMESTAMP_MODEL= $(START_BACKEND) $(BACKEND_ARGS)
 
 desktop:
-	cd desktop && corepack pnpm run dev
+	$(DESKTOP_PNPM) run dev
 
 desktop-install:
-	cd desktop && corepack pnpm install
+	$(DESKTOP_PNPM) install
+
+desktop-lint:
+	$(DESKTOP_PNPM) run lint
+
+desktop-format:
+	$(DESKTOP_PNPM) run format
+
+desktop-format-check:
+	$(DESKTOP_PNPM) run format:check
+
+desktop-check:
+	$(DESKTOP_PNPM) run check

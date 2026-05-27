@@ -1,9 +1,5 @@
 import { errorMessage } from "./error-message.js";
-import {
-  parseRealtimeEventMessage,
-  type LanguageConfigUpdate,
-  type RealtimeStartPayload,
-} from "./realtime-events.js";
+import { parseRealtimeEventMessage, type LanguageConfigUpdate, type RealtimeStartPayload } from "./realtime-events.js";
 import type { LiveSessionClient, LiveSessionClientCallbacks } from "./session-client.js";
 
 type ClientCallback<K extends keyof LiveSessionClientCallbacks> = LiveSessionClientCallbacks[K];

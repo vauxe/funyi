@@ -20,9 +20,7 @@ export interface LiveSessionStartOptions {
   audioSourceKind: AudioSourceKind;
 }
 
-export type SessionStartResult =
-  | { ok: true; options: LiveSessionStartOptions }
-  | { ok: false; message: string };
+export type SessionStartResult = { ok: true; options: LiveSessionStartOptions } | { ok: false; message: string };
 
 export function buildSessionStartOptions({
   url,

@@ -9,11 +9,7 @@ interface CompactResizeAnchor {
   startHeight: number;
 }
 
-export function nextCompactHeight(
-  resize: CompactResizeAnchor,
-  currentY: number,
-  fallback: number,
-): number {
+export function nextCompactHeight(resize: CompactResizeAnchor, currentY: number, fallback: number): number {
   const verticalDirection = compactVerticalResizeDirection(resize.direction);
   if (!verticalDirection) {
     return fallback;

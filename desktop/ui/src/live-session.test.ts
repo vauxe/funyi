@@ -173,10 +173,7 @@ test("warns when system capture keeps delivering silent pcm", async () => {
     harness.audio.frameHandler?.({ sampleRate: 16000, format: "pcm_s16le", dataBase64: "abcd" });
   }
 
-  assert.match(
-    harness.statuses.get("captureStatus") || "",
-    /Sys silent/,
-  );
+  assert.match(harness.statuses.get("captureStatus") || "", /Sys silent/);
   assert.equal(harness.statuses.get("audioHealth"), "systemSilent");
 });
 
@@ -223,10 +220,7 @@ test("uses microphone-specific capture status and silent warning", async () => {
     harness.audio.frameHandler?.({ sampleRate: 16000, format: "pcm_s16le", dataBase64: "abcd" });
   }
 
-  assert.match(
-    harness.statuses.get("captureStatus") || "",
-    /Mic silent/,
-  );
+  assert.match(harness.statuses.get("captureStatus") || "", /Mic silent/);
 });
 
 test("uses audio source kind without parsing platform-specific ids", async () => {

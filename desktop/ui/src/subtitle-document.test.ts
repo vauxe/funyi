@@ -82,10 +82,7 @@ test("translation annotates matching lines and stale preview is ignored", () => 
   const window = document.window();
   assert.equal(window.previous?.translation, "stable line");
   assert.equal(window.current?.translation, "current line");
-  assert.equal(
-    document.toSrt(),
-    "1\n00:00:00,000 --> 00:00:01,000\nstable\nstable line\n",
-  );
+  assert.equal(document.toSrt(), "1\n00:00:00,000 --> 00:00:01,000\nstable\nstable line\n");
 });
 
 test("current translation preview survives repeated partial revisions", () => {

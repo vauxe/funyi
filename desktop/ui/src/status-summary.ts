@@ -1,11 +1,7 @@
 import { parseAudioStatsState, type AudioLevelState } from "./audio-level.js";
 import { audioSourceKindFromAudioHealthStatus, type AudioSourceKind } from "./audio-source-kind.js";
 import type { SessionState } from "./session-state.js";
-import {
-  FINAL_TRANSCRIPT_CANCELLED_MESSAGE,
-  NO_AUDIO_SOURCE_MESSAGE,
-  type StatusValues,
-} from "./session-status.js";
+import { FINAL_TRANSCRIPT_CANCELLED_MESSAGE, NO_AUDIO_SOURCE_MESSAGE, type StatusValues } from "./session-status.js";
 
 export type StatusTone = "idle" | "active" | "warn" | "error";
 
@@ -51,10 +47,7 @@ const USER_FACING_ERROR_RULES: UserFacingErrorRule[] = [
   },
 ];
 
-export function summarizeStatus(
-  statusValues: StatusValues,
-  sessionState: SessionState,
-): StatusSummary {
+export function summarizeStatus(statusValues: StatusValues, sessionState: SessionState): StatusSummary {
   const error = currentUserVisibleError(statusValues, sessionState);
   if (error) {
     return { text: userFacingError(error), tone: "error" };
@@ -81,10 +74,7 @@ export function summarizeStatus(
   return { text: "", tone: "idle", level: audioStats.level };
 }
 
-function currentUserVisibleError(
-  statusValues: StatusValues,
-  sessionState: SessionState,
-): string {
+function currentUserVisibleError(statusValues: StatusValues, sessionState: SessionState): string {
   const captureStatus = statusValues.captureStatus;
   if (statusTextHasError(captureStatus)) {
     return captureStatus;
@@ -97,9 +87,7 @@ function currentUserVisibleError(
   if (statusTextHasError(connectionStatus)) {
     return connectionStatus;
   }
-  return sessionState === "idle" && connectionStatus !== FINAL_TRANSCRIPT_CANCELLED_MESSAGE
-    ? connectionStatus
-    : "";
+  return sessionState === "idle" && connectionStatus !== FINAL_TRANSCRIPT_CANCELLED_MESSAGE ? connectionStatus : "";
 }
 
 function isLowLevelConnectionStatus(value: string): boolean {
@@ -115,5 +103,7 @@ function silentCaptureSummary(kind: AudioSourceKind): string {
 }
 
 function statusTextHasError(value: string): boolean {
-  return /error|failed|closed|timeout|timed out|lost|unavailable|unsupported|invalid|permission|denied|no native|no audio/i.test(value);
+  return /error|failed|closed|timeout|timed out|lost|unavailable|unsupported|invalid|permission|denied|no native|no audio/i.test(
+    value,
+  );
 }

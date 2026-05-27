@@ -2,11 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { RESIZE_DIRECTION_ATTRIBUTE } from "./overlay-contract.js";
-import {
-  htmlElementById,
-  htmlElements,
-  type HtmlAttributes,
-} from "./test-contract-parsers.fixture.js";
+import { htmlElementById, htmlElements, type HtmlAttributes } from "./test-contract-parsers.fixture.js";
 import { readDesktopFile } from "./test-project-files.fixture.js";
 
 const APP_HTML = readDesktopFile("ui", "index.html");
@@ -23,14 +19,8 @@ test("icon-only buttons have stable accessible names", () => {
 });
 
 test("non-visual control groups and resize handles stay screen-reader coherent", () => {
-  assert.deepEqual(
-    namedGroup(".caption-controls"),
-    { role: "group", "aria-label": "Session controls" },
-  );
-  assert.deepEqual(
-    namedGroup(".language-settings"),
-    { role: "group", "aria-label": "Language settings" },
-  );
+  assert.deepEqual(namedGroup(".caption-controls"), { role: "group", "aria-label": "Session controls" });
+  assert.deepEqual(namedGroup(".language-settings"), { role: "group", "aria-label": "Language settings" });
   assert.equal(htmlElementById(APP_HTML, "session-status").id, "session-status");
 
   const resizeHandles = htmlElements(APP_HTML, "div").filter((element) => RESIZE_DIRECTION_ATTRIBUTE in element);

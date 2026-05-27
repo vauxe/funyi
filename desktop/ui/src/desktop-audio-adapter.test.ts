@@ -12,13 +12,15 @@ type FrameHandler = (frame: unknown) => void;
 test("adapts AudioCaptureHost methods to LiveSession audio adapter", async () => {
   const calls: string[] = [];
   const handlers: { error?: ErrorHandler; frame?: FrameHandler } = {};
-  const sources: AudioSource[] = [{
-    detail: "available",
-    id: "system_default",
-    isAvailable: true,
-    kind: "system",
-    name: "Audio",
-  }];
+  const sources: AudioSource[] = [
+    {
+      detail: "available",
+      id: "system_default",
+      isAvailable: true,
+      kind: "system",
+      name: "Audio",
+    },
+  ];
   const host = fakeHost({
     listAudioSources: async () => {
       calls.push("list");

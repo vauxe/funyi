@@ -1,8 +1,4 @@
-import {
-  isActiveSessionState,
-  isSessionConfigurationLocked,
-  type SessionState,
-} from "./session-state.js";
+import { isActiveSessionState, isSessionConfigurationLocked, type SessionState } from "./session-state.js";
 import type { StatusSummary } from "./status-summary.js";
 
 interface SessionControlsElements {

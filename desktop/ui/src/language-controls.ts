@@ -22,16 +22,8 @@ export class LanguageControls {
   render(): void {
     const languageOptions = ASR_LANGUAGE_OPTIONS.map(languageOption);
     const translationTargetOptions = TRANSLATION_TARGET_LANGUAGE_OPTIONS.map(languageOption);
-    replaceSelectOptions(
-      this.languageSelect,
-      [{ value: "", label: "Auto" }, ...languageOptions],
-      "",
-    );
-    replaceSelectOptions(
-      this.translationTargetSelect,
-      [{ value: "", label: "Off" }, ...translationTargetOptions],
-      "",
-    );
+    replaceSelectOptions(this.languageSelect, [{ value: "", label: "Auto" }, ...languageOptions], "");
+    replaceSelectOptions(this.translationTargetSelect, [{ value: "", label: "Off" }, ...translationTargetOptions], "");
   }
 }
 

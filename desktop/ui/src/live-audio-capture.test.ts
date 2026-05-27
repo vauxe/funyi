@@ -102,7 +102,10 @@ test("start failure clears listeners before propagating", async () => {
 function createHarness({
   decodeError = null,
   startError = null,
-}: { decodeError?: Error | null; startError?: Error | null } = {}) {
+}: {
+  decodeError?: Error | null;
+  startError?: Error | null;
+} = {}) {
   const statuses = new Map<StatusKey, string>();
   const abortMessages: string[] = [];
   const sentPcm: Uint8Array[] = [];

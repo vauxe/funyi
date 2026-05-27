@@ -107,10 +107,7 @@ async function invokeRequired<TResult>(
   return runtime.core.invoke<TResult>(command, args);
 }
 
-async function invokeOptional<TResult>(
-  command: string,
-  args?: Record<string, unknown>,
-): Promise<TResult | undefined> {
+async function invokeOptional<TResult>(command: string, args?: Record<string, unknown>): Promise<TResult | undefined> {
   const runtime = tauriRuntime();
   if (!runtime) {
     return undefined;
@@ -118,10 +115,7 @@ async function invokeOptional<TResult>(
   return runtime.core.invoke<TResult>(command, args);
 }
 
-async function listenOptional<TPayload>(
-  eventName: string,
-  handler: (payload: TPayload) => void,
-): Promise<Unlisten> {
+async function listenOptional<TPayload>(eventName: string, handler: (payload: TPayload) => void): Promise<Unlisten> {
   const runtime = tauriRuntime();
   if (!runtime) {
     return () => {};

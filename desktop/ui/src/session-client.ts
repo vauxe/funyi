@@ -1,8 +1,4 @@
-import type {
-  LanguageConfigUpdate,
-  RealtimeEvent,
-  RealtimeStartPayload,
-} from "./realtime-events.js";
+import type { LanguageConfigUpdate, RealtimeEvent, RealtimeStartPayload } from "./realtime-events.js";
 
 export interface LiveSessionClient {
   close(): void | Promise<void>;

@@ -8,7 +8,7 @@ import { ASR_LANGUAGE_OPTIONS, TRANSLATION_TARGET_LANGUAGE_OPTIONS } from "./lan
 import { installFakeAppDocument } from "./test-app-document.fixture.js";
 import { nextTick } from "./test-async.fixture.js";
 import { clearBrowserGlobals } from "./test-browser-globals.fixture.js";
-import { FakeElement, installedFakeDocument } from "./test-dom.fixture.js";
+import { type FakeElement, installedFakeDocument } from "./test-dom.fixture.js";
 import { createFakeAudioAdapter } from "./test-audio-adapter.fixture.js";
 import { createFakeOverlayHost, type FakeOverlayHost } from "./test-overlay-host.fixture.js";
 import { pointerEvent } from "./test-pointer-event.fixture.js";

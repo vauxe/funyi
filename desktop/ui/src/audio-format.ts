@@ -15,8 +15,10 @@ export function decodeBase64Pcm(base64: string): Uint8Array {
 export function isExpectedAudioFrame(
   frame: unknown,
 ): frame is { dataBase64: string; format: typeof AUDIO_FORMAT; sampleRate: typeof AUDIO_SAMPLE_RATE } {
-  return isRecord(frame)
-    && frame.sampleRate === AUDIO_SAMPLE_RATE
-    && frame.format === AUDIO_FORMAT
-    && typeof frame.dataBase64 === "string";
+  return (
+    isRecord(frame) &&
+    frame.sampleRate === AUDIO_SAMPLE_RATE &&
+    frame.format === AUDIO_FORMAT &&
+    typeof frame.dataBase64 === "string"
+  );
 }

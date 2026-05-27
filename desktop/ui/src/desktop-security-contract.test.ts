@@ -29,10 +29,9 @@ test("Tauri CSP stays scoped to packaged UI assets and the local ASR websocket",
 function cspDirectives(csp: string | undefined): Map<string, string[]> {
   assert.ok(csp, "missing Tauri CSP");
   return new Map(
-    csp.split(";")
-      .flatMap((directive): Array<readonly [string, string[]]> => {
-        const [name, ...sources] = directive.trim().split(/\s+/u);
-        return name ? [[name, sources]] : [];
-      }),
+    csp.split(";").flatMap((directive): Array<readonly [string, string[]]> => {
+      const [name, ...sources] = directive.trim().split(/\s+/u);
+      return name ? [[name, sources]] : [];
+    }),
   );
 }

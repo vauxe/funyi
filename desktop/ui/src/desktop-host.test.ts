@@ -84,9 +84,7 @@ test("uses Tauri commands and events for native capture", async () => {
     { command: DESKTOP_COMMANDS.startAudioCapture, args: { sourceId: "system_default" } },
     { command: DESKTOP_COMMANDS.stopAudioCapture, args: undefined },
   ]);
-  assert.deepEqual(frames, [
-    { seq: 1, sampleRate: 16000, format: "pcm_s16le", dataBase64: "AQID" },
-  ]);
+  assert.deepEqual(frames, [{ seq: 1, sampleRate: 16000, format: "pcm_s16le", dataBase64: "AQID" }]);
   assert.deepEqual(errors, [{ message: "device lost" }, { message: "Audio capture failed." }]);
   assert.equal(runtime.unlistenCount, 2);
 });

@@ -2,10 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { APP_ELEMENT_SELECTORS } from "./app-dom.js";
-import {
-  RESIZE_DIRECTION_ATTRIBUTE,
-  RESIZE_DIRECTIONS,
-} from "./overlay-contract.js";
+import { RESIZE_DIRECTION_ATTRIBUTE, RESIZE_DIRECTIONS } from "./overlay-contract.js";
 import { htmlAttributeValues } from "./test-contract-parsers.fixture.js";
 import { readDesktopFile } from "./test-project-files.fixture.js";
 
@@ -21,8 +18,5 @@ test("app markup contains every element required by the DOM contract", () => {
 });
 
 test("app markup exposes the full resize handle contract", () => {
-  assert.deepEqual(
-    htmlAttributeValues(APP_HTML, RESIZE_DIRECTION_ATTRIBUTE).sort(),
-    [...RESIZE_DIRECTIONS].sort(),
-  );
+  assert.deepEqual(htmlAttributeValues(APP_HTML, RESIZE_DIRECTION_ATTRIBUTE).sort(), [...RESIZE_DIRECTIONS].sort());
 });

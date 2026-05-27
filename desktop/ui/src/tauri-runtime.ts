@@ -9,10 +9,7 @@ export interface TauriRuntime {
     invoke<TResult>(command: string, args?: Record<string, unknown>): Promise<TResult>;
   };
   event: {
-    listen<TPayload>(
-      event: string,
-      handler: (event: TauriEvent<TPayload>) => void,
-    ): Promise<Unlisten>;
+    listen<TPayload>(event: string, handler: (event: TauriEvent<TPayload>) => void): Promise<Unlisten>;
   };
 }
 

@@ -51,6 +51,22 @@ environment.
 The Windows client path is the important path for system-audio capture because
 WASAPI loopback captures the default Windows playback device.
 
+## Development Checks
+
+From the repository root:
+
+```bash
+make desktop-check
+make desktop-format
+```
+
+From `desktop/`, the same gates are available as:
+
+```bash
+corepack pnpm run check
+corepack pnpm run format
+```
+
 ## Contract
 
 Native audio events:

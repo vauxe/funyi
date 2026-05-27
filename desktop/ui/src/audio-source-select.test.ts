@@ -32,10 +32,10 @@ test("renders source labels and tracks selected source kind", () => {
   ]);
 
   assert.equal(sourceSelect.hasAvailableSource, true);
-  assert.deepEqual(select.children.map((child) => child.textContent), [
-    "Sys · Audio",
-    "Mic · Studio Mic",
-  ]);
+  assert.deepEqual(
+    select.children.map((child) => child.textContent),
+    ["Sys · Audio", "Mic · Studio Mic"],
+  );
   assert.equal(sourceSelect.selectedKind, "system");
 
   select.value = "mic";
@@ -82,15 +82,12 @@ test("uses kind-specific source labels when native names are blank", () => {
   const select = new FakeElement("select");
   const sourceSelect = new AudioSourceSelect(asDomElement<HTMLSelectElement>(select));
 
-  sourceSelect.render([
-    source({ id: "system", name: "  " }),
-    source({ id: "mic", kind: "microphone", name: "" }),
-  ]);
+  sourceSelect.render([source({ id: "system", name: "  " }), source({ id: "mic", kind: "microphone", name: "" })]);
 
-  assert.deepEqual(select.children.map((child) => child.textContent), [
-    "Sys · Audio",
-    "Mic · Microphone",
-  ]);
+  assert.deepEqual(
+    select.children.map((child) => child.textContent),
+    ["Sys · Audio", "Mic · Microphone"],
+  );
 });
 
 function source(overrides: Partial<AudioSource>): AudioSource {

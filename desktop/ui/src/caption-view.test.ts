@@ -4,7 +4,13 @@ import assert from "node:assert/strict";
 import { CaptionView } from "./caption-view.js";
 import { SubtitleDocument } from "./subtitle-document.js";
 import { clearDomGlobals } from "./test-browser-globals.fixture.js";
-import { asDomElement, FakeDocument, FakeElement, installFakeDocument, installFakeElementConstructors } from "./test-dom.fixture.js";
+import {
+  asDomElement,
+  FakeDocument,
+  FakeElement,
+  installFakeDocument,
+  installFakeElementConstructors,
+} from "./test-dom.fixture.js";
 
 test.beforeEach(() => {
   installFakeDocument(new FakeDocument());
@@ -88,7 +94,9 @@ function createElements(): Record<
   };
 }
 
-function captionViewElements(elements: ReturnType<typeof createElements>): ConstructorParameters<typeof CaptionView>[0] {
+function captionViewElements(
+  elements: ReturnType<typeof createElements>,
+): ConstructorParameters<typeof CaptionView>[0] {
   return {
     previousSource: asDomElement(elements.previousSource),
     previousTranslation: asDomElement(elements.previousTranslation),
@@ -101,11 +109,7 @@ function captionViewElements(elements: ReturnType<typeof createElements>): Const
 function stableSegment(
   index: number,
   text: string,
-  {
-    endMs,
-    startMs,
-    timingStatus,
-  }: { endMs?: number; startMs?: number; timingStatus?: string } = {},
+  { endMs, startMs, timingStatus }: { endMs?: number; startMs?: number; timingStatus?: string } = {},
 ): Record<string, unknown> {
   return {
     id: `seg_${String(index).padStart(6, "0")}`,

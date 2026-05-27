@@ -45,7 +45,10 @@ export class FakeElement {
     },
   };
 
-  constructor(readonly tagName = "div", readonly id = "") {}
+  constructor(
+    readonly tagName = "div",
+    readonly id = "",
+  ) {}
 
   get lastElementChild(): FakeElement | null {
     return this.children.at(-1) || null;
@@ -139,9 +142,7 @@ function dataAttributeKey(name: string): string | null {
   if (!name.startsWith("data-")) {
     return null;
   }
-  return name
-    .slice("data-".length)
-    .replace(/-([a-z])/g, (_match, letter: string) => letter.toUpperCase());
+  return name.slice("data-".length).replace(/-([a-z])/g, (_match, letter: string) => letter.toUpperCase());
 }
 
 export class FakeDocument {

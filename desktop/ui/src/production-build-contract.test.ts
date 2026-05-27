@@ -18,8 +18,12 @@ test("production UI build includes only runtime artifacts", () => {
 
 test("production HTML references only production UI assets", () => {
   const html = readDesktopFile("ui", "dist", "index.html");
-  const stylesheets = htmlElements(html, "link").map((link) => link.href).filter(Boolean);
-  const scripts = htmlElements(html, "script").map((script) => script.src).filter(Boolean);
+  const stylesheets = htmlElements(html, "link")
+    .map((link) => link.href)
+    .filter(Boolean);
+  const scripts = htmlElements(html, "script")
+    .map((script) => script.src)
+    .filter(Boolean);
 
   assert.deepEqual(stylesheets, ["./styles.css"]);
   assert.deepEqual(scripts, ["./app.js"]);

@@ -17,17 +17,13 @@ test("pointer session captures one pointer and clears listeners on end", () => {
   const surface = new FakeElement();
   const moves: number[] = [];
   const ends: number[] = [];
-  const session = new PointerSession(
-    asDomElement(root),
-    "is-active",
-    {
-      onMove: (event) => moves.push(event.pointerId),
-      onEnd: (event) => {
-        ends.push(event.pointerId);
-        session.clear();
-      },
+  const session = new PointerSession(asDomElement(root), "is-active", {
+    onMove: (event) => moves.push(event.pointerId),
+    onEnd: (event) => {
+      ends.push(event.pointerId);
+      session.clear();
     },
-  );
+  });
 
   assert.equal(session.start(pointerEvent({ pointerId: 7 }), asDomElement(surface)), true);
   assert.equal(session.start(pointerEvent({ pointerId: 8 }), asDomElement(surface)), false);
