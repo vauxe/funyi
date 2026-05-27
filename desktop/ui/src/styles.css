@@ -663,9 +663,8 @@ select:disabled {
 
 .history-list {
   position: relative;
-  display: grid;
-  grid-auto-rows: max-content;
-  align-content: end;
+  display: flex;
+  flex-direction: column;
   gap: 9px;
   height: 100%;
   min-height: 0;
@@ -684,10 +683,11 @@ select:disabled {
 
 .history-item {
   display: grid;
+  flex: 0 0 auto;
   grid-template-columns: 72px minmax(0, 1fr);
   grid-template-rows: auto auto;
   column-gap: 10px;
-  row-gap: 3px;
+  row-gap: 5px;
   align-items: start;
   min-height: 0;
   padding: 3px 0;
@@ -698,6 +698,10 @@ select:disabled {
     opacity 220ms ease,
     transform 220ms ease,
     color 220ms ease;
+}
+
+.history-item:first-child {
+  margin-top: auto;
 }
 
 .history-item.is-latest {
@@ -765,7 +769,7 @@ select:disabled {
   .history-item {
     grid-template-columns: 1fr;
     grid-template-rows: auto auto auto;
-    row-gap: 3px;
+    row-gap: 5px;
   }
 
   .history-time,

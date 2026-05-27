@@ -37,12 +37,14 @@ export interface SubtitleLine {
 export class SubtitleDocument {
   private currentLine: SubtitleLine | null;
   private revision: number;
+  private showLatestStableAsCurrent: boolean;
   private stableLineList: SubtitleLine[];
   private translationEnabledValue: boolean;
 
   constructor({ translationEnabled = true }: { translationEnabled?: boolean } = {}) {
     this.translationEnabledValue = Boolean(translationEnabled);
     this.revision = 0;
+    this.showLatestStableAsCurrent = false;
     this.stableLineList = [];
     this.currentLine = null;
   }
@@ -85,9 +87,11 @@ export class SubtitleDocument {
   }
 
   window({ includeTranslation = this.translationEnabledValue }: { includeTranslation?: boolean } = {}): SubtitleWindow {
+    const currentLine =
+      this.currentLine || (this.showLatestStableAsCurrent ? this.stableLineList.at(-1) || null : null);
     return {
       previous: renderLine(this.stableLineList.at(-1) || null, includeTranslation),
-      current: renderLine(this.currentLine, includeTranslation),
+      current: renderLine(currentLine, includeTranslation),
     };
   }
 
@@ -132,7 +136,15 @@ export class SubtitleDocument {
 
     const partial = optionalRecord(event.partial, "partial");
     const nextCurrent = partial ? lineFromSegment(partial, revision) : null;
-    this.currentLine = resetCurrentPreview ? nextCurrent : preserveCurrentTranslation(nextCurrent, previousCurrent);
+    if (nextCurrent) {
+      this.currentLine = resetCurrentPreview ? nextCurrent : preserveCurrentTranslation(nextCurrent, previousCurrent);
+      this.showLatestStableAsCurrent = false;
+    } else if (stableAppends.length > 0) {
+      this.currentLine = null;
+      this.showLatestStableAsCurrent = true;
+    } else if (!this.showLatestStableAsCurrent) {
+      this.currentLine = null;
+    }
     this.revision = revision;
   }
 
@@ -162,6 +174,7 @@ export class SubtitleDocument {
     }
     this.stableLineList = lines;
     this.currentLine = null;
+    this.showLatestStableAsCurrent = false;
     this.revision = revision;
   }
 

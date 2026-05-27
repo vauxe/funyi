@@ -60,6 +60,57 @@ test("window scrolls when current partial becomes stable", () => {
   assert.equal(window.current?.text, "next");
 });
 
+test("keeps latest stable line visible until a new partial arrives", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 0,
+    stable_appends: [],
+    partial: partialSegment("draft", { startMs: 0, endMs: 1000 }),
+  });
+
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 2,
+    stable_base: 0,
+    stable_count: 1,
+    stable_appends: [stableSegment(1, "draft", { startMs: 0, endMs: 1000 })],
+    partial: null,
+  });
+  document.applyEvent({ type: "translation_stable", source_segment_id: "seg_000001", text: "translated draft" });
+
+  let window = document.window();
+  assert.equal(window.previous?.text, "draft");
+  assert.equal(window.current?.text, "draft");
+  assert.equal(window.current?.translation, "translated draft");
+
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 3,
+    stable_base: 1,
+    stable_count: 1,
+    stable_appends: [],
+    partial: null,
+  });
+  assert.equal(document.window().current?.text, "draft");
+
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 4,
+    stable_base: 1,
+    stable_count: 1,
+    stable_appends: [],
+    partial: partialSegment("next", { startMs: 1000, endMs: 1800 }),
+  });
+
+  window = document.window();
+  assert.equal(window.previous?.text, "draft");
+  assert.equal(window.current?.text, "next");
+  assert.equal(window.current?.translation, null);
+});
+
 test("translation annotates matching lines and stale preview is ignored", () => {
   const document = new SubtitleDocument();
   document.applyEvent({

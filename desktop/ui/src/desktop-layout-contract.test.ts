@@ -69,6 +69,23 @@ test("history keeps the latest line above the bottom fade mask", () => {
   assert.match(latestItem, /scroll-margin-bottom:\s*24px;/u);
 });
 
+test("history list remains scrollable while short history anchors to the bottom", () => {
+  const historyList = cssRuleBody(UI_STYLES, ".history-list");
+  const firstItem = cssRuleBody(UI_STYLES, ".history-item:first-child");
+
+  assert.match(historyList, /display:\s*flex;/u);
+  assert.match(historyList, /flex-direction:\s*column;/u);
+  assert.doesNotMatch(historyList, /align-content:\s*end;/u);
+  assert.match(firstItem, /margin-top:\s*auto;/u);
+});
+
+test("history rows keep source and translation separated under overflow", () => {
+  const historyItem = cssRuleBody(UI_STYLES, ".history-item");
+
+  assert.match(historyItem, /flex:\s*0 0 auto;/u);
+  assert.match(historyItem, /row-gap:\s*5px;/u);
+});
+
 function overlaySize(name: string): number {
   return rustNumberConst(RUST_OVERLAY_SOURCE, name);
 }

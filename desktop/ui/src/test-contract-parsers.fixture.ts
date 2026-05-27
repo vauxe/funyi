@@ -55,7 +55,9 @@ export function rustTauriCommandNames(source: string): string[] {
 }
 
 export function cssRuleBody(source: string, selector: string): string {
-  const match = new RegExp(`${escapeRegExp(selector)}\\s*\\{([\\s\\S]*?)\\n\\}`, "u").exec(source);
+  const normalizedSource = source.replace(/\r\n?/gu, "\n");
+  const normalizedSelector = selector.replace(/\r\n?/gu, "\n");
+  const match = new RegExp(`${escapeRegExp(normalizedSelector)}\\s*\\{([\\s\\S]*?)\\n\\}`, "u").exec(normalizedSource);
   assert.ok(match?.[1], `missing CSS rule ${selector}`);
   return match[1];
 }
