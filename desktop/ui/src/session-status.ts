@@ -1,3 +1,4 @@
+import type { AudioStats } from "./audio-level.js";
 import type { SilentAudioHealthStatus } from "./audio-source-kind.js";
 
 export const NO_AUDIO_SOURCE_MESSAGE = "No native audio source available.";
@@ -7,7 +8,7 @@ export type AudioHealthStatus = "" | SilentAudioHealthStatus;
 
 export interface StatusValues {
   audioHealth: AudioHealthStatus;
-  audioStats: string;
+  audioStats: AudioStats;
   captureStatus: string;
   connectionStatus: string;
 }

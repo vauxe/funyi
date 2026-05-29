@@ -15,7 +15,7 @@ test("renders summaries from session state and status values", () => {
   controller.setSessionState(sessionState);
   sessionState = "running";
   controller.setSessionState(sessionState);
-  controller.setStatus("audioStats", "-20dB, dropped 1");
+  controller.setStatus("audioStats", { levelDb: -20, droppedFrames: 1 });
 
   assert.deepEqual(summaries, [
     { text: "Connecting...", tone: "active" },

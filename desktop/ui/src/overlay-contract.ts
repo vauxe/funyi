@@ -16,6 +16,11 @@ export const RESIZE_DIRECTIONS = [
 
 export type ResizeDirection = (typeof RESIZE_DIRECTIONS)[number];
 
+export interface ResizeHandle {
+  element: HTMLElement;
+  direction: ResizeDirection;
+}
+
 export function isResizeDirection(value: string | undefined): value is ResizeDirection {
   return RESIZE_DIRECTIONS.includes(value as ResizeDirection);
 }

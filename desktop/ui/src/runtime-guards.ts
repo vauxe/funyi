@@ -2,6 +2,10 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+export function isInteger(value: unknown): value is number {
+  return Number.isInteger(value);
+}
+
 export function requiredRecord(value: unknown, fieldName: string): Record<string, unknown> {
   if (!isRecord(value)) {
     throw new Error(`${fieldName} must be an object`);

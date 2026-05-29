@@ -23,7 +23,7 @@ test("starts capture, forwards valid pcm, and cleans listeners on stop", async (
   assert.deepEqual(harness.audio.startCalls, ["system_default"]);
   assert.equal(harness.statuses.get("captureStatus"), "Sys");
   assert.deepEqual([...harness.sentPcm[0]!], [4]);
-  assert.equal(harness.statuses.get("audioStats"), "Silent");
+  assert.deepEqual(harness.statuses.get("audioStats"), { levelDb: null, droppedFrames: 0 });
   assert.equal(harness.audio.frameHandler, null);
   assert.equal(harness.audio.captureErrorHandler, null);
   assert.equal(harness.audio.unlistenFrames, 1);
@@ -44,7 +44,7 @@ test("reports silent microphone capture and dropped frames", async () => {
 
   assert.equal(harness.statuses.get("captureStatus"), "Mic silent");
   assert.equal(harness.statuses.get("audioHealth"), "microphoneSilent");
-  assert.equal(harness.statuses.get("audioStats"), "Silent, dropped 30");
+  assert.deepEqual(harness.statuses.get("audioStats"), { levelDb: null, droppedFrames: 30 });
 });
 
 test("capture errors surface status and request abort", async () => {
@@ -106,7 +106,7 @@ function createHarness({
   decodeError?: Error | null;
   startError?: Error | null;
 } = {}) {
-  const statuses = new Map<StatusKey, string>();
+  const statuses = new Map<StatusKey, unknown>();
   const abortMessages: string[] = [];
   const sentPcm: Uint8Array[] = [];
   const audio = createFakeAudioAdapter({ decodeError, startError });

@@ -1,5 +1,5 @@
 import type { RealtimeEvent } from "./realtime-events.js";
-import { optionalRecord, recordArray } from "./runtime-guards.js";
+import { isInteger, optionalRecord, recordArray } from "./runtime-guards.js";
 
 interface SubtitleLineInit {
   id?: string | null;
@@ -42,7 +42,7 @@ export class SubtitleDocument {
   private translationEnabledValue: boolean;
 
   constructor({ translationEnabled = true }: { translationEnabled?: boolean } = {}) {
-    this.translationEnabledValue = Boolean(translationEnabled);
+    this.translationEnabledValue = translationEnabled;
     this.revision = 0;
     this.showLatestStableAsCurrent = false;
     this.stableLineList = [];
@@ -58,7 +58,7 @@ export class SubtitleDocument {
   }
 
   setTranslationEnabled(enabled: boolean): void {
-    this.translationEnabledValue = Boolean(enabled);
+    this.translationEnabledValue = enabled;
   }
 
   applyEvent(event: RealtimeEvent): void {
@@ -86,32 +86,14 @@ export class SubtitleDocument {
     }
   }
 
-  window({ includeTranslation = this.translationEnabledValue }: { includeTranslation?: boolean } = {}): SubtitleWindow {
+  window(): SubtitleWindow {
+    const includeTranslation = this.translationEnabledValue;
     const currentLine =
       this.currentLine || (this.showLatestStableAsCurrent ? this.stableLineList.at(-1) || null : null);
     return {
       previous: renderLine(this.stableLineList.at(-1) || null, includeTranslation),
       current: renderLine(currentLine, includeTranslation),
     };
-  }
-
-  toSrt({ includeTranslation = this.translationEnabledValue }: { includeTranslation?: boolean } = {}): string {
-    const blocks = [];
-    let number = 1;
-    for (const line of this.stableLineList) {
-      if (!isInteger(line.startMs) || !isInteger(line.endMs)) {
-        continue;
-      }
-      const textLines = [line.text];
-      if (includeTranslation && line.translation) {
-        textLines.push(line.translation);
-      }
-      blocks.push(
-        [String(number), `${formatSrtTime(line.startMs)} --> ${formatSrtTime(line.endMs)}`, ...textLines].join("\n"),
-      );
-      number += 1;
-    }
-    return blocks.length ? `${blocks.join("\n\n")}\n` : "";
   }
 
   private applyTranscriptUpdate(event: RealtimeEvent): void {
@@ -217,7 +199,11 @@ export class SubtitleDocument {
     const segmentId = String(event.source_segment_id || "");
     if (segmentId) {
       const index = this.stableLineList.findIndex((line) => line.id === segmentId);
-      return index >= 0 ? index : null;
+      if (index >= 0) {
+        return index;
+      }
+      // Fall through to index-based lookup: a transcript_final rebuild can reassign
+      // ids while the 1-based index still matches (parity with the Python model).
     }
     const segmentIndex = optionalInt(event.source_segment_index);
     if (!segmentIndex || segmentIndex <= 0) {
@@ -332,25 +318,6 @@ function isSamePartialLine(left: SubtitleLine, right: SubtitleLine): boolean {
   );
 }
 
-function formatSrtTime(ms: number): string {
-  let totalMs = Math.max(0, Math.trunc(ms));
-  const hours = Math.trunc(totalMs / 3600000);
-  totalMs %= 3600000;
-  const minutes = Math.trunc(totalMs / 60000);
-  totalMs %= 60000;
-  const seconds = Math.trunc(totalMs / 1000);
-  const millis = totalMs % 1000;
-  return `${pad2(hours)}:${pad2(minutes)}:${pad2(seconds)},${pad3(millis)}`;
-}
-
-function pad2(value: number): string {
-  return String(value).padStart(2, "0");
-}
-
-function pad3(value: number): string {
-  return String(value).padStart(3, "0");
-}
-
 function optionalInt(value: unknown): number | null {
   if (value === null || value === undefined || value === "") {
     return null;
@@ -366,8 +333,4 @@ function toInt(value: unknown, fallback: number): number {
 function stringOrNull(value: unknown): string | null {
   const text = String(value || "");
   return text ? text : null;
-}
-
-function isInteger(value: unknown): value is number {
-  return Number.isInteger(value);
 }

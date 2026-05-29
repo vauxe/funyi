@@ -15,14 +15,16 @@
 
         <section class="caption-window" aria-label="Current subtitles">
           <div class="caption-line previous">
-            <div id="previous-source" class="caption-source"></div>
-            <div id="previous-translation" class="caption-translation"></div>
+            <div id="previous-source" class="caption-source" dir="auto"></div>
+            <div id="previous-translation" class="caption-translation" dir="auto"></div>
           </div>
           <div class="caption-line current">
-            <div id="current-source" class="caption-source"></div>
-            <div id="current-translation" class="caption-translation"></div>
+            <div id="current-source" class="caption-source" dir="auto"></div>
+            <div id="current-translation" class="caption-translation" dir="auto"></div>
           </div>
         </section>
+
+        <div id="caption-announcer" class="sr-only" role="log" aria-live="polite" aria-atomic="false"></div>
 
         <div class="caption-controls" role="group" aria-label="Session controls">
           <span id="volume-indicator" class="volume-indicator" aria-hidden="true" data-level="silent">

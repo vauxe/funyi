@@ -12,6 +12,7 @@ class FakeAsrClient implements LiveSessionClient {
   closed = false;
   closeWait: Promise<void> | null = null;
   commands: string[] = [];
+  finishResult = true;
   languageConfigs: LanguageConfigUpdate[] = [];
   onClose: LiveSessionClientCallbacks["onClose"];
   onError: LiveSessionClientCallbacks["onError"];
@@ -40,8 +41,9 @@ class FakeAsrClient implements LiveSessionClient {
     return this.closeWait || undefined;
   }
 
-  finish(): void {
+  finish(): boolean {
     this.commands.push("finish");
+    return this.finishResult;
   }
 
   setLanguageConfig(config: LanguageConfigUpdate): void {
@@ -67,7 +69,7 @@ interface HarnessOptions {
 
 function createHarness({ onReady, onTranscriptEvent }: HarnessOptions = {}) {
   const clients: FakeAsrClient[] = [];
-  const statuses = new Map<string, string>();
+  const statuses = new Map<string, unknown>();
   const audio = createFakeAudioAdapter();
   const clock = {
     scheduled: null as { callback: () => void | Promise<void>; delay: number; id: symbol } | null,
@@ -126,7 +128,7 @@ test("starts capture after ready and forwards only valid pcm frames", async () =
   harness.audio.frameHandler?.({ sampleRate: 48000, format: "pcm_s16le", dataBase64: "abcd" });
 
   assert.deepEqual([...harness.clients[0]!.sentPcm[0]!], [4]);
-  assert.equal(harness.statuses.get("audioStats"), "Silent");
+  assert.deepEqual(harness.statuses.get("audioStats"), { levelDb: null, droppedFrames: 0 });
 });
 
 test("forwards language config only while running", async () => {
@@ -173,7 +175,7 @@ test("warns when system capture keeps delivering silent pcm", async () => {
     harness.audio.frameHandler?.({ sampleRate: 16000, format: "pcm_s16le", dataBase64: "abcd" });
   }
 
-  assert.match(harness.statuses.get("captureStatus") || "", /Sys silent/);
+  assert.match(String(harness.statuses.get("captureStatus") ?? ""), /Sys silent/);
   assert.equal(harness.statuses.get("audioHealth"), "systemSilent");
 });
 
@@ -186,7 +188,7 @@ test("reports dropped frames when websocket backpressure refuses pcm", async () 
   harness.audio.frameHandler?.({ sampleRate: 16000, format: "pcm_s16le", dataBase64: "abcd" });
 
   assert.equal(harness.clients[0]!.sentPcm.length, 0);
-  assert.equal(harness.statuses.get("audioStats"), "Silent, dropped 2");
+  assert.deepEqual(harness.statuses.get("audioStats"), { levelDb: null, droppedFrames: 2 });
 });
 
 test("ready callback errors abort before capture starts", async () => {
@@ -220,14 +222,7 @@ test("uses microphone-specific capture status and silent warning", async () => {
     harness.audio.frameHandler?.({ sampleRate: 16000, format: "pcm_s16le", dataBase64: "abcd" });
   }
 
-  assert.match(harness.statuses.get("captureStatus") || "", /Mic silent/);
-});
-
-test("uses audio source kind without parsing platform-specific ids", async () => {
-  const harness = createHarness();
-  await startRunningSession(harness, "opaque-device-id", "microphone");
-
-  assert.equal(harness.statuses.get("captureStatus"), "Mic");
+  assert.match(String(harness.statuses.get("captureStatus") ?? ""), /Mic silent/);
 });
 
 test("finish sends final command, times out cleanly, and restores idle state", async () => {
@@ -313,6 +308,18 @@ test("capture errors abort the active session and clean listeners", async () => 
   assert.equal(harness.statuses.get("connectionStatus"), "device lost");
 });
 
+test("aborts and reports the reason when the socket closes mid-session", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness);
+
+  await harness.clients[0]!.onClose({ code: 1006 } as CloseEvent, harness.clients[0]!);
+
+  assert.equal(harness.session.getState(), "idle");
+  assert.equal(harness.audio.frameHandler, null);
+  assert.equal(harness.audio.captureErrorHandler, null);
+  assert.equal(harness.statuses.get("connectionStatus"), "WebSocket closed: 1006");
+});
+
 test("replay errors abort final handling without marking the session finished", async () => {
   const harness = createHarness({
     onTranscriptEvent: () => {
@@ -327,4 +334,150 @@ test("replay errors abort final handling without marking the session finished", 
   assert.equal(harness.clients[0]!.closed, true);
   assert.equal(harness.statuses.get("connectionStatus"), "stable cursor mismatch");
   assert.notEqual(harness.statuses.get("captureStatus"), "Done");
+});
+
+test("queues language config while connecting and flushes it on ready", async () => {
+  const harness = createHarness();
+  harness.session.setAudioAvailable(true);
+  await harness.session.start({
+    audioSourceId: "system_default",
+    audioSourceKind: "system",
+    startPayload: { type: "start", sample_rate: 16000 },
+    url: "ws://127.0.0.1:8000/ws/asr",
+  });
+
+  assert.equal(harness.session.getState(), "connecting");
+  harness.session.setLanguageConfig({ target_language: "Japanese" });
+  assert.deepEqual(harness.clients[0]!.languageConfigs, []);
+
+  await harness.clients[0]!.emit({ type: "ready", sample_rate: 16000 });
+
+  assert.deepEqual(harness.clients[0]!.languageConfigs, [{ target_language: "Japanese" }]);
+});
+
+test("aborts immediately when the finish frame cannot be sent", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness);
+  harness.clients[0]!.finishResult = false;
+
+  await harness.session.stop();
+
+  assert.equal(harness.session.getState(), "idle");
+  assert.equal(harness.clients[0]!.closed, true);
+  assert.equal(harness.clock.scheduled, null);
+  assert.deepEqual(harness.clients[0]!.commands, ["finish"]);
+  assert.equal(harness.statuses.get("connectionStatus"), "Stopped before the final transcript could be requested.");
+});
+
+test("coalesces concurrent teardown so native capture stops once", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness);
+  let releaseClose: () => void = () => {};
+  harness.clients[0]!.closeWait = new Promise((resolve) => {
+    releaseClose = resolve;
+  });
+
+  const first = harness.session.stop({ sendFinish: false });
+  const second = harness.session.stop({ sendFinish: false });
+  await nextTick();
+
+  assert.equal(harness.session.getState(), "running");
+
+  releaseClose();
+  await Promise.all([first, second]);
+
+  assert.equal(harness.session.getState(), "idle");
+  assert.equal(harness.audio.stopCalls, 1);
+  assert.equal(harness.clients[0]!.closed, true);
+});
+
+test("a stop during transcript_final completion coalesces into one teardown", async () => {
+  let releaseTranscript: () => void = () => {};
+  const harness = createHarness({
+    onTranscriptEvent: () =>
+      new Promise<void>((resolve) => {
+        releaseTranscript = resolve;
+      }),
+  });
+  await startRunningSession(harness);
+  let releaseClose: () => void = () => {};
+  harness.clients[0]!.closeWait = new Promise((resolve) => {
+    releaseClose = resolve;
+  });
+
+  const completed = harness.clients[0]!.emit({ type: "transcript_final", segments: [] });
+  releaseTranscript();
+  await nextTick();
+  // complete() is now awaiting the socket close; a stop must coalesce, not stop capture twice.
+  const aborted = harness.session.stop({ sendFinish: false });
+  await nextTick();
+
+  assert.equal(harness.session.getState(), "running");
+  releaseClose();
+  await Promise.all([completed, aborted]);
+
+  assert.equal(harness.session.getState(), "idle");
+  assert.equal(harness.audio.stopCalls, 1);
+  assert.equal(harness.statuses.get("captureStatus"), "Done");
+});
+
+test("a teardown during the transcript handler skips completion", async () => {
+  let releaseTranscript: () => void = () => {};
+  const harness = createHarness({
+    onTranscriptEvent: () =>
+      new Promise<void>((resolve) => {
+        releaseTranscript = resolve;
+      }),
+  });
+  await startRunningSession(harness);
+
+  const completed = harness.clients[0]!.emit({ type: "transcript_final", segments: [] });
+  await nextTick();
+  await harness.session.stop({ sendFinish: false });
+  releaseTranscript();
+  await completed;
+
+  assert.equal(harness.session.getState(), "idle");
+  assert.notEqual(harness.statuses.get("captureStatus"), "Done");
+});
+
+test("a language config queued for an aborted connect does not leak into the next session", async () => {
+  const harness = createHarness();
+  harness.session.setAudioAvailable(true);
+  await harness.session.start({
+    audioSourceId: "system_default",
+    audioSourceKind: "system",
+    startPayload: { type: "start", sample_rate: 16000 },
+    url: "ws://127.0.0.1:8000/ws/asr",
+  });
+  harness.session.setLanguageConfig({ target_language: "Japanese" });
+  await harness.session.stop({ sendFinish: false });
+
+  await harness.session.start({
+    audioSourceId: "system_default",
+    audioSourceKind: "system",
+    startPayload: { type: "start", sample_rate: 16000 },
+    url: "ws://127.0.0.1:8000/ws/asr",
+  });
+  await harness.clients[1]!.emit({ type: "ready", sample_rate: 16000 });
+
+  assert.deepEqual(harness.clients[1]!.languageConfigs, []);
+});
+
+test("merges multiple language configs queued while connecting", async () => {
+  const harness = createHarness();
+  harness.session.setAudioAvailable(true);
+  await harness.session.start({
+    audioSourceId: "system_default",
+    audioSourceKind: "system",
+    startPayload: { type: "start", sample_rate: 16000 },
+    url: "ws://127.0.0.1:8000/ws/asr",
+  });
+
+  harness.session.setLanguageConfig({ language: "English" });
+  harness.session.setLanguageConfig({ target_language: "Japanese" });
+  harness.session.setLanguageConfig({ language: "Chinese" });
+  await harness.clients[0]!.emit({ type: "ready", sample_rate: 16000 });
+
+  assert.deepEqual(harness.clients[0]!.languageConfigs, [{ language: "Chinese", target_language: "Japanese" }]);
 });

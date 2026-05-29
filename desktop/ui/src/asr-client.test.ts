@@ -153,6 +153,73 @@ test("setLanguageConfig sends runtime language command", async () => {
   });
 });
 
+test("finish reports whether the frame was sent", async () => {
+  const client = new AsrClient({ url: "ws://127.0.0.1:8000/ws/asr" });
+
+  assert.equal(client.finish(), false);
+
+  const socket = await connectOpened(client);
+  assert.equal(client.finish(), true);
+  assert.deepEqual(JSON.parse(String(socket.sent.at(-1))), { type: "finish" });
+});
+
+test("connect rejects and reports when the socket errors before open", async () => {
+  const statuses: string[] = [];
+  const errors: LiveSessionClient[] = [];
+  const client = new AsrClient({
+    url: "ws://127.0.0.1:8000/ws/asr",
+    onStatus: (status) => statuses.push(status),
+    onError: (_event, source) => errors.push(source),
+  });
+
+  const pending = client.connect({ type: "start", sample_rate: 16000 });
+  const socket = FakeWebSocket.instances[0];
+  assert.ok(socket);
+  socket.onerror?.({} as Event);
+
+  await assert.rejects(pending, /WebSocket connection failed/);
+  assert.deepEqual(errors, [client]);
+  assert.equal(statuses.at(-1), "WS error");
+});
+
+test("close resolves via timeout when the socket never observes close", async () => {
+  const client = new AsrClient({ url: "ws://127.0.0.1:8000/ws/asr", closeTimeoutMs: 5 });
+  const socket = await connectOpened(client);
+
+  await client.close();
+
+  assert.equal(socket.closeCalls, 1);
+  // The timeout path tears down the socket handle, so further sends are refused.
+  assert.equal(client.sendPcm(new Uint8Array([1])), false);
+  assert.equal(client.finish(), false);
+});
+
+test("connect rejects when sending the start payload throws", async () => {
+  const client = new AsrClient({ url: "ws://127.0.0.1:8000/ws/asr" });
+
+  const pending = client.connect({ type: "start", sample_rate: 16000 });
+  const socket = FakeWebSocket.instances[0];
+  assert.ok(socket);
+  socket.send = () => {
+    throw new Error("send failed");
+  };
+  socket.readyState = FakeWebSocket.OPEN;
+  socket.open();
+
+  await assert.rejects(pending, /send failed/);
+});
+
+test("finish reports not-sent when the socket is closing", async () => {
+  const client = new AsrClient({ url: "ws://127.0.0.1:8000/ws/asr" });
+  const socket = await connectOpened(client);
+
+  socket.sent = [];
+  socket.readyState = FakeWebSocket.CLOSING;
+
+  assert.equal(client.finish(), false);
+  assert.equal(socket.sent.length, 0);
+});
+
 async function connectOpened(
   client: AsrClient,
   payload: RealtimeStartPayload = { type: "start", sample_rate: 16000 },

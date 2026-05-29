@@ -42,7 +42,7 @@ test("renders current caption window and stable history", () => {
   const elements = createElements();
   const view = new CaptionView(captionViewElements(elements));
 
-  view.render(document, { historyVisible: false });
+  view.render(document, { historyVisible: false, translationLanguage: "French" });
 
   assert.equal(elements.previousSource.textContent, "hello");
   assert.equal(elements.previousTranslation.textContent, "bonjour");
@@ -56,6 +56,8 @@ test("renders current caption window and stable history", () => {
   assert.equal(historyItem.children[2]?.textContent, "bonjour");
   assert.equal(historyItem.children[1]?.attributes.get("contenteditable"), "plaintext-only");
   assert.equal(historyItem.children[2]?.attributes.get("contenteditable"), "plaintext-only");
+  assert.equal(historyItem.children[1]?.attributes.get("lang"), "zh");
+  assert.equal(historyItem.children[2]?.attributes.get("lang"), "fr");
   assert.ok(historyItem.className.split(/\s+/).includes("is-latest"));
 });
 
@@ -166,8 +168,95 @@ test("preserves user-edited history text when timing updates rerender the same l
   assert.equal(source.textContent, "edited source");
 });
 
+test("announces only stabilized lines through the live region with language tags", () => {
+  const document = new SubtitleDocument({ translationEnabled: true });
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 1,
+    stable_appends: [stableSegment(1, "hello", { startMs: 0, endMs: 1000 })],
+    partial: partialSegment("typing"),
+  });
+  document.applyEvent({ type: "translation_stable", source_segment_id: "seg_000001", text: "nihao" });
+  const elements = createElements();
+  const view = new CaptionView(captionViewElements(elements));
+
+  view.render(document, { historyVisible: false, translationLanguage: "Japanese" });
+  view.render(document, { historyVisible: false, translationLanguage: "Japanese" });
+
+  assert.equal(elements.announcer.children.length, 1);
+  const entry = elements.announcer.children[0];
+  assert.equal(entry?.attributes.get("dir"), "auto");
+  const [sourceSpan, translationSpan] = entry?.children ?? [];
+  assert.equal(sourceSpan?.textContent, "hello");
+  assert.equal(sourceSpan?.attributes.get("lang"), "zh");
+  assert.equal(translationSpan?.textContent, " — nihao");
+  assert.equal(translationSpan?.attributes.get("lang"), "ja");
+  assert.equal(elements.currentSource.attributes.get("lang"), "zh");
+  assert.equal(elements.currentTranslation.attributes.get("lang"), "ja");
+  assert.equal(elements.currentSource.textContent, "typing");
+});
+
+test("caps the announce log at 40 lines, dropping the oldest", () => {
+  const document = new SubtitleDocument({ translationEnabled: false });
+  const elements = createElements();
+  const view = new CaptionView(captionViewElements(elements));
+
+  for (let index = 1; index <= 45; index += 1) {
+    document.applyEvent({
+      type: "transcript_update",
+      revision: index,
+      stable_base: index - 1,
+      stable_count: index,
+      stable_appends: [stableSegment(index, `line ${index}`, { startMs: index * 1000, endMs: index * 1000 + 500 })],
+      partial: null,
+    });
+    view.render(document, { historyVisible: false });
+  }
+
+  assert.equal(elements.announcer.children.length, 40);
+  assert.equal(elements.announcer.children[0]?.children[0]?.textContent, "line 6");
+  assert.equal(elements.announcer.children.at(-1)?.children[0]?.textContent, "line 45");
+});
+
+test("does not re-announce stable lines when the list is rebuilt on final", () => {
+  const document = new SubtitleDocument({ translationEnabled: false });
+  const elements = createElements();
+  const view = new CaptionView(captionViewElements(elements));
+
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 2,
+    stable_appends: [
+      stableSegment(1, "one", { startMs: 0, endMs: 500 }),
+      stableSegment(2, "two", { startMs: 500, endMs: 1000 }),
+    ],
+    partial: null,
+  });
+  view.render(document, { historyVisible: false });
+  assert.equal(elements.announcer.children.length, 2);
+
+  // transcript_final replaces the stable list with fresh objects plus one tail line.
+  document.applyEvent({
+    type: "transcript_final",
+    revision: 2,
+    segments: [
+      stableSegment(1, "one", { startMs: 0, endMs: 500 }),
+      stableSegment(2, "two", { startMs: 500, endMs: 1000 }),
+      stableSegment(3, "three", { startMs: 1000, endMs: 1500 }),
+    ],
+  });
+  view.render(document, { historyVisible: false });
+
+  assert.equal(elements.announcer.children.length, 3);
+  assert.equal(elements.announcer.children[2]?.children[0]?.textContent, "three");
+});
+
 function createElements(): Record<
-  "previousSource" | "previousTranslation" | "currentSource" | "currentTranslation" | "historyList",
+  "previousSource" | "previousTranslation" | "currentSource" | "currentTranslation" | "historyList" | "announcer",
   FakeElement
 > {
   return {
@@ -176,6 +265,7 @@ function createElements(): Record<
     currentSource: new FakeElement(),
     currentTranslation: new FakeElement(),
     historyList: new FakeElement(),
+    announcer: new FakeElement(),
   };
 }
 
@@ -188,6 +278,7 @@ function captionViewElements(
     currentSource: asDomElement(elements.currentSource),
     currentTranslation: asDomElement(elements.currentTranslation),
     historyList: asDomElement(elements.historyList),
+    announcer: asDomElement(elements.announcer),
   };
 }
 

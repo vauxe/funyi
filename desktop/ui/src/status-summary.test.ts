@@ -6,7 +6,7 @@ import { summarizeStatus } from "./status-summary.js";
 
 const EMPTY_STATUS: StatusValues = {
   audioHealth: "",
-  audioStats: "",
+  audioStats: { levelDb: null, droppedFrames: 0 },
   captureStatus: "",
   connectionStatus: "",
 };
@@ -80,7 +80,7 @@ test("reports audio health warnings while preserving level state", () => {
       {
         ...EMPTY_STATUS,
         audioHealth: "microphoneSilent",
-        audioStats: "-48dB",
+        audioStats: { levelDb: -48, droppedFrames: 0 },
       },
       "running",
     ),
@@ -102,7 +102,7 @@ test("reports audio health warnings while preserving level state", () => {
     summarizeStatus(
       {
         ...EMPTY_STATUS,
-        audioStats: "-20dB, dropped 2",
+        audioStats: { levelDb: -20, droppedFrames: 2 },
       },
       "running",
     ),

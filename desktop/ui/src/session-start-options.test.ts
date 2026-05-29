@@ -68,3 +68,47 @@ test("rejects unknown selected audio source kind", () => {
     message: "Selected audio source is invalid.",
   });
 });
+
+const INVALID_SERVER_URL = "Server URL must be a ws:// address on the local machine.";
+
+function buildWithUrl(url: string): ReturnType<typeof buildSessionStartOptions> {
+  return buildSessionStartOptions({
+    url,
+    audioSourceId: "system_default",
+    audioSourceKind: "system",
+    asrLanguage: null,
+    targetLanguage: "",
+  });
+}
+
+test("accepts ws loopback server urls", () => {
+  for (const url of [
+    "ws://127.0.0.1:8000/ws/asr",
+    "ws://localhost:8000/ws/asr",
+    "ws://127.0.0.5:9000/ws",
+    "ws://[::1]:8000/ws/asr",
+  ]) {
+    const result = buildWithUrl(url);
+    assert.equal(result.ok, true, url);
+    if (result.ok) {
+      assert.equal(result.options.url, url);
+    }
+  }
+});
+
+for (const url of [
+  "wss://localhost:8443/ws/asr",
+  "http://127.0.0.1:8000/ws/asr",
+  "ws://evil.example.com:8000/ws/asr",
+  "ws://127.0.0.1.evil.com:8000/ws/asr",
+  "ws://127.evil.com:8000/ws/asr",
+  "ws://0.0.0.0:8000/ws/asr",
+  "ws://127.0.0.300:8000/ws/asr",
+  "ws://[::2]:8000/ws/asr",
+  "ws://user:pass@127.0.0.1:8000/ws/asr",
+  "not a url",
+]) {
+  test(`rejects non-loopback ws url: ${url}`, () => {
+    assert.deepEqual(buildWithUrl(url), { ok: false, message: INVALID_SERVER_URL });
+  });
+}

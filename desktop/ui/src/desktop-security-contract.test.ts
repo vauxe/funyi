@@ -18,11 +18,11 @@ test("Tauri CSP stays scoped to packaged UI assets and the local ASR websocket",
   assert.deepEqual(directives.get("connect-src"), ["ws://127.0.0.1:*", "ws://localhost:*"]);
   assert.deepEqual(directives.get("style-src"), ["'self'", "'unsafe-inline'"]);
 
-  for (const source of directives.values()) {
-    assert.equal(source.includes("*"), false);
-    assert.equal(source.includes("data:"), false);
-    assert.equal(source.includes("http:"), false);
-    assert.equal(source.includes("https:"), false);
+  // No directive may introduce a wildcard host or a remote/inline scheme beyond the
+  // packaged UI + local websocket. Port wildcards like `ws://127.0.0.1:*` are allowed.
+  for (const source of [...directives.values()].flat()) {
+    assert.notEqual(source, "*", `wildcard source: ${source}`);
+    assert.doesNotMatch(source, /^(?:data|http|https):/u, source);
   }
 });
 

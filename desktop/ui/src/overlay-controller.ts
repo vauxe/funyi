@@ -1,13 +1,8 @@
 import type { OverlayHost } from "./host-contract.js";
-import type { OverlayMode, ResizeDirection } from "./overlay-contract.js";
+import type { OverlayMode, ResizeDirection, ResizeHandle } from "./overlay-contract.js";
 import { FrameScheduler, PointerSession } from "./pointer-session.js";
 
 const HISTORY_AUTO_HEIGHT = 300;
-
-interface ResizeHandle {
-  element: HTMLElement;
-  direction: ResizeDirection;
-}
 
 interface OverlayControllerElements {
   root: HTMLElement;
@@ -75,8 +70,13 @@ export class OverlayController {
     this.syncModeFromWindowHeight();
   }
 
-  minimize(): Promise<void> {
-    return this.runOverlayCommand(() => this.host.minimizeOverlay());
+  async minimize(): Promise<void> {
+    try {
+      await this.host.minimizeOverlay();
+      this.callbacks.onClearError();
+    } catch (error) {
+      this.callbacks.onError(error);
+    }
   }
 
   close(): Promise<void> {
@@ -169,15 +169,6 @@ export class OverlayController {
   private clearResize(): void {
     this.resizeUpdateScheduler.cancel();
     this.resizeSession.clear();
-  }
-
-  private async runOverlayCommand(command: () => Promise<void>): Promise<void> {
-    try {
-      await command();
-      this.callbacks.onClearError();
-    } catch (error) {
-      this.callbacks.onError(error);
-    }
   }
 }
 

@@ -133,7 +133,27 @@ test("translation annotates matching lines and stale preview is ignored", () => 
   const window = document.window();
   assert.equal(window.previous?.translation, "stable line");
   assert.equal(window.current?.translation, "current line");
-  assert.equal(document.toSrt(), "1\n00:00:00,000 --> 00:00:01,000\nstable\nstable line\n");
+});
+
+test("translation falls back to source_segment_index when the id does not match", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 1,
+    stable_appends: [stableSegment(1, "hello", { startMs: 0, endMs: 1000 })],
+    partial: null,
+  });
+
+  document.applyEvent({
+    type: "translation_stable",
+    source_segment_id: "seg_does_not_match",
+    source_segment_index: 1,
+    text: "bonjour",
+  });
+
+  assert.equal(document.window().previous?.translation, "bonjour");
 });
 
 test("window returns complete latest lines", () => {

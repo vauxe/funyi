@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { formatAudioStats, isAudible, parseAudioStatsState, pcmLevelDb } from "./audio-level.js";
+import { audioStatsState, isAudible, pcmLevelDb } from "./audio-level.js";
 
 test("computes pcm level from little-endian signed 16-bit samples", () => {
   const level = pcmLevelDb(new Uint8Array([0xff, 0x7f, 0x01, 0x80]));
@@ -18,16 +18,25 @@ test("treats empty and silent pcm as inaudible", () => {
   assert.equal(isAudible(-40), true);
 });
 
-test("formats audio stats with dropped frame count", () => {
-  assert.equal(formatAudioStats(null, 0), "Silent");
-  assert.equal(formatAudioStats(-48.4, 0), "-48dB");
-  assert.equal(formatAudioStats(-20.2, 3), "-20dB, dropped 3");
-});
-
-test("reads formatted audio stats into display state", () => {
-  assert.deepEqual(parseAudioStatsState(""), { level: "silent", volume: 0, hasDroppedFrames: false });
-  assert.deepEqual(parseAudioStatsState("Silent"), { level: "silent", volume: 0, hasDroppedFrames: false });
-  assert.deepEqual(parseAudioStatsState("-48dB"), { level: "low", volume: 0.53, hasDroppedFrames: false });
-  assert.deepEqual(parseAudioStatsState("-20dB, dropped 3"), { level: "live", volume: 1, hasDroppedFrames: true });
-  assert.deepEqual(parseAudioStatsState("-20dB, dropped 0"), { level: "live", volume: 1, hasDroppedFrames: false });
+test("derives display state from structured audio stats", () => {
+  assert.deepEqual(audioStatsState({ levelDb: null, droppedFrames: 0 }), {
+    level: "silent",
+    volume: 0,
+    hasDroppedFrames: false,
+  });
+  assert.deepEqual(audioStatsState({ levelDb: -48.4, droppedFrames: 0 }), {
+    level: "low",
+    volume: 0.53,
+    hasDroppedFrames: false,
+  });
+  assert.deepEqual(audioStatsState({ levelDb: -20.2, droppedFrames: 3 }), {
+    level: "live",
+    volume: 1,
+    hasDroppedFrames: true,
+  });
+  assert.deepEqual(audioStatsState({ levelDb: -20.2, droppedFrames: 0 }), {
+    level: "live",
+    volume: 1,
+    hasDroppedFrames: false,
+  });
 });

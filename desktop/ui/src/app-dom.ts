@@ -1,13 +1,9 @@
-import { isResizeDirection, RESIZE_HANDLE_SELECTOR, type ResizeDirection } from "./overlay-contract.js";
-
-interface ResizeHandle {
-  element: HTMLElement;
-  direction: ResizeDirection;
-}
+import { isResizeDirection, RESIZE_HANDLE_SELECTOR, type ResizeHandle } from "./overlay-contract.js";
 
 export const APP_ELEMENT_SELECTORS = {
   appShell: "#app-shell",
   audioSource: "#audio-source",
+  captionAnnouncer: "#caption-announcer",
   captionStrip: "#caption-strip",
   closeButton: "#close-button",
   currentSource: "#current-source",
@@ -26,6 +22,7 @@ export const APP_ELEMENT_SELECTORS = {
 
 export interface AppElements {
   appShell: HTMLElement;
+  captionAnnouncer: HTMLElement;
   captionStrip: HTMLElement;
   serverUrl: HTMLInputElement;
   language: HTMLSelectElement;
@@ -47,6 +44,7 @@ export interface AppElements {
 export function getAppElements(): AppElements {
   return {
     appShell: requireElement<HTMLElement>(APP_ELEMENT_SELECTORS.appShell),
+    captionAnnouncer: requireElement<HTMLElement>(APP_ELEMENT_SELECTORS.captionAnnouncer),
     captionStrip: requireElement<HTMLElement>(APP_ELEMENT_SELECTORS.captionStrip),
     serverUrl: requireElement<HTMLInputElement>(APP_ELEMENT_SELECTORS.serverUrl),
     language: requireElement<HTMLSelectElement>(APP_ELEMENT_SELECTORS.language),

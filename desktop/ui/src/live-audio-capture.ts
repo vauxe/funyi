@@ -1,7 +1,7 @@
 import { isExpectedAudioFrame } from "./audio-format.js";
 import type { AudioAdapter } from "./audio-adapter.js";
 import { AUDIO_CAPTURE_FAILED_MESSAGE, type Unlisten } from "./audio-capture-events.js";
-import { formatAudioStats, isAudible, pcmLevelDb } from "./audio-level.js";
+import { EMPTY_AUDIO_STATS, isAudible, pcmLevelDb } from "./audio-level.js";
 import {
   audioSourceShortLabel,
   silentAudioHealthStatus,
@@ -43,7 +43,7 @@ export class LiveAudioCapture {
     this.silentFrameWarningActive = false;
     this.silentFrames = 0;
     this.setStatus("audioHealth", "");
-    this.setStatus("audioStats", "");
+    this.setStatus("audioStats", EMPTY_AUDIO_STATS);
   }
 
   async start({ sourceId, sourceKind, sendPcm }: StartCaptureOptions): Promise<void> {
@@ -117,7 +117,7 @@ export class LiveAudioCapture {
   }
 
   private updateAudioStats(): void {
-    this.setStatus("audioStats", formatAudioStats(this.lastAudioLevelDb, this.droppedAudioFrames));
+    this.setStatus("audioStats", { levelDb: this.lastAudioLevelDb, droppedFrames: this.droppedAudioFrames });
   }
 
   private updateSilentCaptureStatus(levelDb: number | null): void {

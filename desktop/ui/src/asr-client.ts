@@ -53,8 +53,13 @@ export class AsrClient implements LiveSessionClient {
 
       ws.onopen = () => {
         this.emitStatus("WS OK");
-        ws.send(JSON.stringify(startPayload));
         settled = true;
+        try {
+          ws.send(JSON.stringify(startPayload));
+        } catch (error) {
+          reject(error instanceof Error ? error : new Error(String(error)));
+          return;
+        }
         resolve();
       };
       ws.onerror = (event) => {
@@ -102,8 +107,8 @@ export class AsrClient implements LiveSessionClient {
     return true;
   }
 
-  finish(): void {
-    this.sendPayload({ type: "finish" });
+  finish(): boolean {
+    return this.sendPayload({ type: "finish" });
   }
 
   setLanguageConfig(config: LanguageConfigUpdate): void {
@@ -151,11 +156,12 @@ export class AsrClient implements LiveSessionClient {
     return closeWait;
   }
 
-  private sendPayload(payload: Record<string, unknown>): void {
+  private sendPayload(payload: Record<string, unknown>): boolean {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      return;
+      return false;
     }
     this.ws.send(JSON.stringify(payload));
+    return true;
   }
 
   private emitStatus(status: string): void {

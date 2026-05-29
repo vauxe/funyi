@@ -57,6 +57,7 @@ export class FunyiApp {
       currentSource: dom.currentSource,
       currentTranslation: dom.currentTranslation,
       historyList: dom.historyList,
+      announcer: dom.captionAnnouncer,
     });
     this.overlayController = new OverlayController(
       overlay,
@@ -100,13 +101,10 @@ export class FunyiApp {
     dom.minimizeButton.addEventListener("click", () => void this.overlayController.minimize());
     dom.closeButton.addEventListener("click", () => void this.closeOverlay());
     dom.language.addEventListener("change", () => {
+      // ASR language does not change what is displayed, so no re-render here.
       this.liveSession.setLanguageConfig({ language: this.languageControls.asrLanguage });
     });
-    dom.translationTargetLanguage.addEventListener("change", () => {
-      this.subtitleDocument.setTranslationEnabled(this.languageControls.translationEnabled);
-      this.liveSession.setLanguageConfig({ target_language: this.languageControls.targetLanguage || null });
-      this.render();
-    });
+    dom.translationTargetLanguage.addEventListener("change", () => this.applyTranslationTarget());
     this.render();
   }
 
@@ -180,8 +178,17 @@ export class FunyiApp {
     this.render();
   }
 
+  private applyTranslationTarget(): void {
+    this.subtitleDocument.setTranslationEnabled(this.languageControls.translationEnabled);
+    this.liveSession.setLanguageConfig({ target_language: this.languageControls.targetLanguage || null });
+    this.render();
+  }
+
   private render(): void {
-    this.captionView.render(this.subtitleDocument, { historyVisible: this.overlayController.mode === "history" });
+    this.captionView.render(this.subtitleDocument, {
+      historyVisible: this.overlayController.mode === "history",
+      translationLanguage: this.languageControls.targetLanguage,
+    });
   }
 
   private setControlsState(state: SessionState, { canStart }: { canStart: boolean }): void {

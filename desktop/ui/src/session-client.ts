@@ -3,7 +3,7 @@ import type { LanguageConfigUpdate, RealtimeEvent, RealtimeStartPayload } from "
 export interface LiveSessionClient {
   close(): void | Promise<void>;
   connect(startPayload: RealtimeStartPayload): Promise<void>;
-  finish(): void;
+  finish(): boolean;
   setLanguageConfig(config: LanguageConfigUpdate): void;
   sendPcm(bytes: Uint8Array): boolean;
 }

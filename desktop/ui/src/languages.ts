@@ -31,6 +31,72 @@ export const ASR_LANGUAGE_OPTIONS = [
   "Romanian",
 ] as const;
 
+// Maps the Qwen3-ASR display names the service emits (segment.language) to
+// BCP-47 tags so caption text can be tagged with `lang` for screen readers.
+export const LANGUAGE_BCP47_TAGS: Record<string, string> = {
+  Chinese: "zh",
+  "Traditional Chinese": "zh-Hant",
+  Cantonese: "yue",
+  English: "en",
+  Arabic: "ar",
+  German: "de",
+  French: "fr",
+  Spanish: "es",
+  Portuguese: "pt",
+  Indonesian: "id",
+  Italian: "it",
+  Korean: "ko",
+  Russian: "ru",
+  Thai: "th",
+  Vietnamese: "vi",
+  Japanese: "ja",
+  Turkish: "tr",
+  Hindi: "hi",
+  Malay: "ms",
+  Dutch: "nl",
+  Swedish: "sv",
+  Danish: "da",
+  Finnish: "fi",
+  Polish: "pl",
+  Czech: "cs",
+  Filipino: "fil",
+  Persian: "fa",
+  Greek: "el",
+  Hungarian: "hu",
+  Macedonian: "mk",
+  Romanian: "ro",
+  Khmer: "km",
+  Burmese: "my",
+  Gujarati: "gu",
+  Urdu: "ur",
+  Telugu: "te",
+  Marathi: "mr",
+  Hebrew: "he",
+  Bengali: "bn",
+  Tamil: "ta",
+  Ukrainian: "uk",
+  Tibetan: "bo",
+  Kazakh: "kk",
+  Mongolian: "mn",
+  Uyghur: "ug",
+};
+
+const BCP47_LANGUAGE_TAG = /^[a-z]{2,3}(-[a-z0-9]+)*$/iu;
+
+// Resolves a segment language to a BCP-47 tag: a known display name maps to its
+// tag, an already-valid tag passes through, anything else yields "" (no tag)
+// rather than feeding a misleading value to assistive tech.
+export function languageTag(name: string | undefined): string {
+  if (!name) {
+    return "";
+  }
+  const mapped = LANGUAGE_BCP47_TAGS[name];
+  if (mapped) {
+    return mapped;
+  }
+  return BCP47_LANGUAGE_TAG.test(name) ? name : "";
+}
+
 export const TRANSLATION_TARGET_LANGUAGE_OPTIONS = [
   "Chinese",
   "English",

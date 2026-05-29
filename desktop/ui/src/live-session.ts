@@ -41,8 +41,10 @@ export class LiveSession {
 
   private audioAvailable = false;
   private client: LiveSessionClient | null = null;
+  private pendingLanguageConfig: LanguageConfigUpdate | null = null;
   private selectedAudioSource: SelectedAudioSource | null = null;
   private state: SessionState = "idle";
+  private teardown: Promise<void> | null = null;
 
   constructor({
     createClient,
@@ -68,7 +70,7 @@ export class LiveSession {
   }
 
   setAudioAvailable(available: boolean): void {
-    this.audioAvailable = Boolean(available);
+    this.audioAvailable = available;
     this.notifyStateChange();
   }
 
@@ -81,10 +83,15 @@ export class LiveSession {
   }
 
   setLanguageConfig(config: LanguageConfigUpdate): void {
-    if (this.state !== "running" || this.client === null) {
+    if (this.state === "running" && this.client !== null) {
+      this.client.setLanguageConfig(config);
       return;
     }
-    this.client.setLanguageConfig(config);
+    // Buffer changes made while the socket is still opening and flush them once
+    // the session is ready, so the UI and the server never diverge.
+    if (this.state === "connecting") {
+      this.pendingLanguageConfig = { ...this.pendingLanguageConfig, ...config };
+    }
   }
 
   resetStats(): void {
@@ -132,19 +139,20 @@ export class LiveSession {
   }
 
   private async abort(message = "", { closeSocket = true }: { closeSocket?: boolean } = {}): Promise<void> {
-    if (this.state === "idle" && this.client === null) {
+    if (this.teardown === null && this.state === "idle" && this.client === null) {
       return;
     }
 
-    const client = this.releaseActiveSession();
-    await this.stopCaptureOnly();
-    if (closeSocket) {
-      await client?.close();
-    }
-    this.setState("idle");
-    if (message) {
-      this.setStatus("connectionStatus", message);
-    }
+    await this.runExclusiveTeardown(async (client) => {
+      await this.stopCaptureOnly();
+      if (closeSocket) {
+        await client?.close();
+      }
+      this.setState("idle");
+      if (message) {
+        this.setStatus("connectionStatus", message);
+      }
+    });
   }
 
   private async handleRealtimeEvent(event: RealtimeEvent, client: LiveSessionClient): Promise<void> {
@@ -156,6 +164,7 @@ export class LiveSession {
       try {
         this.setState("running");
         this.onReady?.(event);
+        this.flushPendingLanguageConfig();
         await this.startCaptureAfterReady();
       } catch (error) {
         const message = errorMessage(error);
@@ -184,6 +193,12 @@ export class LiveSession {
       return;
     }
 
+    // The transcript handler above is async; bail out if the session was torn
+    // down while it ran so we do not overwrite a failure with "Done".
+    if (client !== this.client) {
+      return;
+    }
+
     if (event.type === "transcript_final") {
       await this.complete();
     }
@@ -201,16 +216,43 @@ export class LiveSession {
     this.setState("finishing");
     await this.stopCaptureOnly();
     this.setStatus("captureStatus", "Final");
-    this.client?.finish();
+    const requested = this.client?.finish() ?? false;
+    if (!requested) {
+      await this.abort("Stopped before the final transcript could be requested.");
+      return;
+    }
     this.finishTimeout.schedule(() => this.abort("Timed out waiting for transcript_final."));
   }
 
   private async complete(): Promise<void> {
+    await this.runExclusiveTeardown(async (client) => {
+      await this.stopCaptureOnly();
+      this.setStatus("captureStatus", "Done");
+      await client?.close();
+      this.setState("idle");
+    });
+  }
+
+  // Coalesces concurrent teardown paths (abort/complete) so the active session
+  // is released and native capture is stopped exactly once.
+  private async runExclusiveTeardown(run: (client: LiveSessionClient | null) => Promise<void>): Promise<void> {
+    if (this.teardown !== null) {
+      return this.teardown;
+    }
     const client = this.releaseActiveSession();
-    await this.stopCaptureOnly();
-    this.setStatus("captureStatus", "Done");
-    await client?.close();
-    this.setState("idle");
+    const teardown = run(client).finally(() => {
+      this.teardown = null;
+    });
+    this.teardown = teardown;
+    return teardown;
+  }
+
+  private flushPendingLanguageConfig(): void {
+    const pending = this.pendingLanguageConfig;
+    this.pendingLanguageConfig = null;
+    if (pending && this.client) {
+      this.client.setLanguageConfig(pending);
+    }
   }
 
   private async handleAsrClose(event: CloseEvent, client: LiveSessionClient): Promise<void> {
@@ -247,6 +289,7 @@ export class LiveSession {
     const client = this.client;
     this.client = null;
     this.selectedAudioSource = null;
+    this.pendingLanguageConfig = null;
     this.finishTimeout.clear();
     return client;
   }

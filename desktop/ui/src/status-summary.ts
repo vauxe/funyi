@@ -1,4 +1,4 @@
-import { parseAudioStatsState, type AudioLevelState, type AudioStatsState } from "./audio-level.js";
+import { audioStatsState, type AudioLevelState, type AudioStatsState } from "./audio-level.js";
 import { audioSourceKindFromAudioHealthStatus, type AudioSourceKind } from "./audio-source-kind.js";
 import type { SessionState } from "./session-state.js";
 import { FINAL_TRANSCRIPT_CANCELLED_MESSAGE, NO_AUDIO_SOURCE_MESSAGE, type StatusValues } from "./session-status.js";
@@ -27,7 +27,7 @@ const USER_FACING_ERROR_RULES: UserFacingErrorRule[] = [
     message: "No audio source available.",
   },
   {
-    matches: (value) => /^WS error|WebSocket connection failed/i.test(value),
+    matches: (value) => /^(?:WS error|WebSocket connection failed)/i.test(value),
     message: "Connection failed.",
   },
   {
@@ -63,21 +63,16 @@ export function summarizeStatus(statusValues: StatusValues, sessionState: Sessio
     return { text: "", tone: "idle" };
   }
 
-  const audioStats = parseAudioStatsState(statusValues.audioStats);
+  const audioStats = audioStatsState(statusValues.audioStats);
   if (error) {
     return withAudioStats({ text: userFacingError(error), tone: "error" }, audioStats);
   }
   if (audioStats.hasDroppedFrames) {
-    return { text: "Audio lagging", tone: "warn", level: audioStats.level, volume: audioStats.volume };
+    return withAudioStats({ text: "Audio lagging", tone: "warn" }, audioStats);
   }
   const silentSourceKind = audioSourceKindFromAudioHealthStatus(statusValues.audioHealth);
   if (silentSourceKind) {
-    return {
-      text: silentCaptureSummary(silentSourceKind),
-      tone: "warn",
-      level: audioStats.level,
-      volume: audioStats.volume,
-    };
+    return withAudioStats({ text: silentCaptureSummary(silentSourceKind), tone: "warn" }, audioStats);
   }
 
   return withAudioStats({ text: "", tone: "idle" }, audioStats);

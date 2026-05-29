@@ -1,4 +1,7 @@
+import { languageTag } from "./languages.js";
+import { isInteger } from "./runtime-guards.js";
 import type { SubtitleDocument, SubtitleLine } from "./subtitle-document.js";
+import { formatClock } from "./time-format.js";
 
 interface CaptionViewElements {
   previousSource: HTMLElement;
@@ -6,23 +9,43 @@ interface CaptionViewElements {
   currentSource: HTMLElement;
   currentTranslation: HTMLElement;
   historyList: HTMLElement;
+  announcer: HTMLElement;
 }
 
+// Cap the live-region log so a long session does not grow it without bound.
+const MAX_ANNOUNCED_LINES = 40;
+
 export class CaptionView {
+  private readonly announcedKeys = new Set<string>();
   private renderedHistoryLines: readonly SubtitleLine[] = [];
   private renderedHistoryTranslationEnabled: boolean | null = null;
 
   constructor(private readonly elements: CaptionViewElements) {}
 
-  render(document: SubtitleDocument, { historyVisible }: { historyVisible: boolean }): void {
+  render(
+    document: SubtitleDocument,
+    { historyVisible, translationLanguage = "" }: { historyVisible: boolean; translationLanguage?: string },
+  ): void {
     const windowState = document.window();
-    renderCaptionLine(windowState.previous, this.elements.previousSource, this.elements.previousTranslation);
-    renderCaptionLine(windowState.current, this.elements.currentSource, this.elements.currentTranslation);
-    this.renderHistory(document, historyVisible);
+    renderCaptionLine(
+      windowState.previous,
+      this.elements.previousSource,
+      this.elements.previousTranslation,
+      translationLanguage,
+    );
+    renderCaptionLine(
+      windowState.current,
+      this.elements.currentSource,
+      this.elements.currentTranslation,
+      translationLanguage,
+    );
+    this.renderHistory(document, historyVisible, translationLanguage);
   }
 
   reset(): void {
     this.elements.historyList.replaceChildren();
+    this.elements.announcer.replaceChildren();
+    this.announcedKeys.clear();
     this.renderedHistoryLines = [];
     this.renderedHistoryTranslationEnabled = null;
   }
@@ -40,7 +63,7 @@ export class CaptionView {
     scroll();
   }
 
-  private renderHistory(document: SubtitleDocument, historyVisible: boolean): void {
+  private renderHistory(document: SubtitleDocument, historyVisible: boolean, translationLanguage: string): void {
     const lines = document.stableLines;
     const hadNewLine = lines.length > this.renderedHistoryLines.length;
     const translationChanged = this.renderedHistoryTranslationEnabled !== document.translationEnabled;
@@ -61,14 +84,69 @@ export class CaptionView {
         this.elements.historyList.append(historyItem);
       }
       if (translationChanged || this.renderedHistoryLines[index] !== line) {
-        updateHistoryItem(historyItem, line, document.translationEnabled, this.renderedHistoryLines[index] || null);
+        updateHistoryItem(
+          historyItem,
+          line,
+          document.translationEnabled,
+          this.renderedHistoryLines[index] || null,
+          translationLanguage,
+        );
       }
       historyItem.classList.toggle("is-latest", index === lines.length - 1);
     }
+    this.announceStableLines(lines, document.translationEnabled, translationLanguage);
     this.renderedHistoryLines = lines.slice();
     this.renderedHistoryTranslationEnabled = document.translationEnabled;
     if (historyVisible && hadNewLine) {
       this.scrollHistoryToLatest("smooth");
+    }
+  }
+
+  // Announce only stabilized lines through the polite log region. The visible
+  // current line is rewritten on every partial, so announcing it would flood the
+  // screen reader; committed segments give one announcement each. Lines are keyed
+  // so a transcript_final rebuild (which replaces the list wholesale) never
+  // re-announces or skips an already-spoken line.
+  private announceStableLines(
+    lines: readonly SubtitleLine[],
+    translationEnabled: boolean,
+    translationLanguage: string,
+  ): void {
+    let appended = false;
+    for (const line of lines) {
+      if (!line) {
+        continue;
+      }
+      const source = line.text.trim();
+      const translation = translationEnabled ? (line.translation || "").trim() : "";
+      if (!source && !translation) {
+        continue;
+      }
+      const key = line.id || `${line.index ?? ""}:${source}`;
+      if (this.announcedKeys.has(key)) {
+        continue;
+      }
+      this.announcedKeys.add(key);
+      // Source and translation are different languages, so each goes in its own
+      // span with its own `lang` for correct screen-reader pronunciation.
+      const entry = document.createElement("div");
+      entry.setAttribute("dir", "auto");
+      entry.append(announceSpan(source, line.language));
+      if (translation) {
+        entry.append(announceSpan(` — ${translation}`, translationLanguage));
+      }
+      this.elements.announcer.append(entry);
+      appended = true;
+    }
+    if (appended) {
+      this.trimAnnouncer();
+    }
+  }
+
+  private trimAnnouncer(): void {
+    const children = Array.from(this.elements.announcer.children);
+    if (children.length > MAX_ANNOUNCED_LINES) {
+      this.elements.announcer.replaceChildren(...children.slice(children.length - MAX_ANNOUNCED_LINES));
     }
   }
 }
@@ -77,9 +155,19 @@ function renderCaptionLine(
   line: SubtitleLine | null,
   sourceElement: HTMLElement,
   translationElement: HTMLElement,
+  translationLanguage: string,
 ): void {
+  applyLineLanguage(sourceElement, line?.language);
+  applyLineLanguage(translationElement, translationLanguage);
   setCaptionText(sourceElement, line?.text || "");
   setCaptionText(translationElement, line?.translation || "");
+}
+
+function announceSpan(text: string, language: string | undefined): HTMLElement {
+  const span = document.createElement("span");
+  applyLineLanguage(span, language);
+  span.textContent = text;
+  return span;
 }
 
 function createHistoryItem(): HTMLElement {
@@ -104,6 +192,7 @@ function createEditableHistoryText(className: string, label: string): HTMLElemen
   element.setAttribute("aria-label", label);
   element.setAttribute("aria-multiline", "true");
   element.setAttribute("spellcheck", "false");
+  element.setAttribute("dir", "auto");
   element.setAttribute("tabindex", "0");
   element.addEventListener("input", () => {
     element.dataset.userEdited = "true";
@@ -116,11 +205,18 @@ function updateHistoryItem(
   line: SubtitleLine,
   translationEnabled: boolean,
   previousLine: SubtitleLine | null,
+  translationLanguage: string,
 ): void {
   const [time, source, translation] = Array.from(item.children) as HTMLElement[];
   if (previousLine && !isSameHistoryLine(previousLine, line)) {
     delete source?.dataset.userEdited;
     delete translation?.dataset.userEdited;
+  }
+  if (source) {
+    applyLineLanguage(source, line.language);
+  }
+  if (translation) {
+    applyLineLanguage(translation, translationLanguage);
   }
   setTextIfChanged(time, formatRange(line.startMs, line.endMs, line.timingStatus));
   setEditableTextIfChanged(source, line.text);
@@ -145,6 +241,13 @@ function setCaptionText(element: HTMLElement, value: string): void {
   element.scrollTop = element.scrollHeight;
 }
 
+// Tag the element with the line's language (as a BCP-47 tag) so screen readers
+// pick the right voice. Display names are mapped to tags; unknown values become
+// "" rather than misleading assistive tech.
+function applyLineLanguage(element: HTMLElement, language: string | undefined): void {
+  element.setAttribute("lang", languageTag(language));
+}
+
 function isSameHistoryLine(left: SubtitleLine, right: SubtitleLine): boolean {
   if (left.id || right.id) {
     return left.id === right.id;
@@ -158,15 +261,4 @@ function isSameHistoryLine(left: SubtitleLine, right: SubtitleLine): boolean {
 function formatRange(startMs: number | null, endMs: number | null, status: string | null): string {
   const prefix = isInteger(startMs) && isInteger(endMs) ? `${formatClock(startMs)} - ${formatClock(endMs)}` : "pending";
   return status ? `${prefix} ${status}` : prefix;
-}
-
-function formatClock(ms: number): string {
-  const seconds = Math.floor(ms / 1000);
-  const millis = Math.floor(ms % 1000);
-  const minutes = Math.floor(seconds / 60);
-  return `${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}.${String(millis).padStart(3, "0")}`;
-}
-
-function isInteger(value: unknown): value is number {
-  return Number.isInteger(value);
 }

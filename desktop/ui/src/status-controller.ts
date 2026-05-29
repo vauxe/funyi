@@ -1,3 +1,4 @@
+import { EMPTY_AUDIO_STATS } from "./audio-level.js";
 import { errorMessage } from "./error-message.js";
 import type { SessionState } from "./session-state.js";
 import type { StatusKey, StatusValue, StatusValues } from "./session-status.js";
@@ -12,7 +13,7 @@ export class StatusController {
   private sessionState: SessionState = "idle";
   private readonly values: StatusValues = {
     audioHealth: "",
-    audioStats: "",
+    audioStats: EMPTY_AUDIO_STATS,
     captureStatus: "",
     connectionStatus: "",
   };
@@ -28,7 +29,7 @@ export class StatusController {
     if (key === "connectionStatus") {
       this.overlayOwnsConnectionStatus = false;
     }
-    this.values[key] = value || "";
+    this.values[key] = value;
     this.render();
   }
 

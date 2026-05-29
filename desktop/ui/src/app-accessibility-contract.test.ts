@@ -37,6 +37,20 @@ test("status updates are announced politely", () => {
   assert.equal(statusLine?.["aria-live"], "polite");
 });
 
+test("live captions are announced through a dedicated polite log region", () => {
+  const announcer = htmlElementById(APP_HTML, "caption-announcer");
+
+  assert.equal(announcer.role, "log");
+  assert.equal(announcer["aria-live"], "polite");
+  assert.equal(announcer["aria-atomic"], "false");
+
+  // The visible caption window must NOT be a live region: its current line is
+  // rewritten on every partial and would flood assistive tech.
+  const captionWindow = htmlElements(APP_HTML, "section").find((section) => hasClass(section, "caption-window"));
+  assert.ok(captionWindow, "missing caption window");
+  assert.equal(captionWindow["aria-live"], undefined);
+});
+
 function namedGroup(className: string): Pick<HtmlAttributes, "aria-label" | "role"> {
   const classToken = className.replace(/^\./u, "");
   const element = htmlElements(APP_HTML).find((candidate) => hasClass(candidate, classToken));
