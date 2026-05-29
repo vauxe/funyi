@@ -100,6 +100,11 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Weight-only int8 on gate/up linears (decode speedup, CER-gated). Default off.",
     )
+    parser.add_argument(
+        "--fused-rmsnorm",
+        action="store_true",
+        help="Fused F.rms_norm on HY-MT (~1.12x decode, chrF-gated). Default off.",
+    )
     parser.add_argument("--output-json", default=None, help="Optional path to write gate JSON.")
     parser.add_argument(
         "--max-mean-chrf-drop",
@@ -150,6 +155,7 @@ def main() -> None:
         decode_backend=args.decode_backend,
         generation_config=generation_config,
         w8a16=args.w8a16,
+        fused_rmsnorm=args.fused_rmsnorm,
     )
     load_wall_sec = time.perf_counter() - load_started
 

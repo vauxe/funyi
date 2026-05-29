@@ -47,8 +47,11 @@ compute-bound → W8A16 hurts** (fp32 Triton GEMM). (1) ASR offline = decode-bou
 → W8A16 helps (opt-in). (2) ASR streaming = prefill-bound → W8A16 hurts, off. (3)
 Translation HY-MT = decode-bound → **W8A16 on gate/up + cuBLAS prefill GEMM gives
 ~1.12x** (per-token decode `5.22ms`→`4.39ms`; with the fp32 Triton GEMM it was a
-net loss `0.82x`, so the cuBLAS GEMM path is required) and is **quality-safe vs
-the stock-model golden** (1200 opus cases, en<->zh/en<->ja, chrF2): funyi is
+net loss `0.82x`, so the cuBLAS GEMM path is required). HY-MT also gets
+`fused_rmsnorm` by default (`--translation-fused-rmsnorm`): another **~1.12x**
+(interleaved A/B 227→202ms), independent of and stacking with W8A16 (norms, not
+linears), and it passes the same golden gate (equal-or-better every direction).
+Both are **quality-safe vs the stock-model golden** (1200 opus cases, en<->zh/en<->ja, chrF2): funyi is
 statistically indistinguishable from stock in every direction (paired deltas
 within noise), 84% byte-identical, 0 new errors; W8A16's own on-vs-off effect is
 mean drop `-0.11`. See `@docs/realtime_translation_design.md` for the golden/gate.

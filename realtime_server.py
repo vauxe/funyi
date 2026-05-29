@@ -1077,6 +1077,13 @@ def _parse_args() -> argparse.Namespace:
         "per-token decode (~1.12x end-to-end) and passed the translation quality "
         "gate (0 new errors). Default on; --no-translation-w8a16 to disable.",
     )
+    parser.add_argument(
+        "--translation-fused-rmsnorm",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Fused F.rms_norm on HY-MT (~1.12x decode, stacks with W8A16). Passes the "
+        "translation chrF golden (equal-or-better every direction). Default on.",
+    )
     parser.add_argument("--translation-local-files-only", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--translation-trust-remote-code", action="store_true")
     return parser.parse_args()
@@ -1164,6 +1171,7 @@ def _build_translation(args: argparse.Namespace) -> tuple[Any | None, Translatio
         decode_backend=args.translation_decode_backend,
         generation_config=generation_config,
         w8a16=bool(args.translation_w8a16),
+        fused_rmsnorm=bool(args.translation_fused_rmsnorm),
     )
     return translator, config
 

@@ -44,8 +44,10 @@ validated single-user profile by default.
   multi-token prefill ~3x at equal CER (streaming is prefill-bound). W8A16 stays
   opt-in for the decode-bound offline path.
 - Translation (HY-MT) default has W8A16 ON (`--translation-w8a16`, on gate/up
-  with the cuBLAS prefill GEMM). HY-MT is decode-bound, so W8A16 cuts per-token
-  decode ~1.12x and is quality-safe: against the stock-model golden funyi is
+  with the cuBLAS prefill GEMM) and `fused_rmsnorm` ON
+  (`--translation-fused-rmsnorm`, ~1.12x more, stacks with W8A16; passes the chrF
+  golden equal-or-better every direction). HY-MT is decode-bound, so W8A16 cuts
+  per-token decode ~1.12x and is quality-safe: against the stock-model golden funyi is
   statistically indistinguishable in all directions (1200 opus cases, paired chrF
   deltas within noise, 84% byte-identical, 0 new errors); W8A16's own effect is
   mean chrF2 drop -0.11. This is the decode-bound mirror of the prefill-bound
