@@ -294,6 +294,27 @@ class TestTranscriptStore:
         assert final['segments'][0]['end_ms'] == 860
         assert final['segments'][0]['timing_status'] == 'aligned'
 
+    def test_out_of_order_timing_patch_does_not_overlap_later_segment(self) -> None:
+        store = TranscriptStore(transcript_id="t1")
+        for _ in range(2):
+            store.append_stable_segment(
+                text="句", start_ms=None, end_ms=None, language="Chinese", timing_status="pending"
+            )
+
+        # Patch the SECOND segment first (out of index order).
+        store.update_segment_timing(
+            source_segment_id="seg_000002", start_ms=1000, end_ms=2000, timing_status="aligned"
+        )
+        # Now the first segment aligns with an end that would overlap into seg2's start.
+        first = store.update_segment_timing(
+            source_segment_id="seg_000001", start_ms=0, end_ms=1500, timing_status="aligned"
+        )
+
+        # seg1.end is clamped to seg2.start so the public timeline stays non-overlapping.
+        assert first['start_ms'] == 0
+        assert first['end_ms'] == 1000
+        assert store.stable_segments[0].end_ms <= store.stable_segments[1].start_ms
+
     def test_unbounded_store_final_event_reports_revision_without_full_segments(self) -> None:
         store = TranscriptStore(transcript_id="t1", keep_segments=False)
         segment = store.append_stable_segment(text="稳定", start_ms=0, end_ms=1000, language="Chinese")
@@ -2141,6 +2162,21 @@ class FakeVadModel:
 class TestSileroVadAdapter:
     def test_default_config_uses_onnx_runtime(self) -> None:
         assert SileroVadConfig().use_onnx
+
+    def test_config_rejects_threshold_out_of_range(self) -> None:
+        with pytest.raises(ValueError):
+            SileroVadConfig(threshold=0.0)
+        with pytest.raises(ValueError):
+            SileroVadConfig(threshold=1.5)
+
+    def test_config_rejects_negative_threshold_not_below_threshold(self) -> None:
+        # negative_threshold must stay within (0, threshold) to preserve hysteresis.
+        with pytest.raises(ValueError):
+            SileroVadConfig(threshold=0.5, negative_threshold=0.5)
+        with pytest.raises(ValueError):
+            SileroVadConfig(threshold=0.5, negative_threshold=0.0)
+        # A valid hysteresis gap is accepted.
+        assert SileroVadConfig(threshold=0.5, negative_threshold=0.3).negative_threshold == 0.3
 
     def test_buffers_until_silero_chunk_is_complete(self) -> None:
         model = FakeVadModel([0.8])

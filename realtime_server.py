@@ -46,6 +46,9 @@ from qwen3_asr_runtime.utils import SAMPLE_RATE, normalize_language_name, valida
 
 _SERVICE_SEND_TIMEOUT_SEC = 5.0
 _SERVICE_EVENT_QUEUE_MAXSIZE = 128
+# DoS backstop on a single binary PCM frame (~500s of 16kHz mono s16le). Normal frames are
+# fractions of a second; this only rejects pathological/abusive frames.
+_SERVICE_MAX_PCM_FRAME_BYTES = 16_000_000
 _SERVICE_DEBUG_PCM_SUMMARY_INTERVAL_MS = 1000
 _SERVICE_TRANSLATION_PREVIEW_DEBOUNCE_MS = 700
 _SERVICE_TRANSLATION_PREWARM_TARGET_LANGUAGE = "Chinese"
@@ -205,10 +208,12 @@ def build_app(
             try:
                 yield
             finally:
+                # wait=True: let any in-flight model call finish before teardown so we do not
+                # leave a CUDA kernel/worker thread running into interpreter shutdown.
                 if translation_actor is not None:
-                    translation_actor.close(wait=False)
+                    translation_actor.close(wait=True)
                 if timestamp_actor is not None:
-                    timestamp_actor.close(wait=False)
+                    timestamp_actor.close(wait=True)
 
         lifespan = model_actor_lifespan
 
@@ -318,6 +323,19 @@ def build_app(
                 if message.get("type") == "websocket.disconnect":
                     return
                 if message.get("bytes") is not None:
+                    if len(message["bytes"]) > _SERVICE_MAX_PCM_FRAME_BYTES:
+                        await _queue_event(
+                            event_queue,
+                            {
+                                "type": "error",
+                                "error": (
+                                    f"PCM frame too large ({len(message['bytes'])} bytes); "
+                                    f"max {_SERVICE_MAX_PCM_FRAME_BYTES} bytes per frame."
+                                ),
+                            },
+                            sender_task=sender_task,
+                        )
+                        continue
                     audio = decode_pcm_s16le(message["bytes"])
                     if audio_recorder is not None:
                         audio_recorder.write(audio)

@@ -157,6 +157,13 @@ class TranscriptStore:
         previous_end = self._previous_known_end(before_index=segment.index)
         start = max(int(previous_end), int(start_ms))
         end = max(start, int(end_ms))
+        # Clamp forward too: if a later segment is already timed (patches can arrive out of
+        # index order), this segment must not overlap into it. In the normal in-order case
+        # later segments are still pending, so this is a no-op.
+        next_start = self._next_known_start(after_index=segment.index)
+        if next_start is not None:
+            end = min(end, int(next_start))
+            start = min(start, end)
         segment.start_ms = start
         segment.end_ms = end
         segment.timing_status = status
@@ -180,6 +187,17 @@ class TranscriptStore:
             if segment.id == segment_id:
                 return segment
         return None
+
+    def _next_known_start(self, *, after_index: int) -> int | None:
+        if not self.keep_segments:
+            return None
+        best: int | None = None
+        for segment in self.state.stable_segments:
+            if segment.index <= after_index:
+                continue
+            if segment.start_ms is not None and (best is None or segment.start_ms < best):
+                best = int(segment.start_ms)
+        return best
 
     def _previous_known_end(self, *, before_index: int | None = None) -> int:
         if not self.keep_segments:

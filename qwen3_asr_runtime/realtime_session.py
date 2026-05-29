@@ -104,7 +104,15 @@ class _SourceTimeline:
         else:
             source_start = int(source_start_sample)
         if self._spans and source_start < self._spans[-1].source_end:
-            raise ValueError("source_start_sample must not overlap previous source audio")
+            # Callers trim overlap before appending, so this should not happen. Clamp to
+            # contiguous instead of raising: a defensive clamp keeps the timeline monotonic
+            # and the session alive, whereas raising would kill the whole connection.
+            _LOGGER.debug(
+                "Source timeline overlap clamped: source_start=%d previous_source_end=%d",
+                source_start,
+                self._spans[-1].source_end,
+            )
+            source_start = self._spans[-1].source_end
         source_end = source_start + sample_count
         if self._spans:
             previous = self._spans[-1]

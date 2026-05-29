@@ -229,7 +229,11 @@ def _format_srt_time(ms: int) -> str:
 def _optional_int(value: Any) -> int | None:
     if value is None or value == "":
         return None
-    return int(value)
+    # Defensive: a malformed timing value from the server must not abort event replay.
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 __all__ = ["SubtitleDocument", "SubtitleLine", "SubtitleWindow"]

@@ -69,6 +69,33 @@ class TestSubtitleDocument:
         assert window.previous.text == '正在处理'  # type: ignore[union-attr]
         assert window.current.text == '下一句'  # type: ignore[union-attr]
 
+    def test_malformed_timing_value_does_not_break_replay(self) -> None:
+        document = SubtitleDocument()
+        document.apply_event(
+            {
+                "type": "transcript_update",
+                "revision": 1,
+                "stable_base": 0,
+                "stable_count": 1,
+                "stable_appends": [stable_segment(1, "第一句", start_ms=0, end_ms=1200)],
+                "partial": None,
+            }
+        )
+
+        # A malformed timing value from the server must not raise out of replay.
+        document.apply_event(
+            {
+                "type": "transcript_timing_update",
+                "source_segment_id": "seg_000001",
+                "start_ms": "oops",
+                "end_ms": None,
+                "timing_status": "failed",
+            }
+        )
+
+        assert document.stable_lines[0].start_ms is None
+        assert document.stable_lines[0].timing_status == "failed"
+
     def test_srt_uses_stable_history_only(self) -> None:
         document = SubtitleDocument()
         document.apply_event(

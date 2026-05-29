@@ -144,6 +144,17 @@ class SileroVadConfig:
     min_silence_ms: int = 700
     use_onnx: bool = True
 
+    def __post_init__(self) -> None:
+        if not (0.0 < float(self.threshold) <= 1.0):
+            raise ValueError(f"threshold must be in (0, 1], got: {self.threshold}")
+        if self.negative_threshold is not None:
+            neg = float(self.negative_threshold)
+            # Must stay below threshold (hysteresis) and above 0 so silence can be detected.
+            if not (0.0 < neg < float(self.threshold)):
+                raise ValueError(
+                    f"negative_threshold must be in (0, threshold={self.threshold}), got: {neg}"
+                )
+
 
 class SileroVadAdapter:
     """Streaming Silero VAD wrapper with the same endpoint semantics as EnergyVadAdapter."""

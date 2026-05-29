@@ -49,7 +49,9 @@ After `ready`, send binary WebSocket frames containing 16 kHz mono
 little-endian `pcm_s16le`. For low-latency captioning, send about 100 ms per
 WebSocket audio frame. Frame size is transport cadence; the ASR session decodes
 on the model streaming cadence, and the timestamp runtime aligns stable
-segments asynchronously.
+segments asynchronously. A single binary frame larger than the service limit
+(about 500 s of audio) is rejected with a recoverable `error` and the session
+stays open.
 
 Commands after `ready`:
 

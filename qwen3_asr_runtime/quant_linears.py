@@ -75,7 +75,11 @@ if triton is not None:
                 mask=(offs_n[None, :] < N) & (k[:, None] < K),
                 other=0,
             ).to(tl.float32)
-            acc += tl.dot(xv, wv, input_precision="tf32")
+            # ieee (not tf32): keeps the GEMM path's accumulation precision consistent with
+            # the fp32 GEMV path so the two W8A16 paths agree. GEMM is off the single-token
+            # decode hot path. NOTE: W8A16 is a CER-gated optimized path — re-run the W8A16
+            # CER gate before release after this change.
+            acc += tl.dot(xv, wv, input_precision="ieee")
         scale = tl.load(scales + offs_n, mask=offs_n < N, other=0.0).to(tl.float32)
         tl.store(
             y + offs_m[:, None] * N + offs_n[None, :],
