@@ -776,6 +776,13 @@ class TestRealtimeServerCli:
         assert kwargs['flashinfer']
         assert kwargs['fused_rmsnorm']
         assert kwargs['fused_linears']
+        # W8A16 is OFF by default for the streaming service: it slows the
+        # prefill-bound streaming path ~3x at equal CER (recheck_w8a16_*).
+        assert not kwargs['quantized_linears']
+
+    def test_w8a16_flag_forces_quantized_linears_on(self) -> None:
+        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--w8a16"]):
+            _, kwargs = _build_model_load(_parse_args())
         assert kwargs['quantized_linears']
 
     def test_cuda_graph_prewarm_is_default_hard_gate_for_asr_only(self) -> None:

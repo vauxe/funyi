@@ -34,6 +34,14 @@ RTX 4090, bf16, 60s CN median wall: base `~5s`, graph `1.89s`, FlashInfer
 Offline remains decode-bound. Streaming remains repeated-prefill bound until it
 gets stateful reuse.
 
+W8A16 is offline-only. Streaming is prefill-bound (decode is ~14% of a live20
+step), and the W8A16 Triton GEMM (fp32 `tl.dot`) makes multi-token prefill ~3x
+slower. live20 per-update steady-state: W8A16 on `~162ms` vs off `~52ms`
+(flashinfer); the 80-window live20 CER gate is equal (cer_mean `0.0961` off vs
+`0.0965` on, `recheck_w8a16_{on,off}.json`). The streaming service defaults
+W8A16 off; a fast tensor-core (not fp32 Triton) prefill GEMM is the only way
+quantization helps the streaming path.
+
 Known-language prompts are opt-in; auto language stays default.
 
 ## Workflow

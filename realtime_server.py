@@ -1013,7 +1013,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--flashinfer", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--fused-rmsnorm", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--fused-linears", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--w8a16", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument(
+        "--w8a16",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="W8A16 quant. Default OFF for streaming (its fp32 Triton GEMM slows "
+        "prefill ~3x at equal CER); pass --w8a16 to force on.",
+    )
     parser.add_argument("--cuda-graph-prewarm", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--cuda-graph-prewarm-language", default="Chinese")
     parser.add_argument("--cuda-graph-prewarm-window-sec", type=float, default=20.0)
@@ -1096,7 +1102,13 @@ def _build_model_load(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
         "flashinfer": True if args.flashinfer is None else args.flashinfer,
         "fused_rmsnorm": True if args.fused_rmsnorm is None else args.fused_rmsnorm,
         "fused_linears": True if args.fused_linears is None else args.fused_linears,
-        "quantized_linears": True if args.w8a16 is None else args.w8a16,
+        # W8A16 is OFF by default for the streaming service: its Triton GEMM
+        # (fp32 tl.dot) makes multi-token prefill ~3x slower, and streaming is
+        # prefill-bound (decode is ~14% of a live20 step). The 80-window live20
+        # CER gate shows OFF is 2.58x faster at equal CER (cer_mean 0.0961 vs
+        # 0.0965; see local_goldens/cer/recheck_w8a16_{on,off}.json). W8A16
+        # still helps the decode-bound offline path, where it stays opt-in.
+        "quantized_linears": False if args.w8a16 is None else args.w8a16,
     }
     if device_map:
         load_kwargs["device_map"] = device_map

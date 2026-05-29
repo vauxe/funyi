@@ -5,9 +5,10 @@ Startup checklist only. Keep this file short.
 ## Goal
 
 Build a runtime Qwen3-ASR around the upstream `transformers` backend without
-depending on upstream package code at runtime. Preserve upstream-compatible
-library/offline defaults. The local service entrypoint may enable the validated
-single-user profile by default.
+depending on upstream package code at runtime. The model layer may diverge from
+upstream byte-for-byte; quality is gated against an official-code golden, not
+upstream byte-compatibility. The local service entrypoint may enable the
+validated single-user profile by default.
 
 ## Invariants
 
@@ -16,9 +17,11 @@ single-user profile by default.
   goldens.
 - Keep validation audio in `local_data/` and generated outputs in
   `local_goldens/`; both are ignored by git.
-- Default offline path must remain upstream-compatible and byte-regressed before
-  release.
-- Optimized paths are quality-gated by punctuation-stripped CER vs allowed SRT.
+- The model layer may diverge from upstream byte-for-byte. Quality is gated by
+  CER vs the official-code golden (`local_goldens/offline_official_golden.json`,
+  generated from the upstream whisper-service `qwen_asr` transformers backend)
+  and by punctuation-stripped CER vs allowed SRT. Both goldens are audio-derived
+  and git-ignored.
 - Streaming default remains full-audio re-feed unless `max_window_sec` is set.
 
 ## Current Baseline
@@ -29,8 +32,10 @@ single-user profile by default.
 - Generic bounded-live prefix-mode start point is live30; stricter quality mode
   is live45.
 - Local service default is the live20 model streaming profile with `cuda_graph +
-  flashinfer + fused_rmsnorm + fused_linears + W8A16` plus required forced-aligner
-  timestamp patches.
+  flashinfer + fused_rmsnorm + fused_linears` plus required forced-aligner
+  timestamp patches. W8A16 is OFF for streaming: its fp32 Triton GEMM slows
+  multi-token prefill ~3x at equal CER (streaming is prefill-bound). W8A16 stays
+  opt-in for the decode-bound offline path.
 - W8A16 means qkv/gate_up only.
 
 ## Important Paths
