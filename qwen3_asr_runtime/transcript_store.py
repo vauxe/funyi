@@ -39,9 +39,11 @@ class TranscriptStore:
     snapshot of the newest ASR text that may still be rewritten.
     """
 
-    def __init__(self, transcript_id: str = "default") -> None:
+    def __init__(self, transcript_id: str = "default", *, keep_segments: bool = True) -> None:
         self.state = TranscriptState(id=str(transcript_id))
+        self.keep_segments = bool(keep_segments)
         self._next_segment_index = 1
+        self._last_known_end = 0
 
     @property
     def revision(self) -> int:
@@ -92,8 +94,13 @@ class TranscriptStore:
             language=str(language or ""),
             timing_status=str(timing_status or "") or None,
         )
-        self.state.stable_segments.append(segment)
-        self.state.stable_count = len(self.state.stable_segments)
+        if end is not None:
+            self._last_known_end = int(end)
+        if self.keep_segments:
+            self.state.stable_segments.append(segment)
+            self.state.stable_count = len(self.state.stable_segments)
+        else:
+            self.state.stable_count += 1
         return segment
 
     def replace_partial(self, segment: PartialSegment | None) -> bool:
@@ -157,12 +164,15 @@ class TranscriptStore:
 
     def final_event(self) -> dict[str, object]:
         self.state.revision += 1
-        return {
+        payload: dict[str, object] = {
             "type": "transcript_final",
             "revision": self.state.revision,
+            "final_revision": self.state.revision,
             "stable_count": self.stable_count,
-            "segments": [self._stable_segment_payload(segment) for segment in self.state.stable_segments],
         }
+        if self.keep_segments:
+            payload["segments"] = [self._stable_segment_payload(segment) for segment in self.state.stable_segments]
+        return payload
 
     def _find_stable_segment(self, source_segment_id: str) -> StableSegment | None:
         segment_id = str(source_segment_id or "")
@@ -172,6 +182,8 @@ class TranscriptStore:
         return None
 
     def _previous_known_end(self, *, before_index: int | None = None) -> int:
+        if not self.keep_segments:
+            return int(self._last_known_end)
         for segment in reversed(self.state.stable_segments):
             if before_index is not None and segment.index >= before_index:
                 continue

@@ -10,18 +10,18 @@ import logging
 from pathlib import Path
 import re
 import time
-from typing import Any, Callable
+from typing import Any
 from uuid import uuid4
 import wave
 
 import numpy as np
 
 from qwen3_asr_runtime.cuda_serialization import CUDA_GRAPH_CAPTURE_LOCK
+from qwen3_asr_runtime.realtime_session import RealtimeASRConfig, RealtimeConnectionSession
 from qwen3_asr_runtime.realtime_timestamps import (
     AudioTimelineBuffer,
     RealtimeTimestampConfig,
     RealtimeTimestampRuntime,
-    StableTimingJob,
     TimestampModelActor,
 )
 from qwen3_asr_runtime.realtime_translation import (
@@ -31,6 +31,7 @@ from qwen3_asr_runtime.realtime_translation import (
 )
 from qwen3_asr_runtime.language_support import (
     HYMT_MODEL_CARD_LANGUAGES,
+    QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES,
 )
 from qwen3_asr_runtime.translation import (
     DEFAULT_HYMT_ATTN_IMPLEMENTATION,
@@ -40,18 +41,13 @@ from qwen3_asr_runtime.translation import (
     HYMTGenerationConfig,
     HYMTTranslator,
 )
-from qwen3_asr_runtime.realtime_session import (
-    RealtimeASRConfig,
-    RealtimeASRSession,
-    RealtimeConnectionSession,
-)
 from qwen3_asr_runtime.transcript_store import TranscriptStore
 from qwen3_asr_runtime.utils import SAMPLE_RATE, normalize_language_name, validate_language
 
 _SERVICE_SEND_TIMEOUT_SEC = 5.0
+_SERVICE_EVENT_QUEUE_MAXSIZE = 128
 _SERVICE_DEBUG_PCM_SUMMARY_INTERVAL_MS = 1000
 _SERVICE_TRANSLATION_PREVIEW_DEBOUNCE_MS = 700
-_SERVICE_LIVE_STABILITY_DELAY_MS = 12_000
 _SERVICE_TRANSLATION_PREWARM_TARGET_LANGUAGE = "Chinese"
 _SERVICE_TRANSLATION_PREWARM_TEXTS = (
     "你好。",
@@ -71,6 +67,7 @@ _START_COMMAND_FIELDS = frozenset(
         "language",
         "context",
         "target_language",
+        "realtime_commit_mode",
     }
 )
 _LANGUAGE_COMMAND_FIELDS = frozenset({"type", "language", "target_language"})
@@ -192,8 +189,6 @@ def build_app(
     timestamp_config: RealtimeTimestampConfig | None = None,
     translation_actor: TranslationModelActor | None = None,
     translation_service_config: TranslationServiceConfig | None = None,
-    live_stability_delay_ms: int = _SERVICE_LIVE_STABILITY_DELAY_MS,
-    vad_enabled: bool = True,
     debug_audio_dir: str | Path | None = None,
 ) -> Any:
     try:
@@ -230,8 +225,8 @@ def build_app(
         await websocket.accept()
         event_queue: asyncio.Queue[dict[str, Any] | None] | None = None
         sender_task: asyncio.Task[None] | None = None
-        timestamp_runtime: RealtimeTimestampRuntime | None = None
         translation: RealtimeTranslationRuntime | None = None
+        timestamps: RealtimeTimestampRuntime | None = None
         audio_recorder: _DebugAudioRecorder | None = None
 
         reject_connection = False
@@ -250,45 +245,43 @@ def build_app(
             start_payload = await _receive_start(websocket)
             if start_payload is None:
                 return
+            if timestamp_actor is None or timestamp_config is None:
+                await _send_error_and_close(
+                    websocket,
+                    "Realtime ASR requires --timestamp-model; ASR and forced aligner are one backend path.",
+                    code=1011,
+                )
+                return
             session_id = str(start_payload.get("session_id") or "default")
-            store = TranscriptStore(transcript_id=session_id)
-            store_lock = asyncio.Lock()
-            timestamps_enabled = timestamp_actor is not None and timestamp_config is not None
-            config = _build_session_config(
-                start_payload,
-                force_align_timestamps=timestamps_enabled,
-                live_stability_delay_ms=live_stability_delay_ms,
-            )
+            store = TranscriptStore(transcript_id=session_id, keep_segments=True)
+            try:
+                config = _build_realtime_session_config(start_payload)
+            except ValueError as exc:
+                await _send_error_and_close(websocket, str(exc), code=1003)
+                return
             try:
                 session_translation_config = _session_translation_config(start_payload, translation_service_config)
             except ValueError as exc:
                 await _send_error_and_close(websocket, str(exc), code=1003)
                 return
-            try:
-                if vad_enabled:
-                    session = RealtimeConnectionSession(
-                        model,
-                        transcript_store=store,
-                        config=config,
-                    )
-                else:
-                    session = RealtimeASRSession(model, transcript_store=store, config=config)
-            except RuntimeError as exc:
-                await _send_error_and_close(websocket, str(exc), code=1011)
-                return
-
-            event_queue = asyncio.Queue()
+            event_queue = asyncio.Queue(maxsize=_SERVICE_EVENT_QUEUE_MAXSIZE)
             sender_task = asyncio.create_task(_send_queued_events(websocket, event_queue))
-            if timestamps_enabled and timestamp_actor is not None and timestamp_config is not None:
-                timestamp_runtime = RealtimeTimestampRuntime(
-                    timestamp_actor,
-                    store=store,
-                    audio_buffer=AudioTimelineBuffer(),
-                    config=timestamp_config,
-                    event_queue=event_queue,
-                    store_lock=store_lock,
-                )
-                await timestamp_runtime.start()
+            session = RealtimeConnectionSession(
+                model,
+                transcript_store=store,
+                config=config,
+            )
+            # No store_lock: all TranscriptStore writes run on this event-loop thread
+            # (only the aligner runs off-loop). Add a shared lock if ASR writes ever move
+            # off-loop (e.g. to_thread).
+            timestamps = RealtimeTimestampRuntime(
+                timestamp_actor,
+                store=store,
+                audio_buffer=AudioTimelineBuffer(),
+                config=timestamp_config,
+                event_queue=event_queue,
+            )
+            await timestamps.start()
             if translation_actor is not None and session_translation_config is not None:
                 translation = RealtimeTranslationRuntime(
                     translation_actor,
@@ -305,17 +298,16 @@ def build_app(
                 "sample_rate": SAMPLE_RATE,
                 "audio_format": "pcm_s16le",
             }
-            if timestamp_runtime is not None:
-                ready["timestamps"] = timestamp_runtime.ready_payload()
+            ready["streaming"] = _streaming_ready_payload(config)
+            ready["timestamps"] = timestamps.ready_payload()
             if translation is not None:
                 ready["translation"] = translation.ready_payload()
-            await event_queue.put(ready)
+            await _queue_event(event_queue, ready, sender_task=sender_task)
             _LOGGER.info(
-                "Realtime ASR session started session_id=%s language=%s vad=%s timestamps=%s translation=%s",
+                "Realtime ASR session started session_id=%s language=%s mode=aligned_streaming aligner=%s translation=%s",
                 session_id,
                 config.language or "auto",
-                bool(vad_enabled),
-                timestamp_runtime is not None,
+                timestamp_actor.model_path or "configured",
                 translation is not None,
             )
 
@@ -333,10 +325,12 @@ def build_app(
                         summary = pcm_debug_summary.accept(audio, byte_count=len(message["bytes"]))
                         if summary is not None:
                             _LOGGER.debug(summary)
-                    if timestamp_runtime is not None:
-                        timestamp_runtime.accept_audio(audio)
-                    events = await _run_store_write(store_lock, session.ingest_audio, audio)
-                    await _publish_session_events(event_queue, translation, events, timestamp_runtime, session)
+                    timestamps.accept_audio(audio)
+                    events = session.ingest_audio(audio)
+                    if await _publish_session_events(event_queue, translation, events, sender_task=sender_task):
+                        await _drain_and_close(websocket, event_queue, sender_task, code=1011)
+                        return
+                    await timestamps.accept_jobs(session.consume_stable_timing_jobs_for_events(events))
                     continue
 
                 if message.get("text") is None:
@@ -345,16 +339,19 @@ def build_app(
                 try:
                     command = json.loads(message["text"])
                 except json.JSONDecodeError:
-                    await event_queue.put({"type": "error", "error": "Invalid JSON command."})
+                    await _queue_event(event_queue, {"type": "error", "error": "Invalid JSON command."})
                     continue
                 if not isinstance(command, dict):
-                    await event_queue.put({"type": "error", "error": "Command must be a JSON object."})
+                    await _queue_event(event_queue, {"type": "error", "error": "Command must be a JSON object."})
                     continue
                 command_type = command.get("type")
                 if command_type == "flush":
                     _LOGGER.debug("Realtime command session_id=%s type=flush", session_id)
-                    events = await _run_store_write(store_lock, session.flush)
-                    await _publish_session_events(event_queue, translation, events, timestamp_runtime, session)
+                    events = session.flush()
+                    if await _publish_session_events(event_queue, translation, events, sender_task=sender_task):
+                        await _drain_and_close(websocket, event_queue, sender_task, code=1011)
+                        return
+                    await timestamps.accept_jobs(session.consume_stable_timing_jobs_for_events(events))
                 elif command_type == "set_language":
                     _LOGGER.debug("Realtime command session_id=%s type=set_language payload=%s", session_id, command)
                     try:
@@ -363,7 +360,7 @@ def build_app(
                             translation_service_config,
                         )
                     except ValueError as exc:
-                        await event_queue.put({"type": "error", "error": str(exc)})
+                        await _queue_event(event_queue, {"type": "error", "error": str(exc)})
                         continue
 
                     current_target = translation.target_language if translation is not None else None
@@ -376,12 +373,15 @@ def build_app(
                     )
 
                     if language_changed:
-                        events = await _run_store_write(store_lock, session.set_language, language_update["language"])
+                        events = session.set_language(language_update["language"])
                     elif target_changed:
-                        events = await _run_store_write(store_lock, session.flush)
+                        events = session.flush()
                     else:
                         events = []
-                    await _publish_session_events(event_queue, translation, events, timestamp_runtime, session)
+                    if await _publish_session_events(event_queue, translation, events, sender_task=sender_task):
+                        await _drain_and_close(websocket, event_queue, sender_task, code=1011)
+                        return
+                    await timestamps.accept_jobs(session.consume_stable_timing_jobs_for_events(events))
 
                     if target_changed:
                         try:
@@ -393,30 +393,19 @@ def build_app(
                                 event_queue=event_queue,
                             )
                         except ValueError as exc:
-                            await event_queue.put({"type": "error", "error": str(exc)})
+                            await _queue_event(event_queue, {"type": "error", "error": str(exc)})
                             continue
                 elif command_type == "finish":
                     _LOGGER.debug("Realtime command session_id=%s type=finish", session_id)
-                    if timestamp_runtime is None:
-                        events = await _run_store_write(store_lock, session.finish)
-                        await _publish_finish_events(event_queue, translation, events)
-                    else:
-                        events = await _run_store_write(store_lock, session.flush)
-                        await _publish_finish_events(
-                            event_queue,
-                            translation,
-                            events,
-                            timestamp_runtime,
-                            session.stable_timing_jobs_for_events(events),
-                            final_event_factory=store.final_event,
-                            store_lock=store_lock,
-                        )
-                    await event_queue.put(None)
-                    await sender_task
-                    await _close_websocket(websocket, code=1000)
+                    events = session.flush()
+                    timing_events = await timestamps.finish(session.consume_stable_timing_jobs_for_events(events))
+                    events.extend(timing_events)
+                    events.append(store.final_event())
+                    await _publish_finish_events(event_queue, translation, events, sender_task=sender_task)
+                    await _drain_and_close(websocket, event_queue, sender_task, code=1000)
                     return
                 else:
-                    await event_queue.put({"type": "error", "error": f"Unsupported command: {command_type}"})
+                    await _queue_event(event_queue, {"type": "error", "error": f"Unsupported command: {command_type}"})
         except WebSocketDisconnect:
             return
         except WebSocketSendTimeout:
@@ -427,10 +416,12 @@ def build_app(
             _LOGGER.exception("Realtime ASR WebSocket session failed.")
             try:
                 if event_queue is not None and sender_task is not None and not sender_task.done():
-                    await event_queue.put({"type": "error", "error": str(exc) or type(exc).__name__, "fatal": True})
-                    await event_queue.put(None)
-                    await sender_task
-                    await _close_websocket(websocket, code=1011)
+                    await _queue_event(
+                        event_queue,
+                        {"type": "error", "error": str(exc) or type(exc).__name__, "fatal": True},
+                        sender_task=sender_task,
+                    )
+                    await _drain_and_close(websocket, event_queue, sender_task, code=1011)
                 else:
                     await _send_error_and_close(websocket, str(exc) or type(exc).__name__, code=1011)
             except Exception:
@@ -442,10 +433,10 @@ def build_app(
                     audio_recorder.close()
                 except Exception:
                     _LOGGER.exception("Failed to close realtime debug audio recorder.")
-            if timestamp_runtime is not None:
-                await timestamp_runtime.close()
             if translation is not None:
                 await translation.close()
+            if timestamps is not None:
+                await timestamps.close()
             if sender_task is not None and not sender_task.done():
                 sender_task.cancel()
                 try:
@@ -561,6 +552,12 @@ def _format_event_log_summary(event: dict[str, Any]) -> str:
         )
     if event_type == "transcript_final":
         return f"type=transcript_final stable_count={event.get('stable_count')}"
+    if event_type == "transcript_status":
+        return (
+            "type=transcript_status "
+            f"status={event.get('status')} fatal={event.get('fatal')} "
+            f"message={_truncate_log_text(event.get('message'))!r}"
+        )
     if event_type == "ready":
         return (
             "type=ready "
@@ -579,30 +576,39 @@ def _should_log_realtime_event(event: dict[str, Any]) -> bool:
     return event_type in {
         "ready",
         "error",
+        "transcript_status",
         "transcript_final",
         "translation_stable",
         "translation_status",
-        "transcript_timing_update",
     }
 
 
-async def _run_store_write(store_lock: asyncio.Lock, func: Callable[..., Any], *args: Any) -> Any:
-    async with store_lock:
-        return await asyncio.to_thread(func, *args)
-
-
-def _build_session_config(
-    payload: dict[str, Any],
-    *,
-    force_align_timestamps: bool = False,
-    live_stability_delay_ms: int = _SERVICE_LIVE_STABILITY_DELAY_MS,
-) -> RealtimeASRConfig:
+def _build_realtime_session_config(payload: dict[str, Any]) -> RealtimeASRConfig:
+    mode = str(payload.get("realtime_commit_mode") or "aligned_windowed").strip()
+    if mode != "aligned_windowed":
+        raise ValueError("realtime_commit_mode must be aligned_windowed")
+    language = payload.get("language")
+    if language is not None and str(language).strip():
+        language = _normalize_aligned_source_language(str(language))
+    else:
+        language = None
     return RealtimeASRConfig(
         context=str(payload.get("context") or ""),
-        language=payload.get("language"),
-        live_stability_delay_ms=int(live_stability_delay_ms),
-        force_align_timestamps=bool(force_align_timestamps),
+        language=language,
+        force_align_timestamps=True,
     )
+
+
+def _streaming_ready_payload(config: RealtimeASRConfig) -> dict[str, Any]:
+    return {
+        "mode": "aligned_windowed",
+        "requires": ["asr", "forced_aligner"],
+        "stable": {
+            "source": "asr_streaming_text_and_forced_aligner",
+            "patch_event": "transcript_timing_update",
+            "live_stability_delay_ms": int(config.live_stability_delay_ms),
+        },
+    }
 
 
 def _session_translation_config(
@@ -675,7 +681,7 @@ def _parse_language_config_update(
         raw_language = command.get("language")
         language: str | None = None
         if raw_language is not None and str(raw_language).strip():
-            language = _normalize_supported_language(str(raw_language))
+            language = _normalize_aligned_source_language(str(raw_language))
         update["language"] = language
 
     if "target_language" in command:
@@ -696,6 +702,13 @@ def _normalize_supported_language(language: str) -> str:
     return normalized
 
 
+def _normalize_aligned_source_language(language: str) -> str:
+    normalized = _normalize_supported_language(language)
+    if normalized not in QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES:
+        raise ValueError(f"Forced aligner does not support source language: {normalized}.")
+    return normalized
+
+
 def _normalize_language_choice(language: str, allowed: tuple[str, ...], *, field_name: str) -> str:
     raw = str(language or "").strip()
     if not raw:
@@ -709,16 +722,6 @@ def _normalize_language_choice(language: str, allowed: tuple[str, ...], *, field
 
 def _normalize_translation_target_language(language: str) -> str:
     return _normalize_language_choice(language, HYMT_MODEL_CARD_LANGUAGES, field_name="target_language")
-
-
-def _arg_nonnegative_int(value: str) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError) as exc:
-        raise argparse.ArgumentTypeError("value must be a non-negative integer.") from exc
-    if parsed < 0:
-        raise argparse.ArgumentTypeError("value must be a non-negative integer.")
-    return parsed
 
 
 async def _receive_start(websocket: Any) -> dict[str, Any] | None:
@@ -763,7 +766,7 @@ async def _receive_start(websocket: Any) -> dict[str, Any] | None:
     raw_language = payload.get("language")
     if raw_language is not None and str(raw_language).strip():
         try:
-            payload["language"] = _normalize_supported_language(str(raw_language))
+            payload["language"] = _normalize_aligned_source_language(str(raw_language))
         except ValueError as exc:
             await _send_error_and_close(websocket, str(exc), code=1003)
             return None
@@ -774,26 +777,25 @@ async def _publish_session_events(
     event_queue: asyncio.Queue[dict[str, Any] | None],
     translation: RealtimeTranslationRuntime | None,
     events: list[dict[str, Any]],
-    timestamp_runtime: RealtimeTimestampRuntime | None = None,
-    session: Any | None = None,
-) -> None:
+    *,
+    sender_task: asyncio.Task[None] | None = None,
+) -> bool:
+    fatal_status = False
     for event in events:
         if translation is not None:
             await translation.accept_source_event(event)
-        await event_queue.put(event)
-        if timestamp_runtime is not None and session is not None:
-            await timestamp_runtime.accept_jobs(session.stable_timing_jobs(event))
+        if event.get("type") == "transcript_status" and bool(event.get("fatal")):
+            fatal_status = True
+        await _queue_event(event_queue, event, sender_task=sender_task)
+    return fatal_status
 
 
 async def _publish_finish_events(
     event_queue: asyncio.Queue[dict[str, Any] | None],
     translation: RealtimeTranslationRuntime | None,
     events: list[dict[str, Any]],
-    timestamp_runtime: RealtimeTimestampRuntime | None = None,
-    timestamp_jobs: list[StableTimingJob] | None = None,
     *,
-    final_event_factory: Any | None = None,
-    store_lock: asyncio.Lock | None = None,
+    sender_task: asyncio.Task[None] | None = None,
 ) -> None:
     if translation is not None:
         await translation.cancel_preview()
@@ -803,30 +805,81 @@ async def _publish_finish_events(
     for event in events:
         if event.get("type") == "transcript_update":
             transcript_updates.append(event)
-            await event_queue.put(event)
+            await _queue_event(event_queue, event, sender_task=sender_task)
         elif event.get("type") == "transcript_final":
             final_events.append(event)
         else:
-            await event_queue.put(event)
-
-    if timestamp_runtime is not None:
-        timing_events = await timestamp_runtime.finish(list(timestamp_jobs or []))
-        for event in timing_events:
-            await event_queue.put(event)
+            await _queue_event(event_queue, event, sender_task=sender_task)
 
     if translation is not None:
         translation_events = await translation.finish(transcript_updates)
         for event in translation_events:
-            await event_queue.put(event)
+            await _queue_event(event_queue, event, sender_task=sender_task)
 
-    if final_event_factory is not None:
-        if store_lock is None:
-            final_events = [final_event_factory()]
-        else:
-            async with store_lock:
-                final_events = [final_event_factory()]
     for event in final_events:
+        await _queue_event(event_queue, event, sender_task=sender_task)
+
+
+async def _drain_and_close(
+    websocket: Any,
+    event_queue: asyncio.Queue[dict[str, Any] | None],
+    sender_task: asyncio.Task[None] | None,
+    *,
+    code: int,
+) -> None:
+    """Signal the sender to stop, wait for it, and close the socket once."""
+    with suppress(Exception):
+        await _queue_event(event_queue, None, sender_task=sender_task)
+    if sender_task is not None:
+        with suppress(Exception):
+            await sender_task
+    await _close_websocket(websocket, code=code)
+
+
+async def _queue_event(
+    event_queue: asyncio.Queue[dict[str, Any] | None],
+    event: dict[str, Any] | None,
+    *,
+    sender_task: asyncio.Task[None] | None = None,
+) -> None:
+    """Enqueue an event for the sender, applying natural backpressure.
+
+    A full queue is not fatal: ASR has already consumed the audio, so dropping the
+    event would skip published transcript text. Instead the producer blocks until the
+    sender drains the queue, which in turn backpressures audio ingest (and the client
+    socket). The only fatal condition is the sender task itself finishing while we wait
+    — that means the client stopped reading (its send-side timeout fired) — in which
+    case we surface the sender's failure rather than block forever.
+    """
+    try:
+        event_queue.put_nowait(event)
+        return
+    except asyncio.QueueFull:
+        pass
+
+    if sender_task is None or sender_task.done():
+        if sender_task is not None and sender_task.done():
+            _raise_sender_failure(sender_task)
         await event_queue.put(event)
+        return
+
+    put_task = asyncio.ensure_future(event_queue.put(event))
+    done, _pending = await asyncio.wait({put_task, sender_task}, return_when=asyncio.FIRST_COMPLETED)
+    if put_task in done:
+        put_task.result()
+        return
+
+    put_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await put_task
+    _raise_sender_failure(sender_task)
+
+
+def _raise_sender_failure(sender_task: asyncio.Task[None]) -> None:
+    exc = sender_task.exception()
+    if exc is not None:
+        raise exc
+    raise WebSocketSendTimeout("server output sender stopped before event could be queued")
 
 
 async def _send_queued_events(
@@ -916,7 +969,7 @@ def _parse_args() -> argparse.Namespace:
         "--log-level",
         default="info",
         choices=_LOG_LEVELS,
-        help="Service log verbosity. Use debug to inspect PCM summaries, VAD/ASR events, and transcript updates.",
+        help="Service log verbosity. Use debug to inspect PCM summaries, ASR events, and transcript updates.",
     )
     parser.add_argument(
         "--save-debug-audio",
@@ -947,22 +1000,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--cuda-graph-prewarm-language", default="Chinese")
     parser.add_argument("--cuda-graph-prewarm-window-sec", type=float, default=20.0)
     parser.add_argument("--cuda-graph-prewarm-prefix-tokens", type=int, default=64)
-    parser.add_argument(
-        "--live-stability-delay-ms",
-        type=_arg_nonnegative_int,
-        default=_SERVICE_LIVE_STABILITY_DELAY_MS,
-        help=(
-            "Minimum repeated-prefix delay before live text becomes stable. "
-            "Lower values are more aggressive and can reduce transcript quality."
-        ),
-    )
-    parser.add_argument(
-        "--vad",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Enable Silero voice activity control for realtime service ASR turns.",
-    )
-    parser.add_argument("--timestamp-model", default=None, help="Enable forced-aligner timestamps with this model.")
+    parser.add_argument("--timestamp-model", default=None, help="Required forced-aligner model for realtime ASR.")
     parser.add_argument("--timestamp-device-map", default=None, help="Forced-aligner device_map. Default: cuda:0.")
     parser.add_argument(
         "--timestamp-dtype",
@@ -1220,6 +1258,8 @@ def main() -> None:
 
     args = _parse_args()
     log_level = _configure_logging(args.log_level)
+    if not str(args.timestamp_model or "").strip():
+        raise RuntimeError("--timestamp-model is required; realtime ASR commits require ASR and forced aligner together.")
     backend, load_kwargs = _build_model_load(args)
 
     _LOGGER.info(
@@ -1263,8 +1303,6 @@ def main() -> None:
         timestamp_config=timestamp_config,
         translation_actor=translation_actor,
         translation_service_config=translation_service_config,
-        live_stability_delay_ms=args.live_stability_delay_ms,
-        vad_enabled=bool(args.vad),
         debug_audio_dir=args.debug_audio_dir if args.save_debug_audio else None,
     )
 

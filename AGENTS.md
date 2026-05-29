@@ -26,9 +26,11 @@ single-user profile by default.
 - Offline all-fused: `cuda_graph + flashinfer + fused_rmsnorm + fused_linears`.
 - Offline W8A16 is opt-in on top of all-fused, not default.
 - Known-language prompts are opt-in; auto language stays default.
-- Generic bounded-live start point is live30; stricter quality mode is live45.
-- Local service default is live20 with `spec_decode + cuda_graph + flashinfer +
-  fused_rmsnorm + fused_linears + W8A16`.
+- Generic bounded-live prefix-mode start point is live30; stricter quality mode
+  is live45.
+- Local service default is the live20 model streaming profile with `cuda_graph +
+  flashinfer + fused_rmsnorm + fused_linears + W8A16` plus required forced-aligner
+  timestamp patches.
 - W8A16 means qkv/gate_up only.
 
 ## Important Paths
@@ -44,6 +46,7 @@ single-user profile by default.
 - `realtime_server.py`: local WebSocket ASR service
 - `qwen3_asr_runtime/realtime_session.py`, `vad.py`, `transcript_store.py`:
   realtime session, VAD, and in-memory source transcript
+- `qwen3_asr_runtime/realtime_timestamps.py`: forced-aligner timestamp runtime
 - `tools/run_regression.py`, `tools/sweep_cer_vs_srt.py`,
   `tools/merge_cer_sweeps.py`: offline checks
 - `tools/run_streaming_regression.py`, `tools/benchmark_streaming.py`,

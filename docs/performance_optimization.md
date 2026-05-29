@@ -57,10 +57,10 @@ Do not reopen without new evidence:
 
 - FlashInfer prefill, FlashInfer BF16 GEMM, tensor-core decode
 - Direct SDPA or FlashAttention 2 varlen dispatch for the audio encoder in the
-  FlashInfer live profile; 60s live20 checks measured no stable win and a
+  FlashInfer live profile; older 60s live checks measured no stable win and a
   same-run regression (`~10.6s` direct SDPA, `~10.35s` FA2, `~9.4s` dispatcher
   fallback)
-- Audio-feature block caching under the 20s sliding live window; hit rate was
+- Audio-feature block caching under the older sliding live window; hit rate was
   low, assembled features drifted from full recompute, and audio-tower-only
   speedup was only `~1.06x`
 - `torch.compile`, HF `StaticCache`, auto `max_new_tokens`

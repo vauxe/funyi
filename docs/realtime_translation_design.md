@@ -12,8 +12,8 @@ scheduling, finish semantics, and quality gates only.
 ## Boundary
 
 Translation is a service-layer side track. It consumes emitted transcript events
-and does not modify `Qwen3ASRModel`, `RealtimeASRSession`, `TranscriptStore`, or
-the source segment schema.
+and does not modify `Qwen3ASRModel`, `RealtimeConnectionSession`,
+`TranscriptStore`, or the source segment schema.
 
 v1 has two paths:
 
@@ -35,7 +35,7 @@ Out of scope:
 
 ```text
 audio frames
-  -> RealtimeASRSession
+  -> RealtimeConnectionSession
   -> transcript_update / transcript_final
   -> update TranslationRuntime scheduler state without waiting for the model
   -> send source events immediately
@@ -57,7 +57,7 @@ Only the sender task writes to the WebSocket.
 The service gives the translation scheduler each source event before queueing
 that source event, so stale preview work can be cancelled before clients see a
 newer source revision. Current translation results are queued later and never
-block audio ingest. When the live20 CUDA graph path is prewarmed, ASR graph
+block audio ingest. When the aligned ASR CUDA graph path is prewarmed, ASR graph
 replay and HY-MT generation may overlap; graph capture and optimization details
 live in `@docs/performance_optimization.md`.
 
@@ -160,8 +160,8 @@ Do not try to cancel the model actor thread already inside
 Running stable jobs are not retranslated; they publish once before
 `transcript_final`. Already-running preview model calls may continue on the
 model actor, and stable finish work waits for the actor before publishing.
-Preview results after finish are ignored. ASR-only mode keeps the current
-`session.finish()` behavior.
+Preview results after finish are ignored. Source-only mode keeps the current
+`session.finish()` behavior and simply has no translation runtime to drain.
 
 ## Translator
 

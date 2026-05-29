@@ -6,6 +6,7 @@ from typing import Any, Optional, Protocol, TypeAlias
 
 import numpy as np
 
+from .audio_utils import normalize_pcm
 from .utils import SAMPLE_RATE
 
 
@@ -283,15 +284,6 @@ def create_vad_adapter(config: VadConfig | None = None) -> VadAdapter:
     raise TypeError(f"Unsupported VAD config: {type(config).__name__}")
 
 
-def normalize_pcm(audio: np.ndarray) -> np.ndarray:
-    x = np.asarray(audio)
-    if x.ndim != 1:
-        x = x.reshape(-1)
-    if x.dtype == np.int16:
-        return x.astype(np.float32) / 32768.0
-    return x.astype(np.float32, copy=False)
-
-
 __all__ = [
     "EnergyVadAdapter",
     "EnergyVadConfig",
@@ -301,5 +293,4 @@ __all__ = [
     "VadConfig",
     "VadDecision",
     "create_vad_adapter",
-    "normalize_pcm",
 ]

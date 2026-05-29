@@ -281,3 +281,29 @@ class TestSubtitleDocument:
         assert window.previous.text == '第一句'  # type: ignore[union-attr]
         assert window.previous.translation == 'first line'  # type: ignore[union-attr]
         assert window.current is None
+
+    def test_final_marker_without_snapshot_clears_current_and_keeps_replayed_stable_history(self) -> None:
+        document = SubtitleDocument()
+        document.apply_event(
+            {
+                "type": "transcript_update",
+                "revision": 1,
+                "stable_base": 0,
+                "stable_count": 1,
+                "stable_appends": [stable_segment(1, "第一句", start_ms=0, end_ms=1000)],
+                "partial": partial_segment("临时", start_ms=1000, end_ms=1400),
+            }
+        )
+
+        document.apply_event(
+            {
+                "type": "transcript_final",
+                "revision": 2,
+                "final_revision": 2,
+                "stable_count": 1,
+            }
+        )
+
+        window = document.window()
+        assert window.previous.text == "第一句"  # type: ignore[union-attr]
+        assert window.current is None

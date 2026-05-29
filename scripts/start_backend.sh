@@ -21,18 +21,18 @@ if [[ -n "$translation_model" ]]; then
   args+=(--translation-model "$translation_model")
 fi
 
-if [[ -n "$timestamp_model" ]]; then
-  args+=(--timestamp-model "$timestamp_model")
+if [[ -z "$timestamp_model" ]]; then
+  echo "FUNYI_TIMESTAMP_MODEL is required for realtime ASR." >&2
+  exit 64
 fi
+args+=(--timestamp-model "$timestamp_model")
 
 case "$allow_downloads" in
   1|true|TRUE|yes|YES|on|ON)
     if [[ -n "$translation_model" ]]; then
       args+=(--no-translation-local-files-only)
     fi
-    if [[ -n "$timestamp_model" ]]; then
-      args+=(--no-timestamp-local-files-only)
-    fi
+    args+=(--no-timestamp-local-files-only)
     ;;
 esac
 

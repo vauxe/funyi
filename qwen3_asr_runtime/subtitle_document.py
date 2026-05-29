@@ -122,6 +122,11 @@ class SubtitleDocument:
         )
 
     def _apply_transcript_final(self, event: dict[str, Any]) -> None:
+        if "segments" not in event:
+            self.current = None
+            self.revision = int(event.get("revision") or self.revision)
+            return
+
         existing = {line.id: line for line in self.stable_lines if line.id}
         lines: list[SubtitleLine] = []
         for segment in event.get("segments") or []:

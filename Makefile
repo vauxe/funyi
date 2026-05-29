@@ -9,7 +9,7 @@ help:
 	  'Targets:' \
 	  '  make backend            Start full backend with cached local models' \
 	  '  make backend-download   Start full backend and allow model downloads' \
-	  '  make backend-asr        Start ASR only, without translation or timestamps' \
+	  '  make backend-asr        Start ASR plus aligner, without translation' \
 	  '  make desktop            Start the desktop client' \
 	  '  make desktop-install    Install desktop dependencies' \
 	  '  make desktop-lint       Run desktop lint gates' \
@@ -23,7 +23,7 @@ backend-download:
 	FUNYI_ALLOW_DOWNLOADS=1 $(START_BACKEND) $(BACKEND_ARGS)
 
 backend-asr:
-	FUNYI_TRANSLATION_MODEL= FUNYI_TIMESTAMP_MODEL= $(START_BACKEND) $(BACKEND_ARGS)
+	FUNYI_TRANSLATION_MODEL= $(START_BACKEND) $(BACKEND_ARGS)
 
 desktop:
 	$(DESKTOP_PNPM) run dev

@@ -6,8 +6,9 @@ from typing import Literal
 
 import numpy as np
 
+from .audio_utils import normalize_pcm
 from .utils import SAMPLE_RATE
-from .vad import VadAdapter, create_vad_adapter, normalize_pcm
+from .vad import VadAdapter, create_vad_adapter
 
 
 @dataclass(frozen=True)

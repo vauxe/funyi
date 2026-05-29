@@ -7,12 +7,12 @@ from typing import Any, Optional
 
 import numpy as np
 
+from .audio_utils import normalize_pcm
 from .streaming import RecognitionFrame, RecognitionTail, TailSelector, TextStabilizer
 from .realtime_timestamps import StableTimingJob
 from .speech_gate import SpeechGate, SpeechGateEvent
 from .transcript_store import PartialSegment, StableSegment, TranscriptStore
 from .utils import SAMPLE_RATE
-from .vad import normalize_pcm
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -106,6 +106,16 @@ class _SourceTimeline:
         if self._spans and source_start < self._spans[-1].source_end:
             raise ValueError("source_start_sample must not overlap previous source audio")
         source_end = source_start + sample_count
+        if self._spans:
+            previous = self._spans[-1]
+            if previous.local_end == local_start and previous.source_end == source_start:
+                self._spans[-1] = _TimelineSpan(
+                    local_start=previous.local_start,
+                    local_end=local_end,
+                    source_start=previous.source_start,
+                    source_end=source_end,
+                )
+                return
         self._spans.append(
             _TimelineSpan(
                 local_start=local_start,
@@ -226,7 +236,7 @@ class RealtimeASRSession:
         events.append(self.store.final_event())
         return events
 
-    def stable_timing_jobs(self, event: dict[str, Any]) -> list[StableTimingJob]:
+    def consume_stable_timing_jobs(self, event: dict[str, Any]) -> list[StableTimingJob]:
         if not self.config.force_align_timestamps or event.get("type") != "transcript_update":
             return []
 
@@ -239,6 +249,7 @@ class RealtimeASRSession:
             source_text = str(segment.get("text") or "").strip()
             if hint is None or not segment_id or not source_text:
                 continue
+            self._timing_hints.pop(segment_id, None)
             jobs.append(
                 StableTimingJob(
                     source_segment_id=segment_id,
@@ -250,10 +261,10 @@ class RealtimeASRSession:
             )
         return jobs
 
-    def stable_timing_jobs_for_events(self, events: list[dict[str, Any]]) -> list[StableTimingJob]:
+    def consume_stable_timing_jobs_for_events(self, events: list[dict[str, Any]]) -> list[StableTimingJob]:
         jobs: list[StableTimingJob] = []
         for event in events:
-            jobs.extend(self.stable_timing_jobs(event))
+            jobs.extend(self.consume_stable_timing_jobs(event))
         return jobs
 
     def _append_asr_audio(self, audio: np.ndarray, *, source_start_sample: int | None = None) -> None:
@@ -625,7 +636,7 @@ class RealtimeConnectionSession:
         events.append(self.store.final_event())
         return events
 
-    def stable_timing_jobs(self, event: dict[str, Any]) -> list[StableTimingJob]:
+    def consume_stable_timing_jobs(self, event: dict[str, Any]) -> list[StableTimingJob]:
         if event.get("type") != "transcript_update":
             return []
         jobs: list[StableTimingJob] = []
@@ -634,13 +645,14 @@ class RealtimeConnectionSession:
                 continue
             job = self._timing_jobs.get(str(segment.get("id") or ""))
             if job is not None:
+                self._timing_jobs.pop(job.source_segment_id, None)
                 jobs.append(job)
         return jobs
 
-    def stable_timing_jobs_for_events(self, events: list[dict[str, Any]]) -> list[StableTimingJob]:
+    def consume_stable_timing_jobs_for_events(self, events: list[dict[str, Any]]) -> list[StableTimingJob]:
         jobs: list[StableTimingJob] = []
         for event in events:
-            jobs.extend(self.stable_timing_jobs(event))
+            jobs.extend(self.consume_stable_timing_jobs(event))
         return jobs
 
     def _new_asr_epoch(self, origin_sample: int) -> RealtimeASRSession:
@@ -710,7 +722,7 @@ class RealtimeConnectionSession:
         self._active_asr_flushed = False
 
     def _remember_timing_jobs(self, turn: RealtimeASRSession, events: list[dict[str, Any]]) -> None:
-        for job in turn.stable_timing_jobs_for_events(events):
+        for job in turn.consume_stable_timing_jobs_for_events(events):
             self._timing_jobs[job.source_segment_id] = job
 
 

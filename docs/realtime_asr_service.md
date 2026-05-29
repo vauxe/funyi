@@ -2,10 +2,11 @@
 
 Local single-user transcription service. It is not a public multi-user service.
 
-This document owns the `/ws/asr` command and event contract. Streaming window
-mechanics live in `@docs/streaming_runtime.md`, optimization flags live in
-`@docs/performance_optimization.md`, and translation scheduling lives in
-`@docs/realtime_translation_design.md`.
+This document owns the `/ws/asr` command and event contract. The infinite
+streaming design goals live in `@docs/infinite_streaming_asr_design.md`;
+library streaming mechanics live in `@docs/streaming_runtime.md`; optimization
+flags live in `@docs/performance_optimization.md`; translation scheduling lives
+in `@docs/realtime_translation_design.md`.
 
 ## Protocol
 
@@ -17,14 +18,16 @@ The service exposes:
 The first WebSocket frame must be a JSON `start` command:
 
 ```json
-{"type":"start","session_id":"local","sample_rate":16000,"audio_format":"pcm_s16le","language":"Chinese","context":""}
+{"type":"start","session_id":"local","sample_rate":16000,"audio_format":"pcm_s16le","language":"Chinese","context":"","realtime_commit_mode":"aligned_windowed"}
 ```
 
 Accepted `start` fields are `type`, `session_id`, `sample_rate`,
-`audio_format`, `language`, `context`, and `target_language`. Unknown fields are
-rejected before `ready`. `sample_rate` defaults to `16000`; `audio_format`
-defaults to `pcm_s16le`. The only accepted audio stream is mono little-endian
-`pcm_s16le` at 16 kHz.
+`audio_format`, `language`, `context`, `target_language`, and
+`realtime_commit_mode`. Unknown fields are rejected before `ready`.
+`sample_rate` defaults to `16000`; `audio_format` defaults to `pcm_s16le`.
+The only accepted audio stream is mono little-endian `pcm_s16le` at 16 kHz.
+`realtime_commit_mode` defaults to `aligned_windowed`; this is currently the
+only supported realtime service commit mode.
 
 `language`, when non-empty, must be one of the supported Qwen3-ASR language
 names and is normalized case-insensitively. Omit it, set it to `null`, or set it
@@ -44,8 +47,9 @@ translation target, and empty `target_language` values are rejected in `start`.
 
 After `ready`, send binary WebSocket frames containing 16 kHz mono
 little-endian `pcm_s16le`. For low-latency captioning, send about 100 ms per
-WebSocket audio frame. Frame size is transport cadence; the service accepts
-each frame directly and ASR runs on the model streaming cadence.
+WebSocket audio frame. Frame size is transport cadence; the ASR session decodes
+on the model streaming cadence, and the timestamp runtime aligns stable
+segments asynchronously.
 
 Commands after `ready`:
 
@@ -54,9 +58,11 @@ Commands after `ready`:
 {"type":"finish"}
 ```
 
-`flush` promotes the current ASR tail when possible and keeps the session open.
-`finish` promotes the final tail, emits `transcript_final`, then closes the
-WebSocket with close code `1000`.
+`flush` drains the current ASR tail when possible and keeps the session open.
+`finish` drains ASR, waits for pending timestamp work until the configured
+timeout, emits `transcript_final`, then closes the WebSocket with close code
+`1000`. `partial` is not durable; only segments already sent through
+`stable_appends` are guaranteed durable.
 
 `set_language` changes future transcription and translation settings:
 
@@ -88,12 +94,22 @@ after this event.
   "type": "ready",
   "session_id": "local",
   "sample_rate": 16000,
-  "audio_format": "pcm_s16le"
+  "audio_format": "pcm_s16le",
+  "streaming": {
+    "mode": "aligned_windowed",
+    "requires": ["asr", "forced_aligner"],
+    "stable": {
+      "source": "asr_streaming_text_and_forced_aligner",
+      "patch_event": "transcript_timing_update",
+      "live_stability_delay_ms": 12000
+    }
+  }
 }
 ```
 
-Optional `ready.timestamps`, present only when forced-aligner timestamps are
-enabled:
+`ready.timestamps` is present in the realtime service because forced alignment
+is part of the service path. Stable transcript appends are initially timestamp
+pending and are patched by `transcript_timing_update`:
 
 ```json
 {
@@ -151,10 +167,11 @@ is the replaceable current tail, or `null`.
     {
       "id": "seg_000003",
       "index": 3,
-      "start_ms": 1200,
-      "end_ms": 2100,
+      "start_ms": null,
+      "end_ms": null,
       "text": "caption text",
-      "language": "English"
+      "language": "English",
+      "timing_status": "pending"
     }
   ],
   "partial": {
@@ -167,8 +184,9 @@ is the replaceable current tail, or `null`.
 ```
 
 Each stable segment has `id`, `index`, `start_ms`, `end_ms`, `text`, and
-`language`. In forced-aligner timestamp mode, new stable segments initially use
-`start_ms: null`, `end_ms: null`, and `timing_status: "pending"`.
+`language`. In realtime timestamp mode, new stable segments may include
+`timing_status: "pending"` with `start_ms` and `end_ms` set to `null`; the
+forced aligner later patches that segment to `aligned` or `failed`.
 `stable_appends` are transcript history segments, not subtitle layout units.
 
 Clients append `stable_appends`, replace `partial`, and require `stable_base` to
@@ -178,7 +196,9 @@ reconnect and start a fresh session.
 
 ### `transcript_timing_update`
 
-Forced-aligner timestamp patch for one existing stable segment.
+Realtime timestamp patch for an existing stable source segment. It is emitted
+after the forced aligner maps stable ASR text onto the source audio clock, and
+may arrive after the `transcript_update` that created the segment.
 
 ```json
 {
@@ -192,7 +212,25 @@ Forced-aligner timestamp patch for one existing stable segment.
 
 `timing_status` is `aligned` or `failed`. Failed patches use `start_ms: null` and
 `end_ms: null`. This event must not create, remove, reorder, or rewrite
-transcript text. Clients that do not need timestamps can ignore it.
+transcript text.
+
+### `transcript_status`
+
+Recoverable or fatal source-transcript status. This event is reserved for
+visible service/session failures that are not ordinary timestamp patches. It
+does not append stable text.
+
+```json
+{
+  "type": "transcript_status",
+  "status": "source_model_error",
+  "message": "ASR backend failed; the session cannot continue.",
+  "fatal": true
+}
+```
+
+Status values are service-owned. Clients may log or surface these statuses, but
+should not rewrite transcript history in response to them.
 
 ### `translation_preview`
 
@@ -245,19 +283,25 @@ translation fails.
 
 ### `transcript_final`
 
-Final stable snapshot. The service emits this after final transcript,
-timestamp, and stable-translation work that must complete before close.
+Terminal stable-history marker. The service emits this after final transcript
+and stable-translation work that must complete before close. In aligned
+realtime mode, stable text is replayed from prior `stable_appends`; final text
+must not appear only in this event.
 
 ```json
 {
   "type": "transcript_final",
   "revision": 8,
-  "stable_count": 3,
-  "segments": []
+  "final_revision": 8,
+  "stable_count": 3
 }
 ```
 
-`segments` uses the same stable-segment shape as `transcript_update.stable_appends`.
+Bounded/offline-compatible sessions may include `segments`, using the same
+stable-segment shape as `transcript_update.stable_appends`. Unbounded realtime
+sessions may omit `segments`; clients keep the stable history they already
+replayed from `transcript_update`.
+
 After `transcript_final`, the service closes the WebSocket with code `1000`.
 
 ### `error`
@@ -270,7 +314,8 @@ Fatal error:
 
 Startup validation failures send `error` with `fatal=true` and close the
 WebSocket, usually with code `1003`. A second concurrent session is rejected
-with code `1013`. Internal session failures close with code `1011`.
+with code `1013`. Service misconfiguration and internal session failures close
+with code `1011`.
 
 Recoverable command error after `ready`:
 
@@ -280,28 +325,25 @@ Recoverable command error after `ready`:
 
 Recoverable command errors do not automatically close the session.
 
-## Timestamp Mode
+## Aligned Realtime Mode
 
-By default, stable segments use sample-clock `start_ms` / `end_ms` values.
-Starting the service with `--timestamp-model <model>` enables forced-aligner
-timestamps. In that mode, stable-segment public timing is one forced-aligned
-`start_ms` / `end_ms` pair, filled asynchronously.
+Realtime ASR requires `--timestamp-model <model>`. Stable-segment public timing
+is one forced-aligned `start_ms` / `end_ms` pair; sample-clock estimates are not
+published as stable segment timestamps.
 
-Forced-aligner timestamps use the ForcedAligner model-card language list, but
-`language` remains an ASR prompt and accepts the full Qwen3-ASR language list.
-Segments whose detected or configured source language is outside the
-ForcedAligner list are still transcribed; their timestamp patches are marked
-`timing_status="failed"`. `ready.timestamps.allowed_source_languages` exposes
-the source-language list that can produce aligned timestamps.
+Realtime commits use the ForcedAligner model-card language list. Because the
+service publishes stable text only with forced-aligner timestamp patches,
+`language` must be one of `ready.timestamps.allowed_source_languages`; unsupported
+source languages are rejected before audio ingest.
 
-New stable segments are emitted immediately in `transcript_update` with pending
-timing. When alignment finishes, the service sends `transcript_timing_update`
-for the same stable segment.
+New stable segments are emitted in `transcript_update` after ASR text stability.
+They start with pending timestamps, then `transcript_timing_update` patches them
+after forced alignment succeeds or fails.
 
-For `finish`, timestamp-enabled sessions wait up to the configured
-`--timestamp-finish-timeout-ms` for queued stable-segment timing before
-`transcript_final`. Segments that still cannot be aligned keep `start_ms=null`,
-`end_ms=null`, and use `timing_status="failed"` in the final snapshot.
+For `finish`, the session waits up to the configured
+`--timestamp-finish-timeout-ms` for pending forced-aligner work before
+`transcript_final`. `finish` is terminal even when a timestamp patch fails; the
+failed segment remains visible with `timing_status: "failed"`.
 
 ## Transcript State
 
@@ -318,14 +360,12 @@ states.
 ## Boundaries
 
 - `realtime_server.py`: one connection, start validation, PCM decode,
-  `asyncio.to_thread(...)`, JSON send.
-- `RealtimeConnectionSession`: absolute sample clock, Silero speech gate,
-  bounded ASR context lifecycle, shared `TranscriptStore`.
-- `RealtimeASRSession`: one ASR epoch's cadence, text stabilization,
-  `TranscriptStore` writes, final flush.
+  timestamp runtime integration, and JSON send.
+- `RealtimeConnectionSession`: speech epochs, model streaming ASR state,
+  stable/partial transcript updates, and timestamp job hints.
+- `RealtimeTimestampRuntime`: source-audio buffer, forced-aligner jobs, and
+  timestamp patches for existing stable segments.
 - `TranscriptStore`: in-memory append-only source transcript.
-- `RealtimeTimestampRuntime`: optional stable-segment forced alignment and
-  `transcript_timing_update` patches.
 - `RealtimeTranslationRuntime`: optional source-event consumer that emits
   translation preview/stable/status events without rewriting source transcript
   history.
@@ -337,22 +377,20 @@ must not treat model-carried prefix text as user-visible stable history.
 ## Rules
 
 - transport frames are not ASR chunks or transcript segments;
-- every accepted PCM sample advances the connection timeline;
-- speech audio is the only ASR model input; VAD-suppressed pauses advance the
-  connection source clock but must not be fed to the model as hidden silence;
+- every accepted PCM sample advances the source timeline and is available to
+  timestamp alignment; speech-gated audio also enters ASR streaming state;
 - clients should use replaceable `partial` text for the live subtitle line;
-- one WebSocket session owns one continuous transcript history, while each VAD
-  speech turn owns a separate ASR model epoch;
-- `flush` promotes the current active ASR tail but does not end the WebSocket
-  session;
-- `set_language` promotes the current tail, then starts future ASR from the new
-  language setting;
-- long speech may stabilize repeated text after `live_stability_delay_ms`;
+- one WebSocket session owns one continuous transcript history and source clock;
+- `flush` drains the current ASR tail but does not end the WebSocket session;
+- `set_language` first flushes the current tail, then starts future ASR from
+  the new language setting;
+- live stable text requires repeated ASR evidence; final timestamps require
+  forced-aligner patches;
 - ASCII word fragments stay partial;
 - stable history is never rewritten;
 - timestamp and translation events annotate existing source segments; they do
   not rewrite source transcript history;
-- bounded-window and final-tail selection rules live in
+- model-window and final-tail selection rules live in
   `@docs/streaming_runtime.md`.
 
 ## Defaults
@@ -360,17 +398,13 @@ must not treat model-carried prefix text as user-visible stable history.
 Protocol-visible service defaults:
 
 - one active WebSocket session;
-- Silero voice activity control is on by default; use `--no-vad` only for
-  pass-through debugging;
-- VAD speech end promotes the current tail and closes that ASR model epoch;
-  the transcript history and source-clock continuity remain session-scoped, and
-  the next VAD speech start creates a fresh ASR epoch without decoding
-  suppressed silence;
-- stable history delay: `live_stability_delay_ms=12000`; clients should render
-  replaceable `partial` in a local compact view for low-latency subtitles;
-- forced-aligner timestamps are off unless `--timestamp-model` is set;
-- timestamp mode defaults: `--timestamp-pad-ms=500`,
-  `--timestamp-finish-timeout-ms=30000`, `--timestamp-local-files-only`;
+- stable history requires ASR text stability, and final timestamp quality
+  requires forced-aligner patches; clients
+  should render replaceable `partial` in a local compact view for low-latency
+  subtitles;
+- forced-aligner model is required with `--timestamp-model`;
+- timestamp defaults: `--timestamp-finish-timeout-ms=30000`,
+  `--timestamp-local-files-only`;
 - translation is available only when the service starts with
   `--translation-model`.
 - startup prewarms enabled model paths before the HTTP/WebSocket interface is
@@ -378,21 +412,23 @@ Protocol-visible service defaults:
   timestamps. Prewarm failure fails startup instead of exposing a cold or
   partially initialized service.
 
-The local service runtime profile is live20. Its model-window settings are in
-`@docs/streaming_runtime.md`; optimization flags and rejected paths are in
+The local service runtime profile uses the live20 model streaming preset
+(`chunk_size_sec=0.5`, `max_window_sec=20`, `max_prefix_tokens=64`,
+`spec_decode=True`) plus required forced-aligner timestamp patches.
+Optimization flags and rejected paths are in
 `@docs/performance_optimization.md`.
 
 For frontend/audio debugging, start the backend with `--log-level debug`. Debug
-logs include throttled PCM duration/RMS/peak summaries, VAD speech events, ASR
-window text, and key outgoing transcript summaries. They are local runtime logs
-and can include recognized transcript text; do not paste private transcript logs
-into public issues.
+logs include throttled PCM duration/RMS/peak summaries, ASR frame text, and key
+outgoing transcript summaries. They are local runtime logs and can include
+recognized transcript text; do not paste private transcript logs into public
+issues.
 
 Add `--save-debug-audio` when you need the backend-received audio written to
 WAV for inspection. Files are saved under
 `local_data/realtime_debug_audio/` by default, or under `--debug-audio-dir` when
-set. The saved WAV is 16 kHz mono PCM after WebSocket decoding, before VAD or
-ASR filtering.
+set. The saved WAV is 16 kHz mono PCM after WebSocket decoding, before ASR or
+forced alignment.
 
 ## Validation
 
