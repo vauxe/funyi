@@ -39,6 +39,50 @@ test("caption strip fills the native window height so captions cannot overflow i
   assert.match(cssRuleBody(UI_STYLES, ".caption-strip"), /height:\s*100vh;/u);
 });
 
+test("caption background image fades as one clipped layer behind content", () => {
+  const strip = cssRuleBody(UI_STYLES, ".caption-strip");
+  const imageLayer = cssRuleBody(UI_STYLES, ".caption-strip::before");
+
+  assert.match(strip, /isolation:\s*isolate;/u);
+  assert.match(strip, /background-color:\s*rgba\(5,\s*18,\s*20,\s*var\(--caption-bg-surface-opacity\)\);/u);
+  assert.match(strip, /background-image:\s*none;/u);
+  assert.match(imageLayer, /inset:\s*0;/u);
+  assert.match(imageLayer, /border-radius:\s*inherit;/u);
+  assert.match(imageLayer, /background-image:\s*var\(--caption-bg-image\);/u);
+  assert.match(imageLayer, /opacity:\s*var\(--caption-bg-image-opacity\);/u);
+});
+
+test("narrow overlays keep the service URL visible on the upper status row", () => {
+  const narrowStyles = cssMediaBlock(UI_STYLES, "max-width: 420px");
+
+  assert.match(narrowStyles, /\.status-controls\s*\{[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+92px;/u);
+  assert.match(narrowStyles, /\.status-field-service\s*\{[\s\S]*grid-column:\s*1;/u);
+  assert.match(narrowStyles, /\.status-field-service\s*\{[\s\S]*grid-row:\s*1;/u);
+  assert.match(narrowStyles, /\.status-field-service\s*\{[\s\S]*max-width:\s*clamp\(98px,\s*34vw,\s*146px\);/u);
+  assert.match(narrowStyles, /\.language-settings\s*\{[\s\S]*grid-column:\s*1;/u);
+  assert.match(narrowStyles, /\.status-field-source\s*\{[\s\S]*grid-column:\s*2;/u);
+});
+
 function overlaySize(name: string): number {
   return rustNumberConst(RUST_OVERLAY_SOURCE, name);
+}
+
+function cssMediaBlock(source: string, query: string): string {
+  const normalizedSource = source.replace(/\r\n?/gu, "\n");
+  const start = normalizedSource.indexOf(`@media (${query}) {`);
+  assert.ok(start >= 0, `missing CSS media block ${query}`);
+  const bodyStart = normalizedSource.indexOf("{", start) + 1;
+  let depth = 1;
+  for (let index = bodyStart; index < normalizedSource.length; index += 1) {
+    const char = normalizedSource[index];
+    if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return normalizedSource.slice(bodyStart, index);
+      }
+    }
+  }
+  assert.fail(`unterminated CSS media block ${query}`);
 }

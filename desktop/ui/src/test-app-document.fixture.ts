@@ -62,6 +62,9 @@ function elementTag(id: string): string {
   if (id === "settings-status") {
     return "p";
   }
+  if (id === "caption-opacity-value") {
+    return "output";
+  }
   if (id === "session-status" || id === "volume-indicator") {
     return "span";
   }

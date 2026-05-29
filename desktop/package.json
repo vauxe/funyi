@@ -8,19 +8,19 @@
     "build:ui": "node scripts/build-ui.mjs",
     "dev": "tauri dev",
     "build": "tauri build",
-    "lint": "pnpm run lint:ui && pnpm run lint:rust",
+    "lint": "biome lint --diagnostic-level=warn --error-on-warnings . && cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",
     "lint:ui": "biome lint --diagnostic-level=warn --error-on-warnings .",
     "lint:rust": "cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",
-    "format": "pnpm run format:ui && pnpm run format:rust",
+    "format": "biome format --write . && cargo fmt --manifest-path src-tauri/Cargo.toml",
     "format:ui": "biome format --write .",
     "format:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml",
-    "format:check": "pnpm run format:ui:check && pnpm run format:rust:check",
+    "format:check": "biome format . && cargo fmt --check --manifest-path src-tauri/Cargo.toml",
     "format:ui:check": "biome format .",
     "format:rust:check": "cargo fmt --check --manifest-path src-tauri/Cargo.toml",
     "test": "node scripts/build-ui.mjs && node scripts/build-ui-tests.mjs && node scripts/run-ui-tests.mjs",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "typecheck": "tsc -p ui/tsconfig.test.json --noEmit",
-    "check": "pnpm run lint && pnpm run format:check && pnpm run typecheck && pnpm run test && pnpm run test:rust"
+    "check": "biome lint --diagnostic-level=warn --error-on-warnings . && cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings && biome format . && cargo fmt --check --manifest-path src-tauri/Cargo.toml && tsc -p ui/tsconfig.test.json --noEmit && node scripts/build-ui.mjs && node scripts/build-ui-tests.mjs && node scripts/run-ui-tests.mjs && cargo test --manifest-path src-tauri/Cargo.toml"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.15",

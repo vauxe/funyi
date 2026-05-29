@@ -31,6 +31,14 @@ test("non-visual control groups and resize handles stay screen-reader coherent",
   }
 });
 
+test("background file picker stays delegated to the visible choose button", () => {
+  const input = htmlElementById(APP_HTML, "background-file");
+
+  assert.equal(input.type, "file");
+  assert.equal(input.accept, "image/*");
+  assert.equal(input.hidden, "");
+});
+
 test("status updates are announced politely", () => {
   const statusLine = htmlElements(APP_HTML, "section").find((section) => hasClass(section, "status-line"));
 

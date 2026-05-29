@@ -102,6 +102,7 @@ export class FunyiApp {
         settingsButton: dom.settingsButton,
         settingsPanel: dom.settingsPanel,
         captionOpacity: dom.captionOpacity,
+        captionOpacityValue: dom.captionOpacityValue,
         backgroundButton: dom.backgroundButton,
         backgroundFile: dom.backgroundFile,
         backgroundClearButton: dom.backgroundClearButton,

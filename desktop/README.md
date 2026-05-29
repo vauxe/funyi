@@ -42,6 +42,15 @@ make desktop-install
 make desktop
 ```
 
+On Windows without `make`, use the equivalent commands from the repository
+root:
+
+```powershell
+cd desktop
+corepack pnpm install
+corepack pnpm run dev
+```
+
 If your shell does not expose a `pnpm` command, keep using `corepack pnpm ...`
 rather than assuming a separate global `pnpm` install exists.
 

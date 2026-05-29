@@ -11,9 +11,10 @@ import {
 } from "./appearance.js";
 import { asDomElement, FakeElement } from "./test-dom.fixture.js";
 
-test("clamps opacity to the readable range and falls back on bad input", () => {
+test("clamps opacity to the full percent range and falls back on bad input", () => {
   assert.equal(clampOpacity(0.5), 0.5);
-  assert.equal(clampOpacity(0), 0.2);
+  assert.equal(clampOpacity(0), 0);
+  assert.equal(clampOpacity(-0.1), 0);
   assert.equal(clampOpacity(2), 1);
   assert.equal(clampOpacity(Number.NaN), DEFAULT_CAPTION_OPACITY);
 });
@@ -40,6 +41,33 @@ test("applies opacity and image as CSS custom properties", () => {
 
   applyAppearance(asDomElement(root), { opacity: 0.5, imageUrl: "blob:abc" });
 
-  assert.equal(root.styleValues.get("--caption-bg-opacity"), "0.50");
+  assert.equal(root.styleValues.get("--caption-bg-surface-opacity"), "1.00");
   assert.equal(root.styleValues.get("--caption-bg-image"), 'url("blob:abc")');
+  assert.equal(root.styleValues.get("--caption-bg-image-opacity"), "0.50");
+});
+
+test("uses the panel opacity as the surface opacity when no image is visible", () => {
+  const root = new FakeElement();
+
+  applyAppearance(asDomElement(root), { opacity: 0.5, imageUrl: null });
+
+  assert.equal(root.styleValues.get("--caption-bg-surface-opacity"), "0.50");
+  assert.equal(root.styleValues.get("--caption-bg-image"), "none");
+  assert.equal(root.styleValues.get("--caption-bg-image-opacity"), "0.00");
+});
+
+test("fades the image layer continuously through fully opaque", () => {
+  const root = new FakeElement();
+
+  applyAppearance(asDomElement(root), { opacity: 0.99, imageUrl: "blob:abc" });
+
+  assert.equal(root.styleValues.get("--caption-bg-surface-opacity"), "1.00");
+  assert.equal(root.styleValues.get("--caption-bg-image"), 'url("blob:abc")');
+  assert.equal(root.styleValues.get("--caption-bg-image-opacity"), "0.01");
+
+  applyAppearance(asDomElement(root), { opacity: 1, imageUrl: "blob:abc" });
+
+  assert.equal(root.styleValues.get("--caption-bg-surface-opacity"), "1.00");
+  assert.equal(root.styleValues.get("--caption-bg-image"), 'url("blob:abc")');
+  assert.equal(root.styleValues.get("--caption-bg-image-opacity"), "0.00");
 });

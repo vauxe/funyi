@@ -18,6 +18,7 @@ target/
 desktop/ui/dist/
 desktop/ui/test-dist/
 desktop/src-tauri/gen/
+desktop/frontend-dev*.log
 *.egg-info/
 
 .idea/

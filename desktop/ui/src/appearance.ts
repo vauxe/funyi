@@ -3,10 +3,11 @@
 // down to the caption strip), so applying them needs only a handle we already own.
 
 export const DEFAULT_CAPTION_OPACITY = 0.72;
-const MIN_CAPTION_OPACITY = 0.2;
+const MIN_CAPTION_OPACITY = 0;
 const MAX_CAPTION_OPACITY = 1;
-const OPACITY_VARIABLE = "--caption-bg-opacity";
+const SURFACE_OPACITY_VARIABLE = "--caption-bg-surface-opacity";
 const IMAGE_VARIABLE = "--caption-bg-image";
+const IMAGE_OPACITY_VARIABLE = "--caption-bg-image-opacity";
 
 export interface AppearanceState {
   opacity: number;
@@ -39,6 +40,14 @@ export function backgroundImageCss(imageUrl: string | null): string {
 }
 
 export function applyAppearance(root: HTMLElement, state: AppearanceState): void {
-  root.style.setProperty(OPACITY_VARIABLE, clampOpacity(state.opacity).toFixed(2));
-  root.style.setProperty(IMAGE_VARIABLE, backgroundImageCss(state.imageUrl));
+  const opacity = clampOpacity(state.opacity);
+  const backgroundImage = backgroundImageCss(state.imageUrl);
+  const hasImage = backgroundImage !== "none";
+
+  root.style.setProperty(SURFACE_OPACITY_VARIABLE, (hasImage ? MAX_CAPTION_OPACITY : opacity).toFixed(2));
+  root.style.setProperty(IMAGE_VARIABLE, backgroundImage);
+  root.style.setProperty(
+    IMAGE_OPACITY_VARIABLE,
+    (hasImage ? MAX_CAPTION_OPACITY - opacity : MIN_CAPTION_OPACITY).toFixed(2),
+  );
 }

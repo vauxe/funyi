@@ -8,6 +8,7 @@ export const APP_ELEMENT_SELECTORS = {
   backgroundFile: "#background-file",
   captionAnnouncer: "#caption-announcer",
   captionOpacity: "#caption-opacity",
+  captionOpacityValue: "#caption-opacity-value",
   captionStrip: "#caption-strip",
   closeButton: "#close-button",
   currentSource: "#current-source",
@@ -45,6 +46,7 @@ export interface AppElements {
   settingsButton: HTMLButtonElement;
   settingsPanel: HTMLElement;
   captionOpacity: HTMLInputElement;
+  captionOpacityValue: HTMLOutputElement;
   backgroundButton: HTMLButtonElement;
   backgroundClearButton: HTMLButtonElement;
   backgroundFile: HTMLInputElement;
@@ -73,6 +75,7 @@ export function getAppElements(): AppElements {
     settingsButton: requireElement<HTMLButtonElement>(APP_ELEMENT_SELECTORS.settingsButton),
     settingsPanel: requireElement<HTMLElement>(APP_ELEMENT_SELECTORS.settingsPanel),
     captionOpacity: requireElement<HTMLInputElement>(APP_ELEMENT_SELECTORS.captionOpacity),
+    captionOpacityValue: requireElement<HTMLOutputElement>(APP_ELEMENT_SELECTORS.captionOpacityValue),
     backgroundButton: requireElement<HTMLButtonElement>(APP_ELEMENT_SELECTORS.backgroundButton),
     backgroundClearButton: requireElement<HTMLButtonElement>(APP_ELEMENT_SELECTORS.backgroundClearButton),
     backgroundFile: requireElement<HTMLInputElement>(APP_ELEMENT_SELECTORS.backgroundFile),

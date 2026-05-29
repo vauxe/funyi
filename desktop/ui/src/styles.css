@@ -4,15 +4,18 @@
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans",
     "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans", sans-serif;
   --miku-aqua: #76fff0;
+  --miku-representative: #39c5bb;
   --miku-pink: #ff5fa2;
+  --miku-hot-pink: #e12885;
   --miku-pink-rgb: 255, 95, 162;
   --miku-pink-soft: #ffc5dc;
   --ui-surface: rgba(5, 18, 20, 0.72);
   --miku-line: rgba(118, 255, 240, 0.18);
   --ui-surface-shadow: inset 0 1px 0 rgba(118, 255, 240, 0.06), 0 8px 24px rgba(0, 0, 0, 0.12);
   /* User-adjustable caption panel appearance (see settings-controller.ts). */
-  --caption-bg-opacity: 0.72;
+  --caption-bg-surface-opacity: 0.72;
   --caption-bg-image: none;
+  --caption-bg-image-opacity: 0;
   color: #eafffb;
   background: transparent;
 }
@@ -150,15 +153,11 @@ select:disabled {
   border: 1px solid var(--miku-line);
   border-radius: 10px;
   padding: 12px 12px 10px;
-  /* The dark tint layers over the optional background image so captions stay
-     readable; --caption-bg-opacity controls the tint, --caption-bg-image the photo. */
-  background-color: transparent;
-  background-image:
-    linear-gradient(rgba(5, 18, 20, var(--caption-bg-opacity)), rgba(5, 18, 20, var(--caption-bg-opacity))),
-    var(--caption-bg-image);
-  background-position: center;
-  background-repeat: no-repeat;
-  background-size: cover;
+  isolation: isolate;
+  /* The image is a clipped layer behind content; opacity fades it smoothly into
+     the caption surface so rounded transparent-window edges follow the same blend. */
+  background-color: rgba(5, 18, 20, var(--caption-bg-surface-opacity));
+  background-image: none;
   box-shadow: var(--ui-surface-shadow);
   transition:
     border-color 150ms ease,
@@ -168,6 +167,21 @@ select:disabled {
   height: 100vh;
 }
 
+.caption-strip::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background-image: var(--caption-bg-image);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  opacity: var(--caption-bg-image-opacity);
+  pointer-events: none;
+  transition: opacity 150ms ease;
+  z-index: 0;
+}
+
 .app-shell[data-overlay-mode="history"] .caption-strip {
   height: 100vh;
   grid-template-rows: minmax(0, 1fr) 156px auto;
@@ -175,6 +189,7 @@ select:disabled {
 }
 
 .history-panel {
+  position: relative;
   display: grid;
   grid-column: 1 / -1;
   grid-row: 1;
@@ -189,6 +204,7 @@ select:disabled {
   visibility: hidden;
   -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%);
   mask-image: linear-gradient(180deg, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%);
+  z-index: 1;
   transition:
     opacity 180ms ease,
     transform 180ms ease,
@@ -205,6 +221,7 @@ select:disabled {
 }
 
 .caption-window {
+  position: relative;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   grid-column: 1 / -1;
@@ -213,6 +230,7 @@ select:disabled {
   min-height: 0;
   padding: 8px 12px 8px 10px;
   overflow: hidden;
+  z-index: 1;
 }
 
 .app-shell[data-overlay-mode="history"] .caption-window {
@@ -242,6 +260,7 @@ select:disabled {
 
 .caption-source {
   -webkit-line-clamp: 2;
+  color: var(--miku-representative);
   text-shadow:
     0 2px 18px rgba(0, 0, 0, 0.42),
     0 0 22px rgba(57, 197, 187, 0.13);
@@ -260,7 +279,7 @@ select:disabled {
 
 .caption-translation {
   -webkit-line-clamp: 1;
-  color: var(--miku-aqua);
+  color: var(--miku-hot-pink);
   font-size: clamp(19px, 11vh, 23px);
   font-weight: 600;
   line-height: 1.2;
@@ -472,6 +491,13 @@ select:disabled {
   transform: scale(0.94);
 }
 
+.caption-controls #session-button {
+  width: 30px;
+  min-width: 30px;
+  height: 26px;
+  min-height: 26px;
+}
+
 .caption-controls #session-button:not(:disabled) {
   border-color: rgba(118, 255, 240, 0.3);
   color: var(--miku-aqua);
@@ -601,6 +627,43 @@ select:disabled {
   padding: 0;
   accent-color: var(--miku-aqua);
   cursor: pointer;
+}
+
+.settings-row-opacity {
+  align-items: end;
+  min-height: 42px;
+}
+
+.opacity-control {
+  --opacity-slider-percent: 65%;
+  position: relative;
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-top: 17px;
+}
+
+.opacity-control input[type="range"] {
+  display: block;
+  width: 100%;
+}
+
+.opacity-value {
+  position: absolute;
+  top: 0;
+  left: clamp(15px, var(--opacity-slider-percent), calc(100% - 15px));
+  min-width: 30px;
+  border: 1px solid rgba(118, 255, 240, 0.22);
+  border-radius: 5px;
+  padding: 1px 5px;
+  background: rgba(5, 18, 20, 0.96);
+  color: var(--miku-aqua);
+  font-size: 10px;
+  font-weight: 680;
+  line-height: 1.15;
+  pointer-events: none;
+  text-align: center;
+  transform: translateX(-50%);
 }
 
 .settings-actions {
@@ -911,20 +974,20 @@ select:disabled {
 .history-source {
   grid-column: 2;
   grid-row: 1;
-  color: rgba(244, 255, 253, 0.9);
+  color: var(--miku-representative);
   font-size: 15px;
   font-weight: 620;
 }
 
 .history-item.is-latest .history-source {
-  color: #f4fffd;
+  color: var(--miku-representative);
   font-weight: 680;
 }
 
 .history-translation {
   grid-column: 2;
   grid-row: 2;
-  color: rgba(118, 255, 240, 0.9);
+  color: var(--miku-hot-pink);
   font-size: 13px;
 }
 
@@ -998,7 +1061,7 @@ select:disabled {
   .status-field-service {
     grid-column: 1;
     grid-row: 1;
-    max-width: 132px;
+    max-width: clamp(98px, 34vw, 146px);
   }
 
   .status-field-source {
@@ -1054,6 +1117,7 @@ select:disabled {
   .volume-indicator,
   .volume-indicator .volume-bar,
   .caption-strip,
+  .caption-strip::before,
   .history-panel,
   .history-item,
   .icon-button {

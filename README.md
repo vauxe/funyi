@@ -50,6 +50,13 @@ client:
 make desktop-install
 ```
 
+On Windows without `make`, use the equivalent desktop install command:
+
+```powershell
+cd desktop
+corepack pnpm install
+```
+
 If your shell does not expose a `pnpm` command, use `corepack pnpm ...`
 directly instead of trying to install a separate global shim.
 
@@ -88,6 +95,13 @@ Then start the desktop client:
 
 ```bash
 make desktop
+```
+
+On Windows without `make`, run the desktop client from `desktop/`:
+
+```powershell
+cd desktop
+corepack pnpm run dev
 ```
 
 Use the desktop UI to connect to:

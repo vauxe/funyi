@@ -185,6 +185,7 @@ pub fn emit_audio_capture_error(app: &AppHandle, message: impl Into<String>) {
 #[cfg(target_os = "windows")]
 mod windows;
 
+#[cfg(any(target_os = "macos", test))]
 mod pcm;
 
 #[cfg(target_os = "windows")]

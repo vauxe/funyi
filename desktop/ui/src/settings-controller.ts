@@ -3,6 +3,9 @@ import type { PreparedBackground } from "./background-image.js";
 import { errorMessage } from "./error-message.js";
 import type { PreferencesStore, StoredBackground } from "./preferences.js";
 
+const OPACITY_SLIDER_MIN = 0;
+const OPACITY_SLIDER_MAX = 100;
+
 export interface SettingsControllerElements {
   // The app shell doubles as the appearance target (CSS vars inherit down to the
   // caption strip) and the host for escape / outside-click close.
@@ -10,6 +13,7 @@ export interface SettingsControllerElements {
   settingsButton: HTMLButtonElement;
   settingsPanel: HTMLElement;
   captionOpacity: HTMLInputElement;
+  captionOpacityValue: HTMLOutputElement;
   backgroundButton: HTMLButtonElement;
   backgroundFile: HTMLInputElement;
   backgroundClearButton: HTMLButtonElement;
@@ -38,6 +42,7 @@ export class SettingsController {
     const prefs = this.deps.preferences.load();
     this.opacity = prefs.captionOpacity ?? DEFAULT_CAPTION_OPACITY;
     this.deps.elements.captionOpacity.value = String(opacityToSlider(this.opacity));
+    this.syncOpacityValueText();
     this.restoreBackground();
     this.refreshAppearance();
     this.bind();
@@ -74,6 +79,7 @@ export class SettingsController {
       return;
     }
     this.opacity = sliderToOpacity(slider);
+    this.syncOpacityValueText();
     this.refreshAppearance();
     this.deps.preferences.save({ captionOpacity: this.opacity });
   }
@@ -85,13 +91,19 @@ export class SettingsController {
     if (!file) {
       return;
     }
+    let preparedObjectUrl: string | null = null;
     try {
       const prepared = await this.deps.prepareBackground(file);
+      preparedObjectUrl = prepared.objectUrl;
       this.deps.preferences.saveBackground(prepared.stored);
       this.replaceImageUrl(prepared.objectUrl);
+      preparedObjectUrl = null;
       this.refreshAppearance();
       this.setStatus("Background updated");
     } catch (error) {
+      if (preparedObjectUrl) {
+        this.deps.revokeObjectUrl?.(preparedObjectUrl);
+      }
       this.setStatus(backgroundError(error));
     }
   }
@@ -159,6 +171,15 @@ export class SettingsController {
     applyAppearance(this.deps.elements.root, { opacity: this.opacity, imageUrl: this.imageUrl });
   }
 
+  private syncOpacityValueText(): void {
+    const slider = opacityToSlider(this.opacity);
+    const label = `${slider}%`;
+    this.deps.elements.captionOpacity.title = label;
+    this.deps.elements.captionOpacity.setAttribute("aria-valuetext", label);
+    this.deps.elements.captionOpacityValue.textContent = label;
+    this.deps.elements.captionOpacityValue.style.setProperty("--opacity-slider-percent", sliderPosition(slider));
+  }
+
   private setStatus(text: string): void {
     this.deps.elements.settingsStatus.textContent = text;
   }
@@ -166,4 +187,10 @@ export class SettingsController {
 
 function backgroundError(error: unknown): string {
   return /quota|exceeded/iu.test(errorMessage(error)) ? "Image too large to save" : "Couldn't set background";
+}
+
+function sliderPosition(slider: number): string {
+  const bounded = Math.min(OPACITY_SLIDER_MAX, Math.max(OPACITY_SLIDER_MIN, slider));
+  const percent = ((bounded - OPACITY_SLIDER_MIN) / (OPACITY_SLIDER_MAX - OPACITY_SLIDER_MIN)) * 100;
+  return `${Number(percent.toFixed(1))}%`;
 }

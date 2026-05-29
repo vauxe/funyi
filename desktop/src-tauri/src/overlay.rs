@@ -65,6 +65,7 @@ pub struct Point {
 }
 
 impl WorkBounds {
+    #[cfg(any(target_os = "macos", test))]
     fn contains_frame(self, frame: Frame) -> bool {
         frame.x >= self.left
             && frame.y >= self.top
@@ -72,6 +73,7 @@ impl WorkBounds {
             && frame.y + frame.height <= self.bottom
     }
 
+    #[cfg(any(target_os = "macos", test))]
     fn contains_point(self, point: Point) -> bool {
         point.x >= self.left && point.x < self.right && point.y >= self.top && point.y < self.bottom
     }
@@ -173,6 +175,7 @@ pub fn snapped_frame_near_point(
     snapped
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub fn frame_in_single_work_area_near_point(
     frame: Frame,
     work_areas: &[WorkBounds],
@@ -249,11 +252,13 @@ fn snapped_clamped_position(bounds: WorkBounds, frame: Frame) -> (i32, i32) {
     clamped_position(Some(bounds), x, y, frame.width, frame.height)
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn clamped_frame_to_work_area(frame: Frame, bounds: WorkBounds) -> Frame {
     let (x, y) = clamped_position(Some(bounds), frame.x, frame.y, frame.width, frame.height);
     Frame { x, y, ..frame }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn best_work_area_for_frame(frame: Frame, work_areas: &[WorkBounds]) -> Option<WorkBounds> {
     work_areas.iter().copied().max_by_key(|area| {
         (
@@ -263,18 +268,21 @@ fn best_work_area_for_frame(frame: Frame, work_areas: &[WorkBounds]) -> Option<W
     })
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn frame_intersection_area(frame: Frame, area: WorkBounds) -> i64 {
     let width = (frame.x + frame.width).min(area.right) - frame.x.max(area.left);
     let height = (frame.y + frame.height).min(area.bottom) - frame.y.max(area.top);
     i64::from(width.max(0)) * i64::from(height.max(0))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn frame_distance_to_area_squared(frame: Frame, area: WorkBounds) -> i64 {
     let dx = range_distance(frame.x, frame.x + frame.width, area.left, area.right);
     let dy = range_distance(frame.y, frame.y + frame.height, area.top, area.bottom);
     dx * dx + dy * dy
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn range_distance(start_a: i32, end_a: i32, start_b: i32, end_b: i32) -> i64 {
     if end_a < start_b {
         i64::from(start_b - end_a)

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import type { PreparedBackground } from "./background-image.js";
-import { MemoryKeyValueStore, PreferencesStore } from "./preferences.js";
+import { type KeyValueStore, MemoryKeyValueStore, PreferencesStore } from "./preferences.js";
 import { SettingsController } from "./settings-controller.js";
 import { nextTick } from "./test-async.fixture.js";
 import { clearBrowserGlobals } from "./test-browser-globals.fixture.js";
@@ -27,19 +27,23 @@ interface Harness {
   failBackground(error: Error): void;
 }
 
-function createHarness(): Harness {
+function createHarness({
+  store = new PreferencesStore(new MemoryKeyValueStore()),
+}: {
+  store?: PreferencesStore;
+} = {}): Harness {
   const elements: Record<string, FakeElement> = {
     root: new FakeElement("main", "app-shell"),
     settingsButton: new FakeElement("button", "settings-button"),
     settingsPanel: new FakeElement("section", "settings-panel"),
     captionOpacity: new FakeElement("input"),
+    captionOpacityValue: new FakeElement("output"),
     backgroundButton: new FakeElement("button"),
     backgroundFile: new FakeElement("input"),
     backgroundClearButton: new FakeElement("button"),
     exportButton: new FakeElement("button"),
     settingsStatus: new FakeElement("p"),
   };
-  const store = new PreferencesStore(new MemoryKeyValueStore());
   const copied: string[] = [];
   const revoked: string[] = [];
   const prepared: PreparedBackground = { stored: { mime: "image/jpeg", data: "AAAA" }, objectUrl: "blob:new" };
@@ -52,6 +56,7 @@ function createHarness(): Harness {
       settingsButton: asDomElement<HTMLButtonElement>(elements.settingsButton!),
       settingsPanel: asDomElement(elements.settingsPanel!),
       captionOpacity: asDomElement<HTMLInputElement>(elements.captionOpacity!),
+      captionOpacityValue: asDomElement<HTMLOutputElement>(elements.captionOpacityValue!),
       backgroundButton: asDomElement<HTMLButtonElement>(elements.backgroundButton!),
       backgroundFile: asDomElement<HTMLInputElement>(elements.backgroundFile!),
       backgroundClearButton: asDomElement<HTMLButtonElement>(elements.backgroundClearButton!),
@@ -96,7 +101,11 @@ test("init applies stored opacity and starts closed", () => {
   harness.controller.init();
 
   assert.equal(harness.elements.captionOpacity!.value, "40");
-  assert.equal(harness.elements.root!.styleValues.get("--caption-bg-opacity"), "0.40");
+  assert.equal(harness.elements.captionOpacity!.title, "40%");
+  assert.equal(harness.elements.captionOpacity!.attributes.get("aria-valuetext"), "40%");
+  assert.equal(harness.elements.captionOpacityValue!.textContent, "40%");
+  assert.equal(harness.elements.captionOpacityValue!.styleValues.get("--opacity-slider-percent"), "40%");
+  assert.equal(harness.elements.root!.styleValues.get("--caption-bg-surface-opacity"), "0.40");
   assert.equal(harness.elements.settingsPanel!.attributes.get("data-open"), "false");
   assert.equal(harness.elements.settingsButton!.attributes.get("aria-expanded"), "false");
 });
@@ -117,7 +126,11 @@ test("opacity input applies and persists", () => {
   harness.elements.captionOpacity!.value = "50";
   harness.elements.captionOpacity!.dispatch("input", {});
 
-  assert.equal(harness.elements.root!.styleValues.get("--caption-bg-opacity"), "0.50");
+  assert.equal(harness.elements.root!.styleValues.get("--caption-bg-surface-opacity"), "0.50");
+  assert.equal(harness.elements.captionOpacity!.title, "50%");
+  assert.equal(harness.elements.captionOpacity!.attributes.get("aria-valuetext"), "50%");
+  assert.equal(harness.elements.captionOpacityValue!.textContent, "50%");
+  assert.equal(harness.elements.captionOpacityValue!.styleValues.get("--opacity-slider-percent"), "50%");
   assert.equal(harness.store.load().captionOpacity, 0.5);
 });
 
@@ -218,6 +231,26 @@ test("a quota failure surfaces a friendly message and persists nothing", async (
   assert.equal(harness.elements.root!.styleValues.get("--caption-bg-image"), "none");
 });
 
+test("a quota failure after preparing a background revokes the unused object URL", async () => {
+  const throwingStore: KeyValueStore = {
+    getItem: () => null,
+    setItem: () => {
+      throw new Error("QuotaExceededError: ...");
+    },
+    removeItem: () => {},
+  };
+  const harness = createHarness({ store: new PreferencesStore(throwingStore) });
+  harness.controller.init();
+  (harness.elements.backgroundFile! as unknown as { files: Blob[] }).files = [new Blob(["x"])];
+
+  harness.elements.backgroundFile!.dispatch("change", {});
+  await nextTick();
+
+  assert.equal(harness.elements.settingsStatus!.textContent, "Image too large to save");
+  assert.equal(harness.elements.root!.styleValues.get("--caption-bg-image"), "none");
+  assert.deepEqual(harness.revoked, ["blob:new"]);
+});
+
 test("a generic preparation failure reports a generic message", async () => {
   const harness = createHarness();
   harness.controller.init();
@@ -230,18 +263,21 @@ test("a generic preparation failure reports a generic message", async () => {
   assert.equal(harness.elements.settingsStatus!.textContent, "Couldn't set background");
 });
 
-test("opacity clamps at the readable floor and ceiling", () => {
+test("opacity clamps at the full percent floor and ceiling", () => {
   const harness = createHarness();
   harness.controller.init();
 
   harness.elements.captionOpacity!.value = "0";
   harness.elements.captionOpacity!.dispatch("input", {});
-  assert.equal(harness.elements.root!.styleValues.get("--caption-bg-opacity"), "0.20");
-  assert.equal(harness.store.load().captionOpacity, 0.2);
+  assert.equal(harness.elements.root!.styleValues.get("--caption-bg-surface-opacity"), "0.00");
+  assert.equal(harness.elements.captionOpacity!.title, "0%");
+  assert.equal(harness.elements.captionOpacityValue!.textContent, "0%");
+  assert.equal(harness.elements.captionOpacityValue!.styleValues.get("--opacity-slider-percent"), "0%");
+  assert.equal(harness.store.load().captionOpacity, 0);
 
   harness.elements.captionOpacity!.value = "100";
   harness.elements.captionOpacity!.dispatch("input", {});
-  assert.equal(harness.elements.root!.styleValues.get("--caption-bg-opacity"), "1.00");
+  assert.equal(harness.elements.root!.styleValues.get("--caption-bg-surface-opacity"), "1.00");
   assert.equal(harness.store.load().captionOpacity, 1);
 });
 
@@ -252,7 +288,7 @@ test("a non-numeric opacity value is ignored", () => {
   harness.elements.captionOpacity!.value = "abc";
   harness.elements.captionOpacity!.dispatch("input", {});
 
-  assert.equal(harness.elements.root!.styleValues.get("--caption-bg-opacity"), "0.72");
+  assert.equal(harness.elements.root!.styleValues.get("--caption-bg-surface-opacity"), "0.72");
   assert.equal(harness.store.load().captionOpacity, null);
 });
 
