@@ -36,7 +36,6 @@ from qwen3_asr_runtime.language_support import (
 from qwen3_asr_runtime.translation import (
     DEFAULT_HYMT_ATTN_IMPLEMENTATION,
     DEFAULT_HYMT_DECODE_BACKEND,
-    DEFAULT_HYMT_MAX_NEW_TOKENS,
     DEFAULT_HYMT_MODEL,
     HYMTGenerationConfig,
     HYMTTranslator,
@@ -50,6 +49,13 @@ _SERVICE_EVENT_QUEUE_MAXSIZE = 128
 # fractions of a second; this only rejects pathological/abusive frames.
 _SERVICE_MAX_PCM_FRAME_BYTES = 16_000_000
 _SERVICE_DEBUG_PCM_SUMMARY_INTERVAL_MS = 1000
+# Streaming translates short caption segments: observed output length tops out at
+# ~80-87 tokens (p99 ~66) across the in-domain and opus eval sets. The library
+# default of 512 is a cap, not a target (greedy stops at EOS, so it costs no
+# decode time), but it sizes the static KV cache and lets a degenerate
+# no-EOS run-on stall a segment for ~2.5s. 256 keeps ~3x headroom over the
+# longest real output while halving that worst-case tail and the cache footprint.
+_SERVICE_TRANSLATION_MAX_NEW_TOKENS = 256
 _SERVICE_TRANSLATION_PREVIEW_DEBOUNCE_MS = 700
 _SERVICE_TRANSLATION_PREWARM_TARGET_LANGUAGE = "Chinese"
 _SERVICE_TRANSLATION_PREWARM_TEXTS = (
@@ -1051,7 +1057,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--translation-preview", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--translation-preview-debounce-ms", type=int, default=_SERVICE_TRANSLATION_PREVIEW_DEBOUNCE_MS)
     parser.add_argument("--translation-preview-timeout-ms", type=int, default=30_000)
-    parser.add_argument("--translation-max-new-tokens", type=int, default=DEFAULT_HYMT_MAX_NEW_TOKENS)
+    parser.add_argument("--translation-max-new-tokens", type=int, default=_SERVICE_TRANSLATION_MAX_NEW_TOKENS)
     parser.add_argument("--translation-stable-batch-size", type=int, default=1)
     parser.add_argument("--translation-sample", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--translation-decode-backend", default=DEFAULT_HYMT_DECODE_BACKEND, choices=["fixed_mask", "generate"])
