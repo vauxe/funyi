@@ -179,10 +179,6 @@ fn select_display(
     displays: Vec<SCDisplay>,
     target_display: Option<TargetDisplay>,
 ) -> Result<SCDisplay, String> {
-    if displays.is_empty() {
-        return Err("ScreenCaptureKit did not report any capturable displays".to_string());
-    }
-
     if let Some(target) = target_display {
         if let Some(display) = displays
             .iter()
@@ -198,7 +194,10 @@ fn select_display(
         }
     }
 
-    Ok(displays.into_iter().next().unwrap())
+    displays
+        .into_iter()
+        .next()
+        .ok_or_else(|| "ScreenCaptureKit did not report any capturable displays".to_string())
 }
 
 fn display_contains_target(display: &SCDisplay, target: TargetDisplay) -> bool {

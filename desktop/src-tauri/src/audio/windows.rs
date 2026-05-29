@@ -51,6 +51,10 @@ fn capture_loop(app: AppHandle, stop: Arc<AtomicBool>) -> Result<(), Box<dyn std
     );
     let block_align = desired_format.get_blockalign() as usize;
     let (_default_period, min_period) = audio_client.get_device_period()?;
+    // Shared-mode `autoconvert` makes WASAPI deliver bytes in `desired_format`
+    // (16 kHz / mono / s16), which is what downstream frame slicing assumes. If a
+    // driver ever fails to honor that, captured audio would be mislabeled; a runtime
+    // assertion of the negotiated mix format would harden this further.
     let mode = StreamMode::EventsShared {
         autoconvert: true,
         buffer_duration_hns: min_period,

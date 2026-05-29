@@ -85,6 +85,16 @@ pub(crate) fn append_pcm_s16le(
         state.resampler.previous_sample = Some((current_at, sample));
         state.resampler.input_index = state.resampler.input_index.saturating_add(1);
     }
+
+    // Rebase the running offsets toward zero after each chunk. The arithmetic is
+    // translation-invariant, so this preserves output while keeping the f64 indices
+    // small enough that interpolation precision never drifts over long sessions.
+    let base = state.resampler.input_index as f64;
+    state.resampler.input_index = 0;
+    state.resampler.next_output_at -= base;
+    if let Some((previous_at, previous_value)) = state.resampler.previous_sample {
+        state.resampler.previous_sample = Some((previous_at - base, previous_value));
+    }
 }
 
 fn append_direct_pcm_bytes(state: &mut PcmCaptureBuffer, data: &[u8], sample_count: usize) {
@@ -128,31 +138,27 @@ fn extract_mono_samples(data: &[u8], sample_count: usize) -> Vec<f32> {
         }
         if f32_len > 0 && data.len().is_multiple_of(f32_len) {
             let channels = data.len() / f32_len;
-            return average_interleaved_f32(data, sample_count, channels);
+            return average_interleaved(
+                data.chunks_exact(4).map(f32_sample).collect(),
+                sample_count,
+                channels,
+            );
         }
         if i16_len > 0 && data.len().is_multiple_of(i16_len) {
             let channels = data.len() / i16_len;
-            return average_interleaved_i16(data, sample_count, channels);
+            return average_interleaved(
+                data.chunks_exact(2).map(i16_sample).collect(),
+                sample_count,
+                channels,
+            );
         }
     }
 
     data.chunks_exact(2).map(i16_sample).collect()
 }
 
-fn average_interleaved_f32(data: &[u8], sample_count: usize, channels: usize) -> Vec<f32> {
-    data.chunks_exact(4)
-        .map(f32_sample)
-        .collect::<Vec<_>>()
-        .chunks_exact(channels)
-        .take(sample_count)
-        .map(|frame| frame.iter().copied().sum::<f32>() / channels as f32)
-        .collect()
-}
-
-fn average_interleaved_i16(data: &[u8], sample_count: usize, channels: usize) -> Vec<f32> {
-    data.chunks_exact(2)
-        .map(i16_sample)
-        .collect::<Vec<_>>()
+fn average_interleaved(samples: Vec<f32>, sample_count: usize, channels: usize) -> Vec<f32> {
+    samples
         .chunks_exact(channels)
         .take(sample_count)
         .map(|frame| frame.iter().copied().sum::<f32>() / channels as f32)
@@ -199,6 +205,26 @@ mod tests {
         append_pcm_s16le(&mut state, &input, 3, 16_000);
 
         assert_eq!(state.pending.into_iter().collect::<Vec<_>>(), input);
+    }
+
+    #[test]
+    fn rebasing_keeps_resampling_continuous_across_chunks() {
+        let first = f32_bytes((0..96).map(|index| index as f32 / 96.0));
+        let second = f32_bytes((96..192).map(|index| index as f32 / 192.0));
+
+        let mut chunked = capture_buffer();
+        append_pcm_s16le(&mut chunked, &first, 96, 96_000);
+        append_pcm_s16le(&mut chunked, &second, 96, 96_000);
+
+        let mut whole = capture_buffer();
+        let mut combined = first.clone();
+        combined.extend_from_slice(&second);
+        append_pcm_s16le(&mut whole, &combined, 192, 96_000);
+
+        assert_eq!(
+            chunked.pending.into_iter().collect::<Vec<_>>(),
+            whole.pending.into_iter().collect::<Vec<_>>()
+        );
     }
 
     #[test]
