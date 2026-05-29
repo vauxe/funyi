@@ -44,8 +44,6 @@ test("renders current caption window and stable history", () => {
 
   view.render(document, { historyVisible: false, translationLanguage: "French" });
 
-  assert.equal(elements.previousSource.textContent, "hello");
-  assert.equal(elements.previousTranslation.textContent, "bonjour");
   assert.equal(elements.currentSource.textContent, "working");
   assert.equal(elements.currentTranslation.textContent, "en cours");
 
@@ -78,7 +76,6 @@ test("renders complete long caption text and leaves visual clipping to layout", 
 
   view.render(document, { historyVisible: false });
 
-  assert.equal(elements.previousSource.textContent, stableText);
   assert.equal(elements.currentSource.textContent, currentText);
   const [historyItem] = elements.historyList.children;
   assert.equal(historyItem?.children[1]?.textContent, stableText);
@@ -97,16 +94,12 @@ test("anchors compact caption text to the latest visible tail", () => {
   document.applyEvent({ type: "translation_stable", source_segment_id: "seg_000001", text: "previous translation" });
   document.applyEvent({ type: "translation_preview", source_revision: 1, text: "current translation" });
   const elements = createElements();
-  elements.previousSource.scrollHeight = 120;
-  elements.previousTranslation.scrollHeight = 80;
   elements.currentSource.scrollHeight = 160;
   elements.currentTranslation.scrollHeight = 96;
   const view = new CaptionView(captionViewElements(elements));
 
   view.render(document, { historyVisible: false });
 
-  assert.equal(elements.previousSource.scrollTop, 120);
-  assert.equal(elements.previousTranslation.scrollTop, 80);
   assert.equal(elements.currentSource.scrollTop, 160);
   assert.equal(elements.currentTranslation.scrollTop, 96);
 });
@@ -255,13 +248,37 @@ test("does not re-announce stable lines when the list is rebuilt on final", () =
   assert.equal(elements.announcer.children[2]?.children[0]?.textContent, "three");
 });
 
-function createElements(): Record<
-  "previousSource" | "previousTranslation" | "currentSource" | "currentTranslation" | "historyList" | "announcer",
-  FakeElement
-> {
+test("collectTranscriptLines reflects inline history edits", () => {
+  const document = new SubtitleDocument({ translationEnabled: true });
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 2,
+    stable_appends: [
+      stableSegment(1, "one", { startMs: 0, endMs: 500 }),
+      stableSegment(2, "two", { startMs: 500, endMs: 1000 }),
+    ],
+    partial: null,
+  });
+  document.applyEvent({ type: "translation_stable", source_segment_id: "seg_000001", text: "uno" });
+  const elements = createElements();
+  const view = new CaptionView(captionViewElements(elements));
+  view.render(document, { historyVisible: true });
+
+  const firstSource = elements.historyList.children[0]?.children[1];
+  assert.ok(firstSource);
+  firstSource.textContent = "ONE edited";
+  firstSource.dispatch("input", {});
+
+  assert.deepEqual(view.collectTranscriptLines(), [
+    { startMs: 0, text: "ONE edited", translation: "uno" },
+    { startMs: 500, text: "two", translation: null },
+  ]);
+});
+
+function createElements(): Record<"currentSource" | "currentTranslation" | "historyList" | "announcer", FakeElement> {
   return {
-    previousSource: new FakeElement(),
-    previousTranslation: new FakeElement(),
     currentSource: new FakeElement(),
     currentTranslation: new FakeElement(),
     historyList: new FakeElement(),
@@ -273,8 +290,6 @@ function captionViewElements(
   elements: ReturnType<typeof createElements>,
 ): ConstructorParameters<typeof CaptionView>[0] {
   return {
-    previousSource: asDomElement(elements.previousSource),
-    previousTranslation: asDomElement(elements.previousTranslation),
     currentSource: asDomElement(elements.currentSource),
     currentTranslation: asDomElement(elements.currentTranslation),
     historyList: asDomElement(elements.historyList),

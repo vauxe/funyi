@@ -56,7 +56,7 @@ test("window scrolls when current partial becomes stable", () => {
   });
 
   const window = document.window();
-  assert.equal(window.previous?.text, "draft");
+  assert.equal(document.stableLines.at(-1)?.text, "draft");
   assert.equal(window.current?.text, "next");
 });
 
@@ -82,7 +82,7 @@ test("keeps latest stable line visible until a new partial arrives", () => {
   document.applyEvent({ type: "translation_stable", source_segment_id: "seg_000001", text: "translated draft" });
 
   let window = document.window();
-  assert.equal(window.previous?.text, "draft");
+  assert.equal(document.stableLines.at(-1)?.text, "draft");
   assert.equal(window.current?.text, "draft");
   assert.equal(window.current?.translation, "translated draft");
 
@@ -106,7 +106,7 @@ test("keeps latest stable line visible until a new partial arrives", () => {
   });
 
   window = document.window();
-  assert.equal(window.previous?.text, "draft");
+  assert.equal(document.stableLines.at(-1)?.text, "draft");
   assert.equal(window.current?.text, "next");
   assert.equal(window.current?.translation, null);
 });
@@ -131,7 +131,7 @@ test("translation annotates matching lines and stale preview is ignored", () => 
   document.applyEvent({ type: "translation_preview", source_revision: 1, text: "current line" });
 
   const window = document.window();
-  assert.equal(window.previous?.translation, "stable line");
+  assert.equal(document.stableLines.at(-1)?.translation, "stable line");
   assert.equal(window.current?.translation, "current line");
 });
 
@@ -153,7 +153,7 @@ test("translation falls back to source_segment_index when the id does not match"
     text: "bonjour",
   });
 
-  assert.equal(document.window().previous?.translation, "bonjour");
+  assert.equal(document.stableLines.at(-1)?.translation, "bonjour");
 });
 
 test("window returns complete latest lines", () => {
@@ -172,7 +172,7 @@ test("window returns complete latest lines", () => {
   assert.equal(document.stableLines.length, 1);
   assert.equal(document.stableLines[0]?.text, stableText);
   const window = document.window();
-  assert.equal(window.previous?.text, stableText);
+  assert.equal(document.stableLines.at(-1)?.text, stableText);
   assert.equal(window.current?.text, partialText);
 });
 
@@ -226,7 +226,7 @@ test("current translation preview survives repeated partial revisions", () => {
     stable_appends: [stableSegment(1, "current text", { startMs: 1000, endMs: 2200 })],
     partial: partialSegment("next line", { startMs: 2200, endMs: 3000 }),
   });
-  assert.equal(document.window().previous?.translation, "current line");
+  assert.equal(document.stableLines.at(-1)?.translation, "current line");
   assert.equal(document.window().current?.translation, null);
 
   document.applyEvent({ type: "translation_preview", source_revision: 4, text: "late old line" });
@@ -379,6 +379,6 @@ test("final snapshot clears current and preserves stable translation", () => {
     segments: [stableSegment(1, "one", { startMs: 0, endMs: 1000 })],
   });
 
-  assert.equal(document.window().previous?.translation, "first line");
+  assert.equal(document.stableLines.at(-1)?.translation, "first line");
   assert.equal(document.window().current, null);
 });

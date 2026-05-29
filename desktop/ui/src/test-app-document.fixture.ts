@@ -50,7 +50,7 @@ function elementTag(id: string): string {
   if (id === "app-shell") {
     return "main";
   }
-  if (id === "caption-strip" || id === "history-list") {
+  if (id === "caption-strip" || id === "history-list" || id === "settings-panel") {
     return "section";
   }
   if (id.endsWith("button")) {
@@ -58,6 +58,9 @@ function elementTag(id: string): string {
   }
   if (id.startsWith("resize-")) {
     return "div";
+  }
+  if (id === "settings-status") {
+    return "p";
   }
   if (id === "session-status" || id === "volume-indicator") {
     return "span";

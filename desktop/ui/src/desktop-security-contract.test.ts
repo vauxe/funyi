@@ -16,6 +16,9 @@ test("Tauri CSP stays scoped to packaged UI assets and the local ASR websocket",
 
   assert.deepEqual(directives.get("default-src"), ["'self'", "tauri:", "asset:"]);
   assert.deepEqual(directives.get("connect-src"), ["ws://127.0.0.1:*", "ws://localhost:*"]);
+  // User-chosen caption background images render from same-origin blob: URLs; no
+  // remote or data: scheme is permitted.
+  assert.deepEqual(directives.get("img-src"), ["'self'", "asset:", "blob:"]);
   assert.deepEqual(directives.get("style-src"), ["'self'", "'unsafe-inline'"]);
 
   // No directive may introduce a wildcard host or a remote/inline scheme beyond the

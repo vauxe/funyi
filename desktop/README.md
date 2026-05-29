@@ -10,6 +10,12 @@ The default window is a compact, always-on-top caption strip near the bottom of
 the display. Detailed connection settings stay inline, and stable subtitle
 history appears automatically when the window is tall enough.
 
+A settings popover (the kebab button in the caption controls) exposes the caption
+panel opacity, an optional background image, and a one-click "Copy transcript" to
+the clipboard. The server URL, speech/translation languages, audio source, panel
+opacity, and background image are remembered across launches (stored in the
+webview's `localStorage`); the background image is downscaled before it is saved.
+
 ## Status
 
 - Windows: default system output capture via WASAPI loopback.
@@ -41,7 +47,9 @@ rather than assuming a separate global `pnpm` install exists.
 
 The client only connects to `ws://` loopback addresses (`127.0.0.0/8`,
 `localhost`, `::1`); `wss://`, remote hosts, and credentialed URLs are rejected,
-matching the Tauri CSP `connect-src ws://127.0.0.1:* ws://localhost:*`.
+matching the Tauri CSP `connect-src ws://127.0.0.1:* ws://localhost:*`. The
+caption background image renders from a same-origin `blob:` URL (`img-src 'self'
+asset: blob:`); no remote or `data:` image source is permitted.
 
 For Windows plus WSL development, run the Tauri client in the Windows checkout
 and point it at the WSL service URL, for example `ws://127.0.0.1:8000/ws/asr`

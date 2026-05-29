@@ -2,26 +2,31 @@ import type { AudioAdapter } from "./audio-adapter.js";
 import type { AppElements } from "./app-dom.js";
 import { AudioSourceSelect } from "./audio-source-select.js";
 import type { AudioSource } from "./audio-source.js";
+import { objectUrlFromStored, prepareBackgroundImage } from "./background-image.js";
 import { CaptionView } from "./caption-view.js";
 import { errorMessage } from "./error-message.js";
 import type { OverlayHost } from "./host-contract.js";
 import { LanguageControls } from "./language-controls.js";
 import { LiveSession } from "./live-session.js";
 import { OverlayController } from "./overlay-controller.js";
+import type { PreferencesStore } from "./preferences.js";
 import { readyEventTranslationEnabled } from "./realtime-events.js";
 import type { LiveSessionClient, LiveSessionClientCallbacks } from "./session-client.js";
 import type { SessionState } from "./session-state.js";
 import { buildSessionStartOptions } from "./session-start-options.js";
 import { SessionControlsView } from "./session-controls-view.js";
 import { NO_AUDIO_SOURCE_MESSAGE } from "./session-status.js";
+import { SettingsController } from "./settings-controller.js";
 import { StatusController } from "./status-controller.js";
 import { SubtitleDocument } from "./subtitle-document.js";
+import { copyToClipboard, formatTranscript } from "./transcript-export.js";
 
 export interface FunyiAppOptions {
   audio: AudioAdapter;
   createClient(options: LiveSessionClientCallbacks): LiveSessionClient;
   dom: AppElements;
   overlay: OverlayHost;
+  preferences: PreferencesStore;
 }
 
 export class FunyiApp {
@@ -30,12 +35,15 @@ export class FunyiApp {
   private readonly languageControls: LanguageControls;
   private readonly liveSession: LiveSession;
   private readonly overlayController: OverlayController;
+  private readonly preferences: PreferencesStore;
   private readonly sessionControlsView: SessionControlsView;
+  private readonly settingsController: SettingsController;
   private readonly statusController: StatusController;
   private subtitleDocument = new SubtitleDocument();
 
   constructor(private readonly options: FunyiAppOptions) {
-    const { audio, createClient, dom, overlay } = options;
+    const { audio, createClient, dom, overlay, preferences } = options;
+    this.preferences = preferences;
     this.audioSourceSelect = new AudioSourceSelect(dom.audioSource);
     this.languageControls = new LanguageControls(dom.language, dom.translationTargetLanguage);
     this.sessionControlsView = new SessionControlsView({
@@ -52,8 +60,6 @@ export class FunyiApp {
       render: (summary) => this.sessionControlsView.renderStatus(summary),
     });
     this.captionView = new CaptionView({
-      previousSource: dom.previousSource,
-      previousTranslation: dom.previousTranslation,
       currentSource: dom.currentSource,
       currentTranslation: dom.currentTranslation,
       historyList: dom.historyList,
@@ -90,22 +96,78 @@ export class FunyiApp {
         this.render();
       },
     });
+    this.settingsController = new SettingsController({
+      elements: {
+        root: dom.appShell,
+        settingsButton: dom.settingsButton,
+        settingsPanel: dom.settingsPanel,
+        captionOpacity: dom.captionOpacity,
+        backgroundButton: dom.backgroundButton,
+        backgroundFile: dom.backgroundFile,
+        backgroundClearButton: dom.backgroundClearButton,
+        exportButton: dom.exportButton,
+        settingsStatus: dom.settingsStatus,
+      },
+      preferences: this.preferences,
+      buildTranscript: () =>
+        formatTranscript(this.captionView.collectTranscriptLines(), {
+          translationEnabled: this.languageControls.translationEnabled,
+        }),
+      copyText: copyToClipboard,
+      prepareBackground: prepareBackgroundImage,
+      objectUrlFromStored,
+      revokeObjectUrl: (url) => URL.revokeObjectURL(url),
+    });
   }
 
   async boot(): Promise<void> {
     const { dom } = this.options;
     this.languageControls.render();
+    this.applyStoredLanguagePreferences();
     await this.populateAudioSources();
+    this.applyStoredAudioSource();
+    this.settingsController.init();
     this.overlayController.bind();
     dom.sessionButton.addEventListener("click", () => void this.toggleSession());
     dom.minimizeButton.addEventListener("click", () => void this.overlayController.minimize());
     dom.closeButton.addEventListener("click", () => void this.closeOverlay());
+    dom.serverUrl.addEventListener("change", () =>
+      this.preferences.save({ serverUrl: dom.serverUrl.value.trim() || null }),
+    );
+    dom.audioSource.addEventListener("change", () =>
+      this.preferences.save({ audioSourceId: dom.audioSource.value || null }),
+    );
     dom.language.addEventListener("change", () => {
       // ASR language does not change what is displayed, so no re-render here.
+      this.preferences.save({ asrLanguage: this.languageControls.asrLanguage });
       this.liveSession.setLanguageConfig({ language: this.languageControls.asrLanguage });
     });
     dom.translationTargetLanguage.addEventListener("change", () => this.applyTranslationTarget());
     this.render();
+  }
+
+  private applyStoredLanguagePreferences(): void {
+    // Set values directly without dispatching `change`: session start and rendering
+    // read languageControls live, so restored values take effect without re-saving
+    // or firing the persistence handlers.
+    const { dom } = this.options;
+    const prefs = this.preferences.load();
+    if (prefs.serverUrl) {
+      dom.serverUrl.value = prefs.serverUrl;
+    }
+    if (prefs.asrLanguage) {
+      setSelectValueIfPresent(dom.language, prefs.asrLanguage);
+    }
+    if (prefs.targetLanguage) {
+      setSelectValueIfPresent(dom.translationTargetLanguage, prefs.targetLanguage);
+    }
+  }
+
+  private applyStoredAudioSource(): void {
+    const storedId = this.preferences.load().audioSourceId;
+    if (storedId && this.audioSourceSelect.hasAvailableSource) {
+      setSelectValueIfPresent(this.options.dom.audioSource, storedId, { requireEnabled: true });
+    }
   }
 
   private async toggleSession(): Promise<void> {
@@ -179,6 +241,7 @@ export class FunyiApp {
   }
 
   private applyTranslationTarget(): void {
+    this.preferences.save({ targetLanguage: this.languageControls.targetLanguage || null });
     this.subtitleDocument.setTranslationEnabled(this.languageControls.translationEnabled);
     this.liveSession.setLanguageConfig({ target_language: this.languageControls.targetLanguage || null });
     this.render();
@@ -199,4 +262,20 @@ export class FunyiApp {
 
 export function createFunyiApp(options: FunyiAppOptions): FunyiApp {
   return new FunyiApp(options);
+}
+
+// Restore a stored select value only when the option still exists (the language
+// lists or available audio sources may have changed between launches).
+function setSelectValueIfPresent(
+  select: HTMLSelectElement,
+  value: string,
+  { requireEnabled = false }: { requireEnabled?: boolean } = {},
+): void {
+  const present = Array.from(select.children).some((child) => {
+    const option = child as HTMLOptionElement;
+    return option.value === value && (!requireEnabled || !option.disabled);
+  });
+  if (present) {
+    select.value = value;
+  }
 }

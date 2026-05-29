@@ -16,7 +16,6 @@ interface SubtitleLineInit {
 }
 
 export interface SubtitleWindow {
-  previous: SubtitleLine | null;
   current: SubtitleLine | null;
 }
 
@@ -91,7 +90,6 @@ export class SubtitleDocument {
     const currentLine =
       this.currentLine || (this.showLatestStableAsCurrent ? this.stableLineList.at(-1) || null : null);
     return {
-      previous: renderLine(this.stableLineList.at(-1) || null, includeTranslation),
       current: renderLine(currentLine, includeTranslation),
     };
   }

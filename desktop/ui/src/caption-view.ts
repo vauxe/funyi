@@ -2,10 +2,9 @@ import { languageTag } from "./languages.js";
 import { isInteger } from "./runtime-guards.js";
 import type { SubtitleDocument, SubtitleLine } from "./subtitle-document.js";
 import { formatClock } from "./time-format.js";
+import type { TranscriptLine } from "./transcript-export.js";
 
 interface CaptionViewElements {
-  previousSource: HTMLElement;
-  previousTranslation: HTMLElement;
   currentSource: HTMLElement;
   currentTranslation: HTMLElement;
   historyList: HTMLElement;
@@ -27,12 +26,6 @@ export class CaptionView {
     { historyVisible, translationLanguage = "" }: { historyVisible: boolean; translationLanguage?: string },
   ): void {
     const windowState = document.window();
-    renderCaptionLine(
-      windowState.previous,
-      this.elements.previousSource,
-      this.elements.previousTranslation,
-      translationLanguage,
-    );
     renderCaptionLine(
       windowState.current,
       this.elements.currentSource,
@@ -61,6 +54,20 @@ export class CaptionView {
       return;
     }
     scroll();
+  }
+
+  // Build the export transcript from the rendered history so a user's inline edits
+  // (contenteditable rows flagged data-user-edited) are what gets copied, not the
+  // raw model text.
+  collectTranscriptLines(): TranscriptLine[] {
+    return this.renderedHistoryLines.map((line, index) => {
+      const cells = Array.from(this.elements.historyList.children[index]?.children ?? []) as HTMLElement[];
+      return {
+        startMs: line.startMs,
+        text: editedValue(cells[1]) ?? line.text,
+        translation: editedValue(cells[2]) ?? line.translation,
+      };
+    });
   }
 
   private renderHistory(document: SubtitleDocument, historyVisible: boolean, translationLanguage: string): void {
@@ -149,6 +156,12 @@ export class CaptionView {
       this.elements.announcer.replaceChildren(...children.slice(children.length - MAX_ANNOUNCED_LINES));
     }
   }
+}
+
+// Returns the inline-edited text of a history cell, or null when the user has not
+// touched it (so the caller falls back to the model value).
+function editedValue(element: HTMLElement | undefined): string | null {
+  return element?.dataset.userEdited === "true" ? (element.textContent ?? "") : null;
 }
 
 function renderCaptionLine(

@@ -14,10 +14,6 @@
         </section>
 
         <section class="caption-window" aria-label="Current subtitles">
-          <div class="caption-line previous">
-            <div id="previous-source" class="caption-source" dir="auto"></div>
-            <div id="previous-translation" class="caption-translation" dir="auto"></div>
-          </div>
           <div class="caption-line current">
             <div id="current-source" class="caption-source" dir="auto"></div>
             <div id="current-translation" class="caption-translation" dir="auto"></div>
@@ -32,6 +28,15 @@
             <span class="volume-bar"></span>
             <span class="volume-bar"></span>
           </span>
+          <button
+            id="settings-button"
+            class="icon-button settings-control"
+            type="button"
+            aria-label="Settings"
+            title="Settings"
+            aria-expanded="false"
+            aria-controls="settings-panel"
+          ></button>
           <button
             id="session-button"
             class="icon-button session-control"
@@ -54,6 +59,23 @@
             title="Close"
           ></button>
         </div>
+
+        <section id="settings-panel" class="settings-panel" data-open="false" role="group" aria-label="Caption settings">
+          <label class="settings-row">
+            <span>Opacity</span>
+            <input id="caption-opacity" type="range" min="20" max="100" step="1" />
+          </label>
+          <div class="settings-row">
+            <span>Background</span>
+            <div class="settings-actions">
+              <button id="background-button" class="settings-action" type="button">Choose…</button>
+              <button id="background-clear-button" class="settings-action" type="button">Clear</button>
+            </div>
+          </div>
+          <button id="export-button" class="settings-action settings-export" type="button">Copy transcript</button>
+          <p id="settings-status" class="settings-status" aria-live="polite"></p>
+          <input id="background-file" class="sr-only" type="file" accept="image/*" />
+        </section>
 
         <section class="status-line" aria-live="polite">
           <div class="status-controls">

@@ -5,6 +5,7 @@ import { createFunyiApp } from "./app-controller.js";
 import { getAppElements } from "./app-dom.js";
 import type { AudioSource } from "./audio-source.js";
 import { ASR_LANGUAGE_OPTIONS, TRANSLATION_TARGET_LANGUAGE_OPTIONS } from "./languages.js";
+import { MemoryKeyValueStore, PreferencesStore } from "./preferences.js";
 import { installFakeAppDocument } from "./test-app-document.fixture.js";
 import { nextTick } from "./test-async.fixture.js";
 import { clearBrowserGlobals } from "./test-browser-globals.fixture.js";
@@ -226,6 +227,51 @@ test("drag uses one start/update/end contract across platforms", async () => {
   assert.equal(elements["app-shell"]!.className, "");
 });
 
+test("restores stored preferences into the controls on boot", async () => {
+  const elements = installDocument();
+  const preferences = new PreferencesStore(new MemoryKeyValueStore());
+  preferences.save({ serverUrl: "ws://127.0.0.1:9001/ws/asr", asrLanguage: "Chinese", targetLanguage: "Japanese" });
+
+  await bootApp({ preferences });
+
+  assert.equal(elements["server-url"]!.value, "ws://127.0.0.1:9001/ws/asr");
+  assert.equal(elements["language"]!.value, "Chinese");
+  assert.equal(elements["translation-target-language"]!.value, "Japanese");
+});
+
+test("persists control changes for the next launch", async () => {
+  const elements = installDocument();
+  const { preferences } = await bootApp();
+
+  elements["server-url"]!.value = "ws://127.0.0.1:9100/ws/asr";
+  elements["server-url"]!.dispatch("change", {});
+  elements["language"]!.value = "Chinese";
+  elements["language"]!.dispatch("change", {});
+  elements["translation-target-language"]!.value = "Japanese";
+  elements["translation-target-language"]!.dispatch("change", {});
+  elements["audio-source"]!.value = "system_default";
+  elements["audio-source"]!.dispatch("change", {});
+
+  assert.deepEqual(preferences.load(), {
+    serverUrl: "ws://127.0.0.1:9100/ws/asr",
+    asrLanguage: "Chinese",
+    targetLanguage: "Japanese",
+    audioSourceId: "system_default",
+    captionOpacity: null,
+  });
+});
+
+test("ignores stored options that no longer exist", async () => {
+  const elements = installDocument();
+  const preferences = new PreferencesStore(new MemoryKeyValueStore());
+  preferences.save({ asrLanguage: "Klingon", audioSourceId: "ghost-device" });
+
+  await bootApp({ preferences });
+
+  assert.equal(elements["language"]!.value, "");
+  assert.equal(elements["audio-source"]!.value, "system_default");
+});
+
 function installDocument(): Record<string, FakeElement> {
   const elements = installFakeAppDocument();
   elements["server-url"]!.value = "ws://127.0.0.1:8000/ws/asr";
@@ -241,16 +287,19 @@ function selectValues(element: FakeElement): string[] {
 interface AppHarness {
   overlay: FakeOverlayHost;
   windowRuntime: FakeWindowRuntime;
+  preferences: PreferencesStore;
 }
 
 interface BootAppOptions {
   listSourcesError?: Error | null;
   sources?: AudioSource[];
+  preferences?: PreferencesStore;
 }
 
 async function bootApp({
   listSourcesError = null,
   sources = defaultAudioSources(),
+  preferences = new PreferencesStore(new MemoryKeyValueStore()),
 }: BootAppOptions = {}): Promise<AppHarness> {
   const audio = createFakeAudioAdapter({ listSourcesError, sources });
   const overlay = createFakeOverlayHost();
@@ -259,10 +308,11 @@ async function bootApp({
     audio,
     dom: getAppElements(),
     overlay,
+    preferences,
     createClient: ({ url, ...callbacks }) => new AsrClient({ url, ...callbacks }),
   });
   await app.boot();
-  return { overlay, windowRuntime };
+  return { overlay, windowRuntime, preferences };
 }
 
 function defaultAudioSources(): AudioSource[] {

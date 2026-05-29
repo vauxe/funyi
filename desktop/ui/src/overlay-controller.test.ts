@@ -101,6 +101,21 @@ test("drag ignores editable history text inside the drag surface", async () => {
   assert.equal(harness.elements.root.className, "");
 });
 
+test("drag ignores pointerdowns inside the settings panel", async () => {
+  const harness = createHarness();
+  harness.controller.bind();
+  const panel = new FakeElement("section", "settings-panel");
+  const panelStatus = new FakeElement("p");
+  panel.append(panelStatus);
+  harness.elements.dragSurface.append(panel);
+
+  harness.elements.dragSurface.dispatch("pointerdown", pointerEvent({ pointerId: 7, target: panelStatus }));
+  await nextTick();
+
+  assert.deepEqual(harness.invocations, []);
+  assert.equal(harness.elements.root.className, "");
+});
+
 test("compact resize delegates window size changes to native resize commands", async () => {
   const harness = createHarness();
   harness.controller.bind();

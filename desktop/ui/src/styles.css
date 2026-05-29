@@ -10,6 +10,9 @@
   --ui-surface: rgba(5, 18, 20, 0.72);
   --miku-line: rgba(118, 255, 240, 0.18);
   --ui-surface-shadow: inset 0 1px 0 rgba(118, 255, 240, 0.06), 0 8px 24px rgba(0, 0, 0, 0.12);
+  /* User-adjustable caption panel appearance (see settings-controller.ts). */
+  --caption-bg-opacity: 0.72;
+  --caption-bg-image: none;
   color: #eafffb;
   background: transparent;
 }
@@ -147,7 +150,15 @@ select:disabled {
   border: 1px solid var(--miku-line);
   border-radius: 10px;
   padding: 12px 12px 10px;
-  background: var(--ui-surface);
+  /* The dark tint layers over the optional background image so captions stay
+     readable; --caption-bg-opacity controls the tint, --caption-bg-image the photo. */
+  background-color: transparent;
+  background-image:
+    linear-gradient(rgba(5, 18, 20, var(--caption-bg-opacity)), rgba(5, 18, 20, var(--caption-bg-opacity))),
+    var(--caption-bg-image);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
   box-shadow: var(--ui-surface-shadow);
   transition:
     border-color 150ms ease,
@@ -215,11 +226,6 @@ select:disabled {
   min-height: 0;
 }
 
-.caption-line.previous {
-  display: none;
-  color: rgba(234, 255, 251, 0.62);
-}
-
 .caption-line.current {
   grid-row: 1;
   color: #f4fffd;
@@ -248,18 +254,8 @@ select:disabled {
   -webkit-line-clamp: 2;
 }
 
-.caption-line.previous .caption-source {
-  -webkit-line-clamp: 1;
-  font-size: 14px;
-  font-weight: 560;
-}
-
 .app-shell[data-overlay-mode="history"] .caption-source {
   font-size: 22px;
-}
-
-.app-shell[data-overlay-mode="history"] .caption-line.previous .caption-source {
-  font-size: 13px;
 }
 
 .caption-translation {
@@ -272,12 +268,6 @@ select:disabled {
 
 .app-shell[data-overlay-mode="history"] .caption-translation {
   font-size: 18px;
-}
-
-.caption-line.previous .caption-translation {
-  color: rgba(118, 255, 240, 0.66);
-  font-size: 13px;
-  font-weight: 540;
 }
 
 .caption-controls {
@@ -557,6 +547,85 @@ select:disabled {
   color: #ffd3e5;
 }
 
+/* Vertical three-dot (kebab) glyph for the settings toggle. */
+.settings-control::before {
+  content: "";
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow:
+    0 -5px currentColor,
+    0 5px currentColor;
+}
+
+.settings-panel {
+  position: absolute;
+  right: 12px;
+  bottom: 44px;
+  z-index: 9;
+  display: grid;
+  gap: 8px;
+  width: 230px;
+  max-width: calc(100% - 24px);
+  border: 1px solid rgba(118, 255, 240, 0.22);
+  border-radius: 10px;
+  padding: 12px;
+  background: rgba(5, 18, 20, 0.94);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.4);
+  color: rgba(234, 255, 251, 0.82);
+  font-size: 12px;
+}
+
+.settings-panel[data-open="false"] {
+  display: none;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 26px;
+}
+
+.settings-row > span {
+  flex: 0 0 auto;
+  font-weight: 620;
+}
+
+.settings-row input[type="range"] {
+  flex: 1 1 auto;
+  width: auto;
+  min-height: 0;
+  padding: 0;
+  accent-color: var(--miku-aqua);
+  cursor: pointer;
+}
+
+.settings-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.settings-action {
+  min-height: 26px;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.settings-export {
+  width: 100%;
+}
+
+.settings-status {
+  margin: 0;
+  min-height: 14px;
+  color: rgba(118, 255, 240, 0.82);
+  font-size: 11px;
+}
+
 .status-line {
   position: relative;
   display: flex;
@@ -729,7 +798,6 @@ select:disabled {
 
 .app-shell.is-dragging .caption-strip {
   border-color: rgba(var(--miku-pink-rgb), 0.82);
-  background: var(--ui-surface);
   box-shadow:
     inset 0 0 0 1px rgba(var(--miku-pink-rgb), 0.58),
     inset 0 1px 0 rgba(255, 197, 220, 0.22),

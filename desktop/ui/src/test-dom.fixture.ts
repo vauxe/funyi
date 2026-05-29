@@ -144,6 +144,10 @@ export class FakeElement {
     if (selector.startsWith("[") && selector.endsWith("]")) {
       return this.attributes.has(selector.slice(1, -1));
     }
+    if (selector.startsWith("#")) {
+      const id = selector.slice(1);
+      return this.id === id || this.attributes.get("id") === id;
+    }
     return this.tagName.toLowerCase() === selector;
   }
 }
