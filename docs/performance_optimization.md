@@ -54,8 +54,20 @@ within noise), 84% byte-identical, 0 new errors; W8A16's own on-vs-off effect is
 mean drop `-0.11`. See `@docs/realtime_translation_design.md` for the golden/gate.
 HY-MT q/o/down (out=2048) under-occupy
 the GEMV and give no gain; only gate/up (out=6144) help. The forced aligner is a
-single prefill forward (no decode) → prefill-bound → do **not** apply W8A16;
-use FA2 / batching instead.
+single prefill forward (no decode) → prefill-bound → do **not** apply W8A16.
+Its real win is **fused RMSNorm + linears** (same patches as the ASR path),
+default-on via `--timestamp-fused`: **~1.4x** on the per-segment align forward
+(interleaved A/B 34.7→25.0ms, paired-ratio IQR 1.37-1.44). Not bit-identical —
+bf16 argmax flips shift `<=~1%` of timestamps by `<=0.16s` (1-2 segment-time
+units) with **no word-count change** (60-segment validation: 57/60 byte-identical,
+max drift 0.16s) — so it diverges from the exact `_assert_same` parity golden
+(an *implementation*-parity gate) but is well inside perceptual timestamp
+tolerance, the same trade the ASR fused stack already makes vs CER. FA2 and a
+hand-written block-local encoder attention were measured **flat** (encoder cost
+is window-independent: 6s vs 30s window both ~31-34ms), so don't pursue them.
+Measure the aligner forward with an **interleaved A/B** (both models resident,
+alternating per call) — a sequential all-A-then-all-B run is confounded by GPU
+thermal throttling and falsely reported ~1.0x.
 
 Known-language prompts are opt-in; auto language stays default.
 
@@ -105,10 +117,19 @@ Do not reopen without new evidence:
   CORRECT (within-step byte-exact, cross-step CER-viable `+0.25pp`; mrope
   positions are sequential so `rope_deltas=0`; FlashInfer mishandles a
   partial-query-against-cache prefill, so the increment must use SDPA). But it
-  delivered **no net latency win** (76 vs 71ms, slightly slower): it still runs
-  the encoder full each step, adds `inputs_embeds` overhead, and only shrinks the
-  text-prefill — which is not the dominant cost once decode is large. Reopen only
-  as a *combined* incremental-prefill + spec-decode (+ encoder-feature cache)
-  build, ceiling ~1.4x (capped by the still-full encoder), and only if multi-user
-  concurrency / longer windows make the prefill cost matter (single-user live20
-  already has ~10x realtime headroom after W8A16-off).
+  delivered **no net latency win** (76 vs 71ms, slightly slower). Root cause,
+  now measured: at a steady-state 20s window the prefill sequence is **90% audio
+  embeddings, only ~10% text** (260 audio vs 28 text tokens of 288). Cross-step
+  KV reuse can only reuse the *text* prefix (the audio slides 0.5s/step), so it
+  saves at most ~4ms of the ~42ms prefill — swamped by the `inputs_embeds` rebuild
+  + SDPA-increment overhead. The audio side is its own dead-end (feature caching
+  drifts, ~1.06x). So the earlier "~1.4x combined" ceiling was optimistic; the
+  reusable fraction is tiny. Do not reopen for single-user; only multi-user /
+  much longer text contexts would change the 90/10 split.
+- First-decode-token via graph replay instead of the eager warmup forward: the
+  per-step warmup runs eager with a *sliced* attention mask (variable shape, not
+  graphable); on graph-hit steps it can be replaced by a full-mask graph replay.
+  Proven **byte-exact** (sha256-identical transcripts), but only **~2.7% median**
+  (best ~4.9%), **below the 3% keep bar**. The profiler's per-section
+  `cuda.synchronize()` inflated the eager-warmup estimate (22ms) that made it look
+  like ~1.3x; un-profiled the warmup overlaps and is cheap. Reverted.

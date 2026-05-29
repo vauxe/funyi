@@ -323,11 +323,29 @@ class Qwen3ForcedAlignerBackend:
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path: str, **kwargs: Any) -> "Qwen3ForcedAlignerBackend":
         register_qwen3_asr_auto_classes()
+        fused_rmsnorm = bool(kwargs.pop("fused_rmsnorm", False))
+        fused_linears = bool(kwargs.pop("fused_linears", False))
         model = AutoModel.from_pretrained(pretrained_model_name_or_path, **kwargs)
         if not isinstance(model, Qwen3ASRForConditionalGeneration):
             raise TypeError(
                 f"AutoModel returned {type(model)}, expected Qwen3ASRForConditionalGeneration."
             )
+
+        # Same fused opts as the ASR path. The aligner is one prefill forward per
+        # stable segment; fusing RMSNorm + qkv/gate_up gives ~1.4x on that forward
+        # (interleaved A/B). Not bit-identical: bf16 argmax flips shift <=~1% of
+        # timestamps by <=0.16s (1-2 segment-time units), no word-count change.
+        if fused_rmsnorm:
+            from .fused_rmsnorm import patch_model_rmsnorms
+
+            if patch_model_rmsnorms(model) == 0:
+                raise RuntimeError("fused_rmsnorm=True but no RMSNorm modules found")
+        if fused_linears:
+            from .fused_linears import patch_model_fused_linears
+
+            summary = patch_model_fused_linears(model)
+            if summary["attn_fused"] == 0 and summary["mlp_fused"] == 0:
+                raise RuntimeError("fused_linears=True but no layers were fused")
 
         processor_kwargs = {
             key: kwargs[key]

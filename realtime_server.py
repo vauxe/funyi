@@ -1039,6 +1039,13 @@ def _parse_args() -> argparse.Namespace:
         help="Torch dtype for the forced-aligner model. Default: bfloat16.",
     )
     parser.add_argument("--timestamp-attn-implementation", default=None)
+    parser.add_argument(
+        "--timestamp-fused",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Apply fused RMSNorm + fused linears to the forced aligner (~1.4x per-segment align "
+        "speedup; bf16 argmax can shift <=~1%% of timestamps by <=0.16s, no word-count change).",
+    )
     parser.add_argument("--timestamp-local-files-only", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--timestamp-pad-ms", type=int, default=500)
     parser.add_argument("--timestamp-finish-timeout-ms", type=int, default=30_000)
@@ -1188,6 +1195,11 @@ def _build_timestamp_actor(args: argparse.Namespace) -> tuple[TimestampModelActo
         load_kwargs["dtype"] = dtype
     if args.timestamp_attn_implementation:
         load_kwargs["attn_implementation"] = args.timestamp_attn_implementation
+    # Fused RMSNorm + linears on the aligner: ~1.4x per-segment align speedup
+    # (interleaved A/B), timestamp drift <=0.16s on <=~1% of boundaries with no
+    # word-count change. On by default, matching the ASR fused stack.
+    load_kwargs["fused_rmsnorm"] = bool(args.timestamp_fused)
+    load_kwargs["fused_linears"] = bool(args.timestamp_fused)
 
     aligner = Qwen3ForcedAlignerBackend.from_pretrained(model_path, **load_kwargs)
     config = RealtimeTimestampConfig(
