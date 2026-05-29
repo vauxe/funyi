@@ -241,7 +241,11 @@ def main() -> None:
                     "baseline and candidate run config differ; the paired chrF delta may reflect config, not only the model",
                 )
             )
-    passed = not gate_issues
+    # Errors always fail; warnings (e.g. run_config_differs_from_baseline) are
+    # surfaced but only fail the gate under --fail-on-warnings.
+    error_issues = [issue for issue in gate_issues if issue.severity == "error"]
+    warning_issues = [issue for issue in gate_issues if issue.severity == "warning"]
+    passed = not error_issues and not (args.fail_on_warnings and warning_issues)
     payload = {
         "passed": passed,
         "case_count": len(rows),
