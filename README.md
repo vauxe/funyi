@@ -8,7 +8,7 @@ It can:
 - transcribe audio files from Python;
 - run a local realtime ASR WebSocket service;
 - show live captions in a lightweight Tauri desktop client;
-- capture system playback audio on supported platforms;
+- capture system playback or microphone audio on supported platforms;
 - optionally add subtitle translation and forced-aligner timestamps.
 
 Funyi is designed for local, single-user use. It is not a hosted service and it
@@ -30,10 +30,10 @@ The desktop client currently runs on Windows and macOS. A Linux audio capture
 module exists, but Linux desktop builds are disabled until the overlay window
 layer has Linux support.
 
-| Platform | System audio capture |
+| Platform | Audio capture |
 |---|---|
 | Windows | WASAPI loopback from the default playback device |
-| macOS | ScreenCaptureKit system audio capture, with Screen & System Audio Recording permission |
+| macOS | ScreenCaptureKit system audio (Screen & System Audio Recording permission); microphone input on macOS 15+ (Microphone permission) |
 
 ## Install
 

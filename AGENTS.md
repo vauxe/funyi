@@ -50,6 +50,20 @@ single-user profile by default.
   `tools/sweep_streaming_cer_vs_srt.py`: streaming checks
 - `tools/ws_e2e_leak_check.py`: service E2E and resource check
 
+Desktop client (`make desktop-check` gates it):
+
+- `desktop/ui/src/app.ts`, `app-controller.ts`: composition root and orchestrator
+- `desktop/ui/src/live-session.ts`, `asr-client.ts`: session state machine and
+  `/ws/asr` client
+- `desktop/ui/src/subtitle-document.ts`, `realtime-events.ts`: transcript/translation
+  model (id-then-index segment resolution) and event/start-payload parsing
+- `desktop/ui/src/session-start-options.ts`: `ws://` loopback URL validation
+- `desktop/ui/src/caption-view.ts`: caption render, live-region announcer,
+  `lang`/`dir` tagging, editable history
+- `desktop/ui/src/overlay-controller.ts`: compact/history overlay mode, drag/resize
+- `desktop/src-tauri/src/audio/`, `overlay.rs`: native system/microphone capture and
+  overlay geometry
+
 ## Read On Demand
 
 - `@docs/validation_and_regression.md`: exact commands and gates

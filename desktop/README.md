@@ -2,9 +2,9 @@
 
 Lightweight Tauri client for the local realtime ASR service.
 
-The UI owns the `/ws/asr` WebSocket. The native layer only captures system audio
-and emits `pcm_s16le` frames at 16 kHz. This keeps ASR, translation, and CUDA
-runtime behavior in the Python service.
+The UI owns the `/ws/asr` WebSocket. The native layer only captures audio —
+system output or microphone input — and emits `pcm_s16le` frames at 16 kHz. This
+keeps ASR, translation, and CUDA runtime behavior in the Python service.
 
 The default window is a compact, always-on-top caption strip near the bottom of
 the display. Detailed connection settings stay inline, and stable subtitle
@@ -39,6 +39,10 @@ make desktop
 If your shell does not expose a `pnpm` command, keep using `corepack pnpm ...`
 rather than assuming a separate global `pnpm` install exists.
 
+The client only connects to `ws://` loopback addresses (`127.0.0.0/8`,
+`localhost`, `::1`); `wss://`, remote hosts, and credentialed URLs are rejected,
+matching the Tauri CSP `connect-src ws://127.0.0.1:* ws://localhost:*`.
+
 For Windows plus WSL development, run the Tauri client in the Windows checkout
 and point it at the WSL service URL, for example `ws://127.0.0.1:8000/ws/asr`
 when the backend is exposed on localhost.
@@ -60,12 +64,23 @@ make desktop-check
 make desktop-format
 ```
 
-From `desktop/`, the same gates are available as:
+From `desktop/`, the same gates are available as `corepack pnpm run check` and
+`corepack pnpm run format`. To run only the fast UI suite (build + type-check +
+`node --test`) without the Rust gates:
 
 ```bash
-corepack pnpm run check
-corepack pnpm run format
+corepack pnpm run test       # build UI + UI tests and run them
+corepack pnpm run typecheck  # tsc over ui/tsconfig.test.json
 ```
+
+## Accessibility
+
+Captions are exposed to screen readers through a dedicated polite live region
+that announces only *stabilized* lines (never the per-partial current line, to
+avoid flooding the reader); a `transcript_final` rebuild never re-announces, and
+the log is capped. Caption source and translation are split into spans with
+their own BCP-47 `lang` and `dir="auto"` for correct pronunciation and direction.
+History rows are editable (`contenteditable`, `role="textbox"`).
 
 ## Contract
 
