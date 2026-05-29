@@ -60,6 +60,7 @@ class HYMTTranslator:
         attn_implementation: str | None = DEFAULT_HYMT_ATTN_IMPLEMENTATION,
         decode_backend: str = DEFAULT_HYMT_DECODE_BACKEND,
         generation_config: HYMTGenerationConfig | None = None,
+        w8a16: bool = False,
         model: Any | None = None,
         tokenizer: Any | None = None,
     ) -> None:
@@ -83,6 +84,15 @@ class HYMTTranslator:
         self.model = model.eval()
         _disable_noop_hymt_dynamic_rope(self.model)
         self.input_device = _infer_input_device(self.model)
+        self.w8a16 = bool(w8a16)
+        if self.w8a16:
+            # Decode-bound model: weight-only int8 on the full-occupancy gate/up
+            # linears (out=6144) cuts per-token decode ~16%; the cuBLAS prefill
+            # GEMM avoids the Triton-GEMM penalty -> ~1.13x end-to-end. CER-gated.
+            from .quant_linears import patch_linears_w8a16
+            self._w8a16_patched = patch_linears_w8a16(
+                self.model, suffixes=("gate_proj", "up_proj"), prefill_gemm="cublas"
+            )
 
     def translate(
         self,

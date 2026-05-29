@@ -90,6 +90,11 @@ def _parse_args() -> argparse.Namespace:
         help="Allow transformers to download model files during startup. Default is local-only.",
     )
     parser.add_argument("--trust-remote-code", action="store_true")
+    parser.add_argument(
+        "--w8a16",
+        action="store_true",
+        help="Weight-only int8 on gate/up linears (decode speedup, CER-gated). Default off.",
+    )
     parser.add_argument("--output-json", default=None, help="Optional path to write gate JSON.")
     return parser.parse_args()
 
@@ -123,6 +128,7 @@ def main() -> None:
         attn_implementation=args.attn_implementation,
         decode_backend=args.decode_backend,
         generation_config=generation_config,
+        w8a16=args.w8a16,
     )
     load_wall_sec = time.perf_counter() - load_started
 

@@ -1056,6 +1056,14 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--translation-sample", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--translation-decode-backend", default=DEFAULT_HYMT_DECODE_BACKEND, choices=["fixed_mask", "generate"])
     parser.add_argument("--translation-attn-implementation", default=DEFAULT_HYMT_ATTN_IMPLEMENTATION)
+    parser.add_argument(
+        "--translation-w8a16",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="W8A16 on HY-MT gate/up. Translation is decode-bound, so W8A16 cuts "
+        "per-token decode (~1.12x end-to-end) and passed the translation quality "
+        "gate (0 new errors). Default on; --no-translation-w8a16 to disable.",
+    )
     parser.add_argument("--translation-local-files-only", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--translation-trust-remote-code", action="store_true")
     return parser.parse_args()
@@ -1142,6 +1150,7 @@ def _build_translation(args: argparse.Namespace) -> tuple[Any | None, Translatio
         attn_implementation=args.translation_attn_implementation,
         decode_backend=args.translation_decode_backend,
         generation_config=generation_config,
+        w8a16=bool(args.translation_w8a16),
     )
     return translator, config
 

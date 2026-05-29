@@ -36,6 +36,10 @@ validated single-user profile by default.
   timestamp patches. W8A16 is OFF for streaming: its fp32 Triton GEMM slows
   multi-token prefill ~3x at equal CER (streaming is prefill-bound). W8A16 stays
   opt-in for the decode-bound offline path.
+- Translation (HY-MT) default has W8A16 ON (`--translation-w8a16`, on gate/up
+  with the cuBLAS prefill GEMM). HY-MT is decode-bound, so W8A16 cuts per-token
+  decode ~1.12x and passes the translation quality gate (0 new errors). This is
+  the decode-bound mirror of the prefill-bound streaming case above.
 - W8A16 means qkv/gate_up only.
 
 ## Important Paths
