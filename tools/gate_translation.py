@@ -35,7 +35,12 @@ class TranslationIssue:
     message: str
 
 
-_REFERENCE_SIMILARITY_DROP_ERROR = 0.15
+_REFERENCE_METRIC = "chrf2"
+# Per-case chrF drop (0-100) used only to count/rank notably-changed cases for
+# human review. A single-reference chrF swings widely on short sentences and
+# conflates valid rephrasing with real loss, so a per-case drop never fails the
+# gate on its own; the trustworthy signal is the per-direction mean drop.
+_CASE_CHRF_DROP_FLAG = 10.0
 
 
 def _parse_args() -> argparse.Namespace:
@@ -96,6 +101,22 @@ def _parse_args() -> argparse.Namespace:
         help="Weight-only int8 on gate/up linears (decode speedup, CER-gated). Default off.",
     )
     parser.add_argument("--output-json", default=None, help="Optional path to write gate JSON.")
+    parser.add_argument(
+        "--max-mean-chrf-drop",
+        type=float,
+        default=None,
+        help="With --quality-baseline-json, fail if any single direction's mean chrF drop exceeds this "
+        "(points, 0-100). Gating per direction (not a pooled mean) keeps a regression confined to one "
+        "direction from being diluted. Per-case drops are flagged but never fail the gate. Use only on the "
+        "large eval set (>=~200 cases/direction); on the 42-case set the per-direction mean is too noisy.",
+    )
+    parser.add_argument(
+        "--worst-output",
+        default=None,
+        help="With --quality-baseline-json, write the worst chrF-drop changed cases here (source/reference/"
+        "baseline/candidate side by side) for human review.",
+    )
+    parser.add_argument("--worst-n", type=int, default=15, help="How many worst cases to write to --worst-output.")
     return parser.parse_args()
 
 
@@ -177,24 +198,62 @@ def main() -> None:
         rows,
         quality_baseline_json=Path(args.quality_baseline_json) if args.quality_baseline_json else None,
         fail_on_warnings=args.fail_on_warnings,
+        max_mean_chrf_drop=args.max_mean_chrf_drop,
     )
     gate_issues.extend(quality_gate["issues"])
+    if args.worst_output and args.quality_baseline_json:
+        _write_worst(
+            rows,
+            cases,
+            Path(args.quality_baseline_json),
+            Path(args.worst_output),
+            max(1, int(args.worst_n)),
+        )
+    resolved_dtype = args.dtype or ("bfloat16" if args.device.startswith("cuda") or args.device == "auto" else "auto")
+    generation_block = {
+        "do_sample": do_sample,
+        "top_k": args.top_k,
+        "top_p": args.top_p,
+        "temperature": args.temperature,
+        "repetition_penalty": args.repetition_penalty,
+        "extra_generate_kwargs": generation_config.extra_generate_kwargs,
+    }
+    run_config_diff: dict[str, Any] = {}
+    if args.quality_baseline_json:
+        run_config_diff = _run_config_diff(
+            Path(args.quality_baseline_json),
+            {
+                "dtype": resolved_dtype,
+                "attn_implementation": translator.attn_implementation,
+                "decode_backend": translator.decode_backend,
+                "max_new_tokens": args.max_new_tokens,
+                "generation": generation_block,
+            },
+        )
+        if run_config_diff:
+            # Non-failing: when the change under test IS the backend/dtype, the
+            # operator wants this comparison; we only flag that the delta may
+            # reflect run config, not only the model change.
+            gate_issues.append(
+                TranslationIssue(
+                    "warning",
+                    "run_config_differs_from_baseline",
+                    "baseline and candidate run config differ; the paired chrF delta may reflect config, not only the model",
+                )
+            )
     passed = not gate_issues
     payload = {
         "passed": passed,
         "case_count": len(rows),
         "device": args.device,
-        "dtype": args.dtype or ("bfloat16" if args.device.startswith("cuda") or args.device == "auto" else "auto"),
+        "dtype": resolved_dtype,
         "attn_implementation": translator.attn_implementation,
         "decode_backend": translator.decode_backend,
         "max_new_tokens": args.max_new_tokens,
+        "reference_metric": _REFERENCE_METRIC,
+        "run_config_diff": run_config_diff,
         "generation": {
-            "do_sample": do_sample,
-            "top_k": args.top_k,
-            "top_p": args.top_p,
-            "temperature": args.temperature,
-            "repetition_penalty": args.repetition_penalty,
-            "extra_generate_kwargs": generation_config.extra_generate_kwargs,
+            **generation_block,
             "seed": args.seed,
             "seed_mode": args.seed_mode,
         },
@@ -313,6 +372,7 @@ def _run_case(
         "group": case.get("group", ""),
         "target_language": case["target_language"],
         "source_language": case.get("source_language", ""),
+        "output": output,
         "source_chars": len(str(case["text"])),
         "output_chars": len(output),
         "prompt_tokens": int(samples[-1]["prompt_tokens"]),
@@ -486,27 +546,47 @@ def _reference_similarity(case: dict[str, Any], output: str) -> float | None:
     reference = str(case.get("reference") or "").strip()
     if not reference:
         return None
-    return _char_ngram_f1(reference, output)
+    return _chrf(reference, output)
 
 
-def _char_ngram_f1(reference: str, output: str) -> float:
-    ref = _normalize_reference_text(reference)
-    hyp = _normalize_reference_text(output)
+def _chrf(reference: str, output: str, *, beta: float = 2.0, max_order: int = 6) -> float:
+    """Character n-gram F-score (chrF2), 0-100.
+
+    Language-agnostic and well suited to Chinese/Japanese, where word
+    tokenization is ambiguous and word-BLEU is unreliable. Whitespace is stripped
+    before forming character n-grams (so injected spaces do not inflate
+    Latin-script targets), and the per-order F-scores are averaged. An order with
+    no matching n-grams contributes 0 rather than being skipped, so a sentence is
+    not flattered for matching only short orders.
+
+    This is a self-contained variant and is NOT byte-identical to sacreBLEU's
+    chrF2, so the absolute value should not be cross-referenced against published
+    chrF. The gate only ever uses the PAIRED delta between baseline and candidate
+    -- both scored by this same function -- where the convention cancels exactly.
+    A single reference also means a per-sentence score cannot separate valid
+    rephrasing from real loss; read it in aggregate (mean drop), never per case.
+    """
+    ref = re.sub(r"\s+", "", reference.lower())
+    hyp = re.sub(r"\s+", "", output.lower())
     if not ref or not hyp:
         return 0.0
-    width = 1 if min(len(ref), len(hyp)) < 4 else 2
-    ref_counts = Counter(ref[index : index + width] for index in range(len(ref) - width + 1))
-    hyp_counts = Counter(hyp[index : index + width] for index in range(len(hyp) - width + 1))
-    overlap = sum((ref_counts & hyp_counts).values())
-    if overlap == 0:
+    beta_sq = beta * beta
+    f_scores: list[float] = []
+    for order in range(1, max_order + 1):
+        ref_counts = Counter(ref[index : index + order] for index in range(len(ref) - order + 1))
+        hyp_counts = Counter(hyp[index : index + order] for index in range(len(hyp) - order + 1))
+        if not ref_counts or not hyp_counts:
+            continue
+        overlap = sum((ref_counts & hyp_counts).values())
+        if overlap == 0:
+            f_scores.append(0.0)
+            continue
+        precision = overlap / sum(hyp_counts.values())
+        recall = overlap / sum(ref_counts.values())
+        f_scores.append((1 + beta_sq) * precision * recall / (beta_sq * precision + recall))
+    if not f_scores:
         return 0.0
-    precision = overlap / sum(hyp_counts.values())
-    recall = overlap / sum(ref_counts.values())
-    return round(2 * precision * recall / (precision + recall), 4)
-
-
-def _normalize_reference_text(text: str) -> str:
-    return re.sub(r"[^\w\u3040-\u30ff\u4e00-\u9fff]+", "", text.lower())
+    return round(100.0 * sum(f_scores) / len(f_scores), 2)
 
 
 def _han_count(text: str) -> int:
@@ -539,10 +619,11 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "decode_tokens_per_sec_median": round(median(decode_tps), 2),
         "generated_tokens_median": round(median(generated_tokens), 1),
     }
-    similarities = [float(row["reference_similarity"]) for row in rows if row.get("reference_similarity") is not None]
-    if similarities:
-        summary["reference_similarity_median"] = round(median(similarities), 4)
-        summary["reference_similarity_min"] = round(min(similarities), 4)
+    # These hold chrF2 (0-100), not the old 0-1 similarity; named accordingly.
+    chrf_values = [float(row["reference_similarity"]) for row in rows if row.get("reference_similarity") is not None]
+    if chrf_values:
+        summary["chrf_median"] = round(median(chrf_values), 4)
+        summary["chrf_min"] = round(min(chrf_values), 4)
     return summary
 
 
@@ -581,6 +662,7 @@ def _quality_gate(
     *,
     quality_baseline_json: Path | None,
     fail_on_warnings: bool,
+    max_mean_chrf_drop: float | None = None,
 ) -> dict[str, Any]:
     if quality_baseline_json is None:
         case_error_count = sum(1 for row in rows if row["errors"])
@@ -593,18 +675,23 @@ def _quality_gate(
         return {
             "mode": "absolute",
             "baseline_json": None,
+            "reference_metric": _REFERENCE_METRIC,
             "new_error_count": case_error_count,
             "new_warning_count": case_warning_count,
-            "reference_similarity_drop_count": 0,
+            "case_chrf_drop_flag_count": 0,
+            "mean_chrf_drop": None,
             "baseline_missing_case_count": 0,
             "issues": issues,
         }
 
-    baseline_by_id = _load_quality_baseline(quality_baseline_json)
+    baseline_by_id, baseline_metric = _load_quality_baseline(quality_baseline_json)
+    metric_comparable = baseline_metric == _REFERENCE_METRIC
     new_error_count = 0
     new_warning_count = 0
-    reference_similarity_drop_count = 0
+    case_chrf_drop_flag_count = 0
     missing_case_count = 0
+    chrf_drops: list[float] = []
+    drops_by_direction: dict[str, list[float]] = {}
     for row in rows:
         baseline = baseline_by_id.get(str(row["id"]))
         if baseline is None:
@@ -622,34 +709,79 @@ def _quality_gate(
                 for issue in row["warnings"]
                 if str(issue.get("code") or "") not in baseline["warnings"]
             ]
-            reference_drop = _reference_similarity_drop(row, baseline.get("reference_similarity"))
+            # Per-case chrF drop is recorded and flagged for human review, but is
+            # deliberately NOT promoted to an error: it is too noisy on single
+            # sentences. Systematic loss is judged per direction below.
+            reference_drop = (
+                _reference_similarity_drop(row, baseline.get("reference_similarity")) if metric_comparable else None
+            )
             if reference_drop is not None:
                 row["reference_similarity_drop"] = reference_drop
-                if reference_drop > _REFERENCE_SIMILARITY_DROP_ERROR:
-                    reference_similarity_drop_count += 1
-                    row["new_errors"].append(
-                        {
-                            "severity": "error",
-                            "code": "reference_similarity_drop",
-                            "message": "reference similarity dropped from quality baseline",
-                        }
-                    )
+                chrf_drops.append(reference_drop)
+                direction = f"{row.get('source_language', '')}->{row.get('target_language', '')}"
+                drops_by_direction.setdefault(direction, []).append(reference_drop)
+                if reference_drop > _CASE_CHRF_DROP_FLAG:
+                    case_chrf_drop_flag_count += 1
         new_error_count += len(row["new_errors"])
         new_warning_count += len(row["new_warnings"])
+
+    mean_chrf_drop = round(sum(chrf_drops) / len(chrf_drops), 4) if chrf_drops else None
+    mean_chrf_drop_by_direction = {
+        direction: round(sum(values) / len(values), 4) for direction, values in sorted(drops_by_direction.items())
+    }
+    worst_direction, worst_direction_drop = (None, None)
+    if mean_chrf_drop_by_direction:
+        worst_direction, worst_direction_drop = max(mean_chrf_drop_by_direction.items(), key=lambda item: item[1])
 
     issues = []
     if missing_case_count:
         issues.append(TranslationIssue("error", "quality_baseline_missing_cases", "quality baseline is missing cases"))
+    if not metric_comparable:
+        issues.append(
+            TranslationIssue(
+                "error",
+                "reference_metric_mismatch",
+                f"baseline reference metric {baseline_metric!r} != {_REFERENCE_METRIC!r}; regenerate the baseline",
+            )
+        )
     if new_error_count:
         issues.append(TranslationIssue("error", "new_quality_errors", "new translation quality errors found"))
     if fail_on_warnings and new_warning_count:
         issues.append(TranslationIssue("error", "new_quality_warnings", "new translation quality warnings found"))
+    if max_mean_chrf_drop is not None:
+        if metric_comparable and not chrf_drops:
+            # The aggregate gate is the only chrF teeth; never let it pass vacuously.
+            issues.append(
+                TranslationIssue(
+                    "error", "no_comparable_chrf_cases", "--max-mean-chrf-drop set but no case had a comparable chrF score"
+                )
+            )
+        elif worst_direction_drop is not None and worst_direction_drop > max_mean_chrf_drop:
+            # Gate each direction independently: a regression confined to one
+            # direction is hidden by a pooled mean, so the worst direction is the
+            # sensitive signal.
+            issues.append(
+                TranslationIssue(
+                    "error",
+                    "mean_chrf_drop_above_threshold",
+                    f"chrF dropped from baseline in {worst_direction} (mean drop {worst_direction_drop})",
+                )
+            )
     return {
         "mode": "baseline_regression",
         "baseline_json": str(quality_baseline_json),
+        "reference_metric": _REFERENCE_METRIC,
+        "baseline_reference_metric": baseline_metric,
+        "metric_comparable": metric_comparable,
         "new_error_count": new_error_count,
         "new_warning_count": new_warning_count,
-        "reference_similarity_drop_count": reference_similarity_drop_count,
+        "case_chrf_drop_flag_count": case_chrf_drop_flag_count,
+        "compared_case_count": len(chrf_drops),
+        "mean_chrf_drop": mean_chrf_drop,
+        "mean_chrf_drop_by_direction": mean_chrf_drop_by_direction,
+        "worst_direction": worst_direction,
+        "worst_direction_drop": worst_direction_drop,
+        "max_mean_chrf_drop": max_mean_chrf_drop,
         "baseline_missing_case_count": missing_case_count,
         "issues": issues,
     }
@@ -662,8 +794,11 @@ def _reference_similarity_drop(row: dict[str, Any], baseline_similarity: float |
     return round(float(baseline_similarity) - float(current), 4)
 
 
-def _load_quality_baseline(path: Path) -> dict[str, dict[str, Any]]:
+def _load_quality_baseline(path: Path) -> tuple[dict[str, dict[str, Any]], str | None]:
     payload = json.loads(path.read_text(encoding="utf-8"))
+    # Top-level tag added by this tool; older baselines (char-bigram F1) lack it
+    # and are reported as not comparable so chrF drops are not computed wrongly.
+    metric = payload.get("reference_metric")
     baseline: dict[str, dict[str, Any]] = {}
     for row in payload.get("cases", []):
         case_id = str(row.get("id") or "")
@@ -673,14 +808,86 @@ def _load_quality_baseline(path: Path) -> dict[str, dict[str, Any]]:
             "errors": {str(issue.get("code") or "") for issue in row.get("errors", [])},
             "warnings": {str(issue.get("code") or "") for issue in row.get("warnings", [])},
             "reference_similarity": _optional_float(row.get("reference_similarity")),
+            "output": str(row.get("output") or ""),
         }
-    return baseline
+    return baseline, metric
 
 
 def _optional_float(value: Any) -> float | None:
     if value is None:
         return None
     return float(value)
+
+
+def _write_worst(
+    rows: list[dict[str, Any]],
+    cases: list[dict[str, Any]],
+    baseline_path: Path,
+    out_path: Path,
+    count: int,
+) -> None:
+    """Dump the largest chrF-drop cases with baseline/candidate text side by side.
+
+    The aggregate gate answers "did quality regress on average?"; this answers
+    "show me the cases that moved most so a human can judge them" -- the step the
+    metric alone cannot do. Baseline output text comes from the baseline JSON
+    (present only if it was produced by this tool's --output-json).
+    """
+    baseline_by_id, _ = _load_quality_baseline(baseline_path)
+    source_by_id = {str(case["id"]): case for case in cases}
+    candidates = [row for row in rows if row.get("reference_similarity_drop") is not None]
+    candidates.sort(key=lambda row: float(row["reference_similarity_drop"]), reverse=True)
+    worst = []
+    for row in candidates[:count]:
+        case_id = str(row["id"])
+        case = source_by_id.get(case_id, {})
+        baseline = baseline_by_id.get(case_id, {})
+        worst.append(
+            {
+                "id": case_id,
+                "direction": f"{row.get('source_language', '')}->{row.get('target_language', '')}",
+                "chrf_drop": row["reference_similarity_drop"],
+                "chrf_baseline": round(float(baseline.get("reference_similarity") or 0.0), 2),
+                "chrf_candidate": row.get("reference_similarity"),
+                "source": str(case.get("text") or ""),
+                "reference": str(case.get("reference") or ""),
+                "baseline_output": baseline.get("output", ""),
+                "candidate_output": row.get("output", ""),
+            }
+        )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(worst, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _run_config_diff(baseline_path: Path, candidate: dict[str, Any]) -> dict[str, Any]:
+    """Report run-config keys that differ between candidate and the baseline JSON.
+
+    Surfaced as a non-failing warning: when the change under test IS the decode
+    backend / dtype / generation settings, the operator wants the comparison, so
+    this must not block. It only flags that a paired delta may reflect config
+    rather than only the model change. Only keys present in ``candidate`` are
+    compared, so extra baseline keys (e.g. seed) do not trigger spurious diffs.
+    """
+    try:
+        baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    diff: dict[str, Any] = {}
+    for key, value in candidate.items():
+        if key not in baseline:
+            continue
+        baseline_value = baseline.get(key)
+        if key == "generation" and isinstance(value, dict) and isinstance(baseline_value, dict):
+            sub = {
+                sub_key: {"baseline": baseline_value.get(sub_key), "candidate": sub_value}
+                for sub_key, sub_value in value.items()
+                if baseline_value.get(sub_key) != sub_value
+            }
+            if sub:
+                diff[key] = sub
+        elif baseline_value != value:
+            diff[key] = {"baseline": baseline_value, "candidate": value}
+    return diff
 
 
 def _cuda_peak_allocated_mb(device: str) -> float | None:
