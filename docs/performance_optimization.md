@@ -76,3 +76,24 @@ Do not reopen without new evidence:
 - naive W8A16 prefill GEMM, FP8 KV/cache, FP8 or fused `lm_head`
 - folding final RMSNorm into `lm_head`
 - fused W8A16 `gate_up + silu * up`
+- W8A16 on `o_proj`/`down_proj` (out=2048 → Triton GEMV under-occupies, ~50% of
+  SMs; no decode speedup) and W8A16 on `lm_head` (~4-5% but CER `delta_abs_mean`
+  ~0.315pp, over the 0.3pp gate). Reopen only with a higher-occupancy INT8 GEMV
+  kernel / finer-grained lm_head quant.
+- Draft-model speculative decode with Qwen3-ASR-0.6B drafting for 1.7B: text CER
+  agreement is high (~98%) but **token**-level longest-common-prefix is only
+  4.5-16% (0.6B and 1.7B reach the same text via different token splits), so the
+  accept rate is too low to help. Reopen only with a token-aligned draft.
+- Shrinking the live20 `max_window_sec`: latency is flat (~46ms) because the
+  prewarmed graph is fixed-size; <=10s also wrecks CER (>20%). No win.
+- Streaming incremental-prefill / cross-step KV reuse: the mechanism is proven
+  CORRECT (within-step byte-exact, cross-step CER-viable `+0.25pp`; mrope
+  positions are sequential so `rope_deltas=0`; FlashInfer mishandles a
+  partial-query-against-cache prefill, so the increment must use SDPA). But it
+  delivered **no net latency win** (76 vs 71ms, slightly slower): it still runs
+  the encoder full each step, adds `inputs_embeds` overhead, and only shrinks the
+  text-prefill — which is not the dominant cost once decode is large. Reopen only
+  as a *combined* incremental-prefill + spec-decode (+ encoder-feature cache)
+  build, ceiling ~1.4x (capped by the still-full encoder), and only if multi-user
+  concurrency / longer windows make the prefill cost matter (single-user live20
+  already has ~10x realtime headroom after W8A16-off).
