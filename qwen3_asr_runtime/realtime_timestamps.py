@@ -434,17 +434,15 @@ def _consume_future(future: Any) -> None:
 
 
 async def _wait_future_result(future: asyncio.Future[Any], *, timeout_sec: float | None) -> Any:
-    loop = asyncio.get_running_loop()
-    deadline = None if timeout_sec is None else loop.time() + float(timeout_sec)
-    while not future.done():
-        if deadline is None:
-            await asyncio.sleep(0.01)
-            continue
-        remaining = deadline - loop.time()
-        if remaining <= 0:
-            raise asyncio.TimeoutError
-        await asyncio.sleep(min(0.01, remaining))
-    return future.result()
+    # ``future`` is a ``loop.run_in_executor`` future; it is resolved through
+    # ``call_soon_threadsafe`` when the worker thread finishes, so awaiting it
+    # wakes the event loop immediately. Awaiting directly (instead of polling on
+    # a 0.01s timer) removes up to ~10ms of scheduling latency from every
+    # alignment result. On timeout ``wait_for`` cancels ``future`` (the caller's
+    # explicit ``future.cancel()`` then becomes a no-op).
+    if timeout_sec is None:
+        return await future
+    return await asyncio.wait_for(future, float(timeout_sec))
 
 
 __all__ = [
