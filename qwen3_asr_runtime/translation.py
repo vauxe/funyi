@@ -60,6 +60,8 @@ class HYMTTranslator:
         attn_implementation: str | None = DEFAULT_HYMT_ATTN_IMPLEMENTATION,
         decode_backend: str = DEFAULT_HYMT_DECODE_BACKEND,
         generation_config: HYMTGenerationConfig | None = None,
+        w8a16: bool = False,
+        fused_rmsnorm: bool = False,
         model: Any | None = None,
         tokenizer: Any | None = None,
     ) -> None:
@@ -83,6 +85,23 @@ class HYMTTranslator:
         self.model = model.eval()
         _disable_noop_hymt_dynamic_rope(self.model)
         self.input_device = _infer_input_device(self.model)
+        self.w8a16 = bool(w8a16)
+        if self.w8a16:
+            # Decode-bound model: weight-only int8 on the full-occupancy gate/up
+            # linears (out=6144) cuts per-token decode ~16%; the cuBLAS prefill
+            # GEMM avoids the Triton-GEMM penalty -> ~1.13x end-to-end. CER-gated.
+            from .quant_linears import patch_linears_w8a16
+            self._w8a16_patched = patch_linears_w8a16(
+                self.model, suffixes=("gate_proj", "up_proj"), prefill_gemm="cublas"
+            )
+        self.fused_rmsnorm = bool(fused_rmsnorm)
+        if self.fused_rmsnorm:
+            # Decode-bound model: F.rms_norm fusion cuts per-layer norm overhead
+            # ~1.12x on HY-MT (interleaved A/B). Independent of W8A16 (norms, not
+            # linears). Not bit-identical -- a bf16 argmax flip can rephrase a
+            # low-margin token -- gated by the translation chrF golden like W8A16.
+            from .fused_rmsnorm import patch_model_rmsnorms
+            self._fused_rmsnorm_patched = patch_model_rmsnorms(self.model)
 
     def translate(
         self,

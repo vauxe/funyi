@@ -92,7 +92,7 @@ TRANSFORMERS_VERBOSITY=error uv run python tools/sweep_streaming_cer_vs_srt.py \
   --output local_goldens/cer/streaming_cer_candidate.json
 ```
 
-Local realtime service profile:
+Low-latency library profile:
 
 ```bash
 TRANSFORMERS_VERBOSITY=error uv run python tools/sweep_streaming_cer_vs_srt.py \
@@ -112,25 +112,69 @@ Use `--strip-ruby` for SRT files with furigana annotations.
 Use this when changing `realtime_server.py`, realtime session behavior,
 WebSocket contracts, or service dependencies.
 
+Before starting the host service, verify the previous run is gone:
+
+```bash
+ps -ef | grep -E 'realtime_server.py|ws_e2e_leak_check|pytest' | grep -v grep
+ss -ltnp sport = :8000
+nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader
+```
+
 ```bash
 uv run python realtime_server.py \
   --model Qwen/Qwen3-ASR-1.7B \
+  --timestamp-model Qwen/Qwen3-ForcedAligner-0.6B \
   --host 127.0.0.1 \
   --port 8000
+```
 
+Run a short fast sanity gate first. Do not continue to the long gate if CER,
+stable segment count, repetition checks, or status counters indicate lost stable
+text.
+
+```bash
+uv run python tools/ws_e2e_leak_check.py \
+  --url ws://127.0.0.1:8000/ws/asr \
+  --audio "$ASR_AUDIO" \
+  --reference-srt "$ASR_SRT" \
+  --start-sec 0 \
+  --max-audio-sec 60 \
+  --chunk-sec 0.5 \
+  --send-delay-sec 0.02 \
+  --language Chinese \
+  --finish-timeout-sec 240 \
+  --no-event-timeout-sec 120 \
+  --max-wall-sec 300 \
+  --output-json /tmp/realtime-e2e-fast-60.json
+```
+
+Then run the long comparable gate:
+
+```bash
 uv run python tools/ws_e2e_leak_check.py \
   --url ws://127.0.0.1:8000/ws/asr \
   --audio "$ASR_AUDIO" \
   --reference-srt "$ASR_SRT" \
   --start-sec 0 \
   --max-audio-sec 600 \
-  --chunk-sec 0.1 \
-  --send-delay-sec 0.1 \
+  --chunk-sec 0.5 \
+  --send-delay-sec 0.02 \
   --language Chinese \
-  --finish-timeout-sec 300 \
-  --max-wall-sec 900 \
-  --output-json /tmp/realtime-e2e-0000.json
+  --finish-timeout-sec 900 \
+  --no-event-timeout-sec 300 \
+  --max-wall-sec 1500 \
+  --output-json /tmp/realtime-e2e-fast-600.json
 ```
 
-For a longer gate, repeat with additional valid `--start-sec` offsets. Keep
-service timing, RSS, and whole-GPU telemetry out of committed goldens.
+This is the fast service gate: audio is sent as quickly as the WebSocket allows,
+while the server still decodes on its realtime cadence. Keep `--send-delay-sec`
+consistent when comparing against prior fast results; a different send delay
+changes the throughput envelope and is not a clean regression comparison.
+
+For repetition fixes, also run a no-reference local debug audio through the same
+command shape. Keep service timing, RSS, and whole-GPU telemetry out of
+committed goldens.
+
+After interruption or a failed E2E, repeat the process check above. A closed
+client must not leave `realtime_server.py` doing CPU/GPU work, and port `8000`
+must be released before the next comparable run.

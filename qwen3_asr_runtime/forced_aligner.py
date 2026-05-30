@@ -323,11 +323,34 @@ class Qwen3ForcedAlignerBackend:
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path: str, **kwargs: Any) -> "Qwen3ForcedAlignerBackend":
         register_qwen3_asr_auto_classes()
+        fused_rmsnorm = bool(kwargs.pop("fused_rmsnorm", False))
+        if "fused_linears" in kwargs:
+            raise RuntimeError(
+                "fused_linears was removed from the forced aligner. The aligner is one "
+                "prefill forward per segment (prefill-bound), so linear fusion is "
+                "launch-overhead-only: it helps ~4% on short realtime segments, is "
+                "net-neutral-to-negative on long windows, and was the larger argmax-drift "
+                "source. The whole ~1.4x align-forward win is fused_rmsnorm alone; pass "
+                "fused_rmsnorm=True only. (W8A16 needs fused linears, but the aligner never "
+                "uses W8A16, so it has no such dependency.)"
+            )
         model = AutoModel.from_pretrained(pretrained_model_name_or_path, **kwargs)
         if not isinstance(model, Qwen3ASRForConditionalGeneration):
             raise TypeError(
                 f"AutoModel returned {type(model)}, expected Qwen3ASRForConditionalGeneration."
             )
+
+        # The aligner is one prefill forward per stable segment. fused_rmsnorm
+        # collapses ~5 memory-bound RMSNorm kernels into one F.rms_norm and carries
+        # ~all of the ~1.4x align-forward win (interleaved A/B: ~1.39x on short
+        # realtime segments). Not bit-identical: bf16 argmax flips shift <=~1% of
+        # timestamps by <=0.16s (1-2 segment-time units), no word-count change.
+        # Linear fusion is deliberately NOT applied here (see the removal guard above).
+        if fused_rmsnorm:
+            from .fused_rmsnorm import patch_model_rmsnorms
+
+            if patch_model_rmsnorms(model) == 0:
+                raise RuntimeError("fused_rmsnorm=True but no RMSNorm modules found")
 
         processor_kwargs = {
             key: kwargs[key]

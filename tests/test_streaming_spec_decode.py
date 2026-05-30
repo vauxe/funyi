@@ -72,6 +72,7 @@ class TestStreamingSpecDraft:
 
         assert kwargs['chunk_size_sec'] == 0.5
         assert kwargs['unfixed_chunk_num'] == 4
+        assert kwargs['unfixed_token_num'] == 5
         assert kwargs['max_window_sec'] == 20.0
         assert kwargs['max_prefix_tokens'] == 64
         assert kwargs['spec_decode']
@@ -125,7 +126,6 @@ class TestStreamingSpecDraft:
         assert state.recognition_frame is not None
         assert state.recognition_frame.window_start_sample == 16000
         assert state.recognition_frame.audio_end_sample == 32000
-
 
 class FakeSpecThinker:
     generation_config = SimpleNamespace(eos_token_id=[])

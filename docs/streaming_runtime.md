@@ -4,6 +4,9 @@ Use when changing `streaming_transcribe`, bounded live captions, model-window
 state, or streaming quality gates. WebSocket and client event semantics live in
 `@docs/realtime_asr_service.md`.
 
+The target architecture for unbounded streaming over a finite ASR model is in
+`@docs/infinite_streaming_asr_design.md`.
+
 ## Goal
 
 Qwen3-ASR is a finite-audio transcription model. Realtime captions are built by
@@ -58,9 +61,9 @@ The runtime keeps these responsibilities separate:
 | `RecognitionFrame` | explicit model/session data contract separating prompt text from generated evidence |
 | `TailSelector` | select the replaceable transcript tail from one recognition frame and the transcript cursor |
 | `TextStabilizer` | LocalAgreement-style stable prefix and replaceable partial text |
-| `SpeechGate` | Silero-driven speech-turn boundary detection with bounded pre-roll |
-| `RealtimeConnectionSession` | WebSocket-session sample clock, VAD endpoint handling, bounded ASR context lifecycle |
-| `RealtimeASRSession` | one ASR epoch's cadence, text stabilization, TranscriptStore writes |
+| `SpeechGate` | Silero speech-turn helper and source-clock speech epochs |
+| `RealtimeConnectionSession` | speech epochs, model streaming ASR state, TranscriptStore writes, and timestamp job hints |
+| `RealtimeTimestampRuntime` | source-audio buffer, forced-aligner jobs, and `transcript_timing_update` patches |
 | `realtime_server.py` | WebSocket transport, one active local connection, JSON send policy |
 
 `ASRStreamingState`, `RecognitionFrame`, `TailSelector`, `TextStabilizer`, and
@@ -73,14 +76,14 @@ boundary; otherwise it would mostly wrap the current model methods.
 text that was dropped from the prompt or audio window, call it
 `carried_text_prefix`, not `committed_text`.
 
-`realtime_session.py` should not require a bounded-window frame to start
-with the full user-visible history. It consumes explicit `RecognitionFrame`
-objects, asks `TailSelector` for the uncommitted tail, then
-writes stable or partial transcript updates.
+The realtime service should not run a second service-level ASR windowing path.
+It uses the model streaming state as the only ASR text source, writes stable
+transcript text from that source, and sends forced-aligner jobs for timestamp
+patches on the same source clock.
 
-When a stable update contains a long run of text, `RealtimeASRSession` appends
-one stable transcript segment. Compact subtitle length is a client layout
-policy, not transcript history and not ASR chunks.
+When a stable update contains a long run of text, `RealtimeConnectionSession`
+appends one stable transcript segment. Compact subtitle length is a client
+layout policy, not transcript history and not ASR chunks.
 
 ## Non-Streaming Model To Infinite Stream
 
@@ -133,10 +136,9 @@ stripped; it is a fallback tail candidate, not stable history by itself.
 - if `window_start_sample >= stable_end_sample`, use `decoded_text`, not
   `full_text`, because carried text is outside the current audio window while
   decoded prompt-prefix text may still be mutable uncommitted tail;
-- otherwise the frame is unaligned: live updates may replace partial text. On
-  finalization, commit the final tail if it extends the last visible partial;
-  otherwise promote the last visible partial instead of dropping user-visible
-  text.
+- otherwise the frame is unaligned: live updates may replace partial text.
+  These ASR-only final-tail rules do not define the aligned realtime service
+  final contract; `/ws/asr` final output is stable-history only.
 
 Do not use fuzzy full-history overlap as a substitute for explicit frame fields.
 The only overlap rule is stable-suffix to decoded-prefix after punctuation/space
@@ -156,20 +158,16 @@ StableTextUpdate(
 ```
 
 Live stable text comes from a repeated common prefix between consecutive
-hypotheses, trimmed to a safe text boundary. Finalization may promote the
-remaining aligned tail. If the final decode is unaligned but extends the last
-emitted partial, finalization promotes the longer final tail. If it is a rewrite,
-finalization falls back to the last emitted partial; final history must not lose
-a tail the user has already seen.
+hypotheses, trimmed to a safe text boundary. This library-level stabilizer does
+not own the aligned realtime service final contract; see
+`@docs/realtime_asr_service.md`.
 
-For realtime service sessions, the WebSocket session owns one continuous sample
-clock and a shared `TranscriptStore`. VAD speech end promotes the active tail
-and closes that ASR model epoch; the next VAD speech start creates a fresh ASR
-epoch. Only speech audio is fed to the model; ASR-local samples are mapped back
-to the connection source clock for transcript timestamps. The suppressed gap
-must not run decode or count as ASR evidence. Speech start includes bounded
-pre-roll, and explicit `flush`/`finish` promotes the active tail without
-rewriting stable history.
+For realtime service sessions, the WebSocket session owns one continuous source
+sample clock and a shared `TranscriptStore`. Accepted PCM is appended to the
+timestamp runtime's source-audio buffer; speech audio is also fed through the
+model streaming state. Stable ASR segments are emitted with `timing_status:
+"pending"` and patched by forced alignment through `transcript_timing_update`.
+Explicit `flush`/`finish` drains the ASR tail without rewriting stable history.
 
 The trim policy is explicit:
 
@@ -196,24 +194,18 @@ classes at those marker positions; the runtime multiplies the classes by
 Realtime timestamp mode aggregates stable-segment timestamps from item spans:
 
 ```text
-stable segment text
-  -> crop audio by the segment's private sample-clock hint plus configured pad
-  -> align(crop, stable_text, language)
-  -> segment.start_ms = crop_start_ms + round(first item start_sec * 1000)
-  -> segment.end_ms   = crop_start_ms + round(last item end_sec * 1000)
+stable segment text + ASR sample hint
+  -> crop the hinted source-audio window with pad
+  -> align(crop, segment_text, language)
+  -> patch segment.start_ms/end_ms through transcript_timing_update
 ```
 
-Do not expose sample-clock estimates as public segment timestamps in that mode.
-A newly stable segment is emitted with `start_ms=null`, `end_ms=null`, and
-`timing_status="pending"`. `RealtimeTimestampRuntime` asynchronously patches
-the same segment with `timing_status="aligned"` after alignment succeeds, or
-`timing_status="failed"` if the aligner returns no items or invalid timing.
-
-The timestamp runtime needs an absolute-sample audio buffer. Aligner output is
-relative to the crop, so every timing patch must add `crop_start_sample /
-SAMPLE_RATE` before converting to milliseconds. The forced aligner does not
-clamp item times to audio duration; validate output before patching public
-state.
+Do not expose sample-clock estimates as final public segment timestamps. A
+newly stable realtime segment may be emitted with `timing_status="pending"` and
+`start_ms/end_ms=null`; `finish` waits for pending timestamp jobs and final
+segments must be either `aligned` or `failed`. The aligner output is relative to
+the crop, so every patch must add the source window start sample before
+converting to milliseconds.
 
 ## Current Runtime
 
@@ -229,7 +221,8 @@ This default path is hash-regressed by
 `local_goldens/streaming_regression.json`. Optimized and bounded-live paths are
 CER-gated, not hash-gated.
 
-Setting `max_window_sec` enables bounded live semantics:
+Setting `max_window_sec` enables bounded live audio in the library streaming
+wrapper:
 
 - model audio context is capped;
 - prompt text carries context across windows;
@@ -238,20 +231,20 @@ Setting `max_window_sec` enables bounded live semantics:
 
 Current implementation: `ASRStreamingState.carried_text_prefix` is the model
 continuity prefix carried across text-prefix trimming. `committed_text` remains
-only as a backward-compatible alias and must not be treated as
-`TranscriptStore` history.
+a backward-compatible alias and must not be confused with `TranscriptStore`
+history.
 
 ## Live Modes
 
 | Mode | Window | Role |
 |---|---:|---|
-| live20 | 20s | local low-latency service |
-| live30 | 30s | generic bounded-live baseline |
+| live20 | 20s | legacy low-latency library/session preset |
+| live30 | 30s | generic bounded-live prefix-mode baseline |
 | live45 | 45s | stricter quality mode |
 
 Keep `abs-delta` drift separate from `worse-delta` quality regression.
 
-## Service Preset
+## Low-Latency Library Preset
 
 Load-time flags:
 
@@ -274,14 +267,16 @@ Streaming kwargs:
 Qwen3ASRModel.low_latency_preset_kwargs()
 ```
 
-returns `chunk_size_sec=0.5`, `unfixed_chunk_num=4`, `unfixed_token_num=5`,
-`max_window_sec=20.0`, `max_prefix_tokens=64`, and `spec_decode=True`.
+returns `chunk_size_sec=0.5`, `unfixed_chunk_num=4`,
+`unfixed_token_num=5`, `max_window_sec=20.0`, `max_prefix_tokens=64`,
+and `spec_decode=True`.
 
-Service graph bucket is `cuda_graph_len_bucket=64`; library and tool defaults
-stay `1`. The local service default `live_stability_delay_ms` is `12000`, so
-stable history remains conservative while clients can render replaceable
-`partial` text for low-latency live subtitles. This is a service/session policy,
-not a model-window or library streaming default.
+The local service prewarms the same live20/64-token CUDA graph shape used by
+the low-latency model streaming preset; library and tool graph-bucket defaults
+stay `1`. The realtime service requires forced-aligned timestamp patches for
+stable segments, while clients can render replaceable `partial` text for
+low-latency live subtitles. This is a service/session policy, not a library
+streaming default.
 
 ## Spec Decode
 
@@ -300,7 +295,8 @@ Required gates by change type:
 
 - default library streaming: exact streaming regression;
 - bounded-live or prompt/window/stabilizer changes: streaming CER gates;
-- `RealtimeASRSession` or WebSocket behavior: WebSocket E2E;
+- `RealtimeConnectionSession`, `RealtimeTimestampRuntime`, or WebSocket
+  behavior: WebSocket E2E;
 - user-visible caption behavior: client replay assertions for append-only
   stable history, replace-only partial text, and compact display layout.
 
@@ -313,8 +309,8 @@ Property tests should cover:
 - tail-only bounded-window frames after the stable cursor are finalized;
 - repeated phrases are not dropped by overlap handling;
 - bounded windows do not duplicate or skip text across window rolls;
-- finalization promotes the remaining current tail, a longer final tail update,
-  or the last visible partial.
+- ASR-only/library finalization promotes the remaining current tail, a longer
+  final tail update, or the last visible partial.
 
 ## Do Not Reopen Without New Evidence
 

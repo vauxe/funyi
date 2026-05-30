@@ -183,7 +183,8 @@ class TestTranslationGatePerformance:
         assert summary['decode_tokens_per_sec_total'] == 100.0
         assert summary['end_to_end_tokens_per_sec_total'] == 88.33
         assert summary['decode_tokens_per_sec_median'] == 100.0
-        assert summary['reference_similarity_median'] == 0.8
+        # Field renamed: reference_similarity holds chrF2 (0-100), surfaced as chrf_median.
+        assert summary['chrf_median'] == 0.8
 
     def test_performance_issue_uses_baseline_speedup(self, tmp_path: Path) -> None:
         baseline_path = tmp_path / "baseline.json"
@@ -216,13 +217,14 @@ class TestTranslationGateRegression:
         baseline_path.write_text(
             json.dumps(
                 {
+                    "reference_metric": "chrf2",
                     "cases": [
                         {
                             "id": "case-1",
                             "errors": [{"code": "missing_code_fences"}],
                             "warnings": [],
                         }
-                    ]
+                    ],
                 }
             ),
             encoding="utf-8",
@@ -266,14 +268,15 @@ class TestTranslationGateRegression:
         baseline_path.write_text(
             json.dumps(
                 {
+                    "reference_metric": "chrf2",
                     "cases": [
                         {
                             "id": "case-1",
                             "errors": [],
                             "warnings": [],
-                            "reference_similarity": 0.92,
+                            "reference_similarity": 92.0,
                         }
-                    ]
+                    ],
                 }
             ),
             encoding="utf-8",
@@ -283,13 +286,18 @@ class TestTranslationGateRegression:
                 "id": "case-1",
                 "errors": [],
                 "warnings": [],
-                "reference_similarity": 0.7,
+                "reference_similarity": 70.0,
             }
         ]
 
         result = _quality_gate(rows, quality_baseline_json=baseline_path, fail_on_warnings=False)
 
-        assert result['new_error_count'] == 1
-        assert result['reference_similarity_drop_count'] == 1
-        assert rows[0]['reference_similarity_drop'] == 0.22
-        assert 'reference_similarity_drop' in {issue['code'] for issue in rows[0]['new_errors']}
+        # A per-case chrF drop is recorded and flagged for human review, but is
+        # deliberately NOT promoted to an error (single-reference chrF is too noisy
+        # on one sentence; systematic loss is judged per direction via
+        # --max-mean-chrf-drop). So it produces no new error here.
+        assert result['new_error_count'] == 0
+        assert result['compared_case_count'] == 1
+        assert result['mean_chrf_drop'] == 22.0
+        assert result['case_chrf_drop_flag_count'] == 1
+        assert rows[0]['reference_similarity_drop'] == 22.0

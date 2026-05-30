@@ -6,7 +6,7 @@ Funyi is a local speech-to-text and live captions app built on
 It can:
 
 - transcribe audio files from Python;
-- run a local realtime ASR WebSocket service;
+- run a local realtime ASR WebSocket service with aligner-backed timestamps;
 - show live captions in a lightweight Tauri desktop client;
 - capture system playback or microphone audio on supported platforms;
 - optionally add subtitle translation and forced-aligner timestamps.
@@ -61,20 +61,20 @@ Start the full local backend first:
 make backend
 ```
 
-This starts ASR with translation and forced-aligner timestamps enabled, using
-the validated local service optimization stack. Common variants:
+This starts ASR with the forced aligner and translation enabled, using the
+validated local service optimization stack. Common variants:
 
 ```bash
 make backend-download
 make backend-asr
 FUNYI_PORT=8001 make backend
-make backend BACKEND_ARGS="--live-stability-delay-ms 8000"
-make backend BACKEND_ARGS="--no-vad"
 ```
 
-The realtime service defaults to `--live-stability-delay-ms 12000` so stable
-history stays conservative, and Silero voice activity control is enabled so idle
-silence does not drive ASR decoding. Use the replaceable `partial` line for
+`make backend-asr` disables translation only; realtime ASR still requires the
+forced aligner.
+
+The realtime service publishes stable text after ASR text stability and patches
+timestamps with the forced aligner. Use the replaceable `partial` line for
 low-latency live subtitle display; stable text is split into subtitle-sized cues
 after it is safe to commit.
 
@@ -166,12 +166,13 @@ Python API boundary:
   list of inputs and returns a list of `ASRTranscription(language, text,
   time_stamps=None)`.
 - `return_time_stamps=True` is not supported by `transcribe`; use the realtime
-  service with `--timestamp-model` or `Qwen3ForcedAlignerBackend` directly when
-  forced-aligned timestamps are required.
+  service with `--timestamp-model` or `Qwen3ForcedAlignerBackend` directly for
+  forced-aligned timestamps.
 - Streaming callers use `init_streaming_state(...)`,
   `streaming_transcribe(pcm16k, state)`, and
   `finish_streaming_transcribe(state)`. Library streaming defaults stay
-  upstream-compatible; the local service applies the live20 low-latency preset.
+  upstream-compatible. The local realtime service uses the low-latency model
+  streaming preset and required forced-aligner timestamp patches.
 
 ## Build The Desktop App
 
@@ -212,8 +213,8 @@ If the service fails during startup, first check:
 
 - the model path or Hugging Face model id is correct;
 - the CUDA device is available;
-- optional timestamp or translation models are present locally when
-  local-files-only mode is enabled;
+- the required timestamp model and any optional translation model are present
+  locally when local-files-only mode is enabled;
 - the desktop client is using `ws://127.0.0.1:8000/ws/asr`;
 - if the shell says `pnpm` is not recognized, run desktop commands as
   `corepack pnpm ...`;

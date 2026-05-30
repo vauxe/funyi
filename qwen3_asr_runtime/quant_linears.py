@@ -75,7 +75,11 @@ if triton is not None:
                 mask=(offs_n[None, :] < N) & (k[:, None] < K),
                 other=0,
             ).to(tl.float32)
-            acc += tl.dot(xv, wv, input_precision="tf32")
+            # ieee (not tf32): keeps the GEMM path's accumulation precision consistent with
+            # the fp32 GEMV path so the two W8A16 paths agree. GEMM is off the single-token
+            # decode hot path. NOTE: W8A16 is a CER-gated optimized path — re-run the W8A16
+            # CER gate before release after this change.
+            acc += tl.dot(xv, wv, input_precision="ieee")
         scale = tl.load(scales + offs_n, mask=offs_n < N, other=0.0).to(tl.float32)
         tl.store(
             y + offs_m[:, None] * N + offs_n[None, :],
@@ -155,7 +159,7 @@ def _w8a16_gemm(
 class W8A16Linear(nn.Module):
     """Weight-only int8 GEMV/GEMM for fused decoder projections."""
 
-    def __init__(self, linear: nn.Linear):
+    def __init__(self, linear: nn.Linear, *, prefill_gemm: str = "triton"):
         super().__init__()
         _require_triton()
         if linear.weight.device.type != "cuda":
@@ -164,6 +168,15 @@ class W8A16Linear(nn.Module):
             raise RuntimeError("W8A16Linear requires float16 or bfloat16 weights")
         if linear.bias is not None:
             raise RuntimeError("W8A16Linear only supports bias=False linears")
+        if prefill_gemm not in ("triton", "cublas"):
+            raise ValueError(f"prefill_gemm must be 'triton' or 'cublas', got {prefill_gemm!r}")
+        # Multi-token (prefill) GEMM path. 'triton' is the fp32-ieee Triton kernel
+        # (kept for the ASR offline path, numerically matched to the GEMV). 'cublas'
+        # dequantizes to the activation dtype and uses cuBLAS BF16 — faster for
+        # decode-bound models whose prefill is on the hot path (e.g. HY-MT
+        # translation: ~3x faster prefill than the Triton kernel, turning W8A16
+        # net-positive there). Single-token decode uses the int8 GEMV either way.
+        self._prefill_gemm = prefill_gemm
         self.in_features = int(linear.in_features)
         self.out_features = int(linear.out_features)
         self.input_dtype = linear.weight.dtype
@@ -191,6 +204,9 @@ class W8A16Linear(nn.Module):
             and x.shape[-1] == self.in_features
             and x.dtype in (torch.bfloat16, torch.float16)
         ):
+            if self._prefill_gemm == "cublas":
+                weight = self.weight_q.to(x.dtype) * self.scales.to(x.dtype).unsqueeze(1)
+                return torch.nn.functional.linear(x, weight)
             return _w8a16_gemm(x.contiguous(), self.weight_q, self.scales)
         raise RuntimeError(
             "W8A16Linear received an unsupported input "
@@ -237,6 +253,35 @@ def patch_model_quantized_linears(
     return counts
 
 
+def patch_linears_w8a16(
+    model: Any,
+    *,
+    suffixes: tuple[str, ...] = ("gate_proj", "up_proj"),
+    prefill_gemm: str = "cublas",
+    warmup: bool = True,
+) -> int:
+    """Replace bias-free CUDA fp16/bf16 ``nn.Linear`` whose qualified name ends in
+    one of ``suffixes`` with :class:`W8A16Linear`. Architecture-generic (used for
+    the HY-MT translation decoder; out=6144 gate/up have full GEMV occupancy and
+    are the only HY-MT linears that speed up decode). Returns the count patched.
+    """
+    count = 0
+    for name, mod in list(model.named_modules()):
+        if (
+            isinstance(mod, nn.Linear)
+            and mod.bias is None
+            and mod.weight.device.type == "cuda"
+            and mod.weight.dtype in (torch.bfloat16, torch.float16)
+            and name.endswith(tuple(suffixes))
+        ):
+            parent = model.get_submodule(name.rsplit(".", 1)[0]) if "." in name else model
+            setattr(parent, name.rsplit(".", 1)[-1], W8A16Linear(mod, prefill_gemm=prefill_gemm))
+            count += 1
+    if warmup and count:
+        warmup_quantized_linears(model)
+    return count
+
+
 def warmup_quantized_linears(model: Any) -> None:
     """Compile each unique Triton specialization before CUDA graph capture."""
     modules = [module for module in model.modules() if isinstance(module, W8A16Linear)]
@@ -265,6 +310,7 @@ def warmup_quantized_linears(model: Any) -> None:
 
 __all__ = [
     "W8A16Linear",
+    "patch_linears_w8a16",
     "patch_model_quantized_linears",
     "warmup_quantized_linears",
 ]

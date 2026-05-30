@@ -6,6 +6,7 @@ from typing import Any, Optional, Protocol, TypeAlias
 
 import numpy as np
 
+from .audio_utils import normalize_pcm
 from .utils import SAMPLE_RATE
 
 
@@ -142,6 +143,17 @@ class SileroVadConfig:
     min_speech_ms: int = 160
     min_silence_ms: int = 700
     use_onnx: bool = True
+
+    def __post_init__(self) -> None:
+        if not (0.0 < float(self.threshold) <= 1.0):
+            raise ValueError(f"threshold must be in (0, 1], got: {self.threshold}")
+        if self.negative_threshold is not None:
+            neg = float(self.negative_threshold)
+            # Must stay below threshold (hysteresis) and above 0 so silence can be detected.
+            if not (0.0 < neg < float(self.threshold)):
+                raise ValueError(
+                    f"negative_threshold must be in (0, threshold={self.threshold}), got: {neg}"
+                )
 
 
 class SileroVadAdapter:
@@ -283,15 +295,6 @@ def create_vad_adapter(config: VadConfig | None = None) -> VadAdapter:
     raise TypeError(f"Unsupported VAD config: {type(config).__name__}")
 
 
-def normalize_pcm(audio: np.ndarray) -> np.ndarray:
-    x = np.asarray(audio)
-    if x.ndim != 1:
-        x = x.reshape(-1)
-    if x.dtype == np.int16:
-        return x.astype(np.float32) / 32768.0
-    return x.astype(np.float32, copy=False)
-
-
 __all__ = [
     "EnergyVadAdapter",
     "EnergyVadConfig",
@@ -301,5 +304,4 @@ __all__ = [
     "VadConfig",
     "VadDecision",
     "create_vad_adapter",
-    "normalize_pcm",
 ]

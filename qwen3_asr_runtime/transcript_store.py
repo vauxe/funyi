@@ -1,7 +1,27 @@
 # coding=utf-8
 from __future__ import annotations
 
+import functools
+import threading
 from dataclasses import asdict, dataclass, field
+from typing import Any, Callable
+
+
+def _synchronized(method: Callable[..., Any]) -> Callable[..., Any]:
+    """Serialize a TranscriptStore method on ``self._lock``.
+
+    Stable appends now run on the ASR executor thread while timestamp patches
+    run on the event-loop thread, so every public read/write must hold the
+    reentrant store lock. Hold time is a few microseconds (no model work runs
+    under the lock), so loop-thread contention is negligible.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self: "TranscriptStore", *args: Any, **kwargs: Any) -> Any:
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
 
 
 @dataclass
@@ -39,26 +59,38 @@ class TranscriptStore:
     snapshot of the newest ASR text that may still be rewritten.
     """
 
-    def __init__(self, transcript_id: str = "default") -> None:
+    def __init__(self, transcript_id: str = "default", *, keep_segments: bool = True) -> None:
         self.state = TranscriptState(id=str(transcript_id))
+        self.keep_segments = bool(keep_segments)
         self._next_segment_index = 1
+        self._last_known_end = 0
+        # RLock (reentrant) because synchronized methods call other synchronized
+        # ones (update_event -> stable_count, clear_partial -> replace_partial).
+        # It gives per-call atomicity; cross-call ordering (a segment is appended
+        # before its timing patch arrives) is guaranteed by the caller, not here.
+        self._lock = threading.RLock()
 
     @property
+    @_synchronized
     def revision(self) -> int:
         return int(self.state.revision)
 
     @property
+    @_synchronized
     def stable_count(self) -> int:
         return int(self.state.stable_count)
 
     @property
+    @_synchronized
     def stable_segments(self) -> list[StableSegment]:
         return list(self.state.stable_segments)
 
     @property
+    @_synchronized
     def partial(self) -> PartialSegment | None:
         return self.state.partial
 
+    @_synchronized
     def append_stable_segment(
         self,
         *,
@@ -92,10 +124,16 @@ class TranscriptStore:
             language=str(language or ""),
             timing_status=str(timing_status or "") or None,
         )
-        self.state.stable_segments.append(segment)
-        self.state.stable_count = len(self.state.stable_segments)
+        if end is not None:
+            self._last_known_end = int(end)
+        if self.keep_segments:
+            self.state.stable_segments.append(segment)
+            self.state.stable_count = len(self.state.stable_segments)
+        else:
+            self.state.stable_count += 1
         return segment
 
+    @_synchronized
     def replace_partial(self, segment: PartialSegment | None) -> bool:
         normalized = segment if segment is not None and str(segment.text or "").strip() else None
         if normalized == self.state.partial:
@@ -103,9 +141,11 @@ class TranscriptStore:
         self.state.partial = normalized
         return True
 
+    @_synchronized
     def clear_partial(self) -> bool:
         return self.replace_partial(None)
 
+    @_synchronized
     def update_event(
         self,
         *,
@@ -128,6 +168,7 @@ class TranscriptStore:
             "partial": asdict(self.state.partial) if self.state.partial is not None else None,
         }
 
+    @_synchronized
     def update_segment_timing(
         self,
         *,
@@ -150,19 +191,30 @@ class TranscriptStore:
         previous_end = self._previous_known_end(before_index=segment.index)
         start = max(int(previous_end), int(start_ms))
         end = max(start, int(end_ms))
+        # Clamp forward too: if a later segment is already timed (patches can arrive out of
+        # index order), this segment must not overlap into it. In the normal in-order case
+        # later segments are still pending, so this is a no-op.
+        next_start = self._next_known_start(after_index=segment.index)
+        if next_start is not None:
+            end = min(end, int(next_start))
+            start = min(start, end)
         segment.start_ms = start
         segment.end_ms = end
         segment.timing_status = status
         return self._timing_update_payload(segment)
 
+    @_synchronized
     def final_event(self) -> dict[str, object]:
         self.state.revision += 1
-        return {
+        payload: dict[str, object] = {
             "type": "transcript_final",
             "revision": self.state.revision,
+            "final_revision": self.state.revision,
             "stable_count": self.stable_count,
-            "segments": [self._stable_segment_payload(segment) for segment in self.state.stable_segments],
         }
+        if self.keep_segments:
+            payload["segments"] = [self._stable_segment_payload(segment) for segment in self.state.stable_segments]
+        return payload
 
     def _find_stable_segment(self, source_segment_id: str) -> StableSegment | None:
         segment_id = str(source_segment_id or "")
@@ -171,7 +223,20 @@ class TranscriptStore:
                 return segment
         return None
 
+    def _next_known_start(self, *, after_index: int) -> int | None:
+        if not self.keep_segments:
+            return None
+        best: int | None = None
+        for segment in self.state.stable_segments:
+            if segment.index <= after_index:
+                continue
+            if segment.start_ms is not None and (best is None or segment.start_ms < best):
+                best = int(segment.start_ms)
+        return best
+
     def _previous_known_end(self, *, before_index: int | None = None) -> int:
+        if not self.keep_segments:
+            return int(self._last_known_end)
         for segment in reversed(self.state.stable_segments):
             if before_index is not None and segment.index >= before_index:
                 continue

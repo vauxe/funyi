@@ -3,7 +3,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tools.ws_e2e_leak_check import _compute_timestamp_quality, _final_event_contract_issues, _record_event_contract
+from tools.ws_e2e_leak_check import (
+    _compute_timestamp_quality,
+    _detect_repetition_loop,
+    _final_event_contract_issues,
+    _record_event_contract,
+    _repetition_validation_issues,
+)
 
 
 class TestWebSocketE2EInvariant:
@@ -68,6 +74,31 @@ class TestWebSocketE2EInvariant:
 
         assert issues == ['missing translation_stable for source segments: seg_000002']
 
+    def test_final_marker_without_segments_uses_replayed_stable_history(self) -> None:
+        state: dict[str, object] = {}
+        _record_event_contract(
+            state,
+            {
+                "type": "transcript_update",
+                "revision": 1,
+                "stable_appends": [{"id": "seg_000001", "index": 1, "text": "one"}],
+                "partial": None,
+            },
+        )
+
+        issues = _final_event_contract_issues(
+            state,
+            {
+                "type": "transcript_final",
+                "revision": 2,
+                "final_revision": 2,
+                "stable_count": 1,
+            },
+            expect_translation=False,
+        )
+
+        assert issues == []
+
     def test_timing_update_must_reference_known_source_segment(self) -> None:
         state: dict[str, object] = {}
 
@@ -121,3 +152,40 @@ class TestWebSocketE2EInvariant:
         assert quality is not None
         assert quality['matched_segments'] == 2  # type: ignore[index]
         assert quality['boundary_abs_error_ms']['p50'] == 0.0  # type: ignore[index]
+
+    def test_repetition_loop_detector_flags_long_adjacent_repeated_text(self) -> None:
+        loop = _detect_repetition_loop("前缀" + "重复内容甲乙丙丁" * 12 + "后缀")
+
+        assert loop is not None
+        assert loop["repeat_count"] >= 5
+
+    def test_repetition_loop_detector_ignores_short_natural_repeats(self) -> None:
+        assert _detect_repetition_loop("谢谢谢谢，好的好的，我们继续。") is None
+
+    def test_repetition_loop_detector_ignores_text_below_normalized_floor(self) -> None:
+        # 79 normalized chars sits just under the 80-char floor and must never be flagged.
+        text = "甲乙丙丁戊己庚辛" * 9 + "甲乙丙丁戊己庚"
+        assert len("".join(ch for ch in text if not ch.isspace())) == 79
+        assert _detect_repetition_loop(text) is None
+
+    def test_repetition_loop_detector_flags_repeats_separated_by_punctuation(self) -> None:
+        # Punctuation and spaces are normalized away, so an interleaved loop is still caught.
+        loop = _detect_repetition_loop("，".join(["重复内容甲乙丙丁"] * 12))
+
+        assert loop is not None
+        assert loop["unit_chars"] >= 8
+
+    def test_repetition_validation_issues_reports_loop_spanning_segments(self) -> None:
+        # The loop only emerges once segment texts are concatenated.
+        segments = [
+            {"text": "重复内容甲乙丙丁" * 6},
+            {"text": "重复内容甲乙丙丁" * 6},
+        ]
+        issues = _repetition_validation_issues(segments)
+
+        assert len(issues) == 1
+        assert "repetition loop" in issues[0]
+
+    def test_repetition_validation_issues_passes_clean_transcript(self) -> None:
+        segments = [{"text": "今天天气不错。"}, {"text": "我们去公园散步看花。"}]
+        assert _repetition_validation_issues(segments) == []

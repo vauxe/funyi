@@ -133,6 +133,7 @@ def _record_event_contract(state: dict[str, Any], event: dict[str, Any]) -> list
             )
         state["latest_transcript_revision"] = max(latest_revision, revision)
         source_ids = state.setdefault("source_stable_segment_ids", [])
+        source_segments = state.setdefault("source_stable_segments", [])
         seen_source_ids = state.setdefault("seen_source_stable_segment_ids", set())
         for segment in event.get("stable_appends") or []:
             if not isinstance(segment, dict):
@@ -145,6 +146,7 @@ def _record_event_contract(state: dict[str, Any], event: dict[str, Any]) -> list
                 issues.append(f"duplicate source stable segment id: {segment_id}")
                 continue
             source_ids.append(segment_id)
+            source_segments.append(dict(segment))
             seen_source_ids.add(segment_id)
     elif event_type == "translation_preview":
         source_revision = int(event.get("source_revision") or 0)
@@ -192,14 +194,22 @@ def _final_event_contract_issues(
     if final_event is None:
         return issues
 
-    final_ids = [
-        str(segment.get("id") or "")
-        for segment in final_event.get("segments", [])
-        if isinstance(segment, dict) and str(segment.get("id") or "")
-    ]
     source_ids = list(state.get("source_stable_segment_ids") or [])
-    if source_ids and source_ids != final_ids:
-        issues.append("transcript_update stable history does not match transcript_final segments")
+    if "segments" in final_event:
+        final_ids = [
+            str(segment.get("id") or "")
+            for segment in final_event.get("segments", [])
+            if isinstance(segment, dict) and str(segment.get("id") or "")
+        ]
+        if source_ids and source_ids != final_ids:
+            issues.append("transcript_update stable history does not match transcript_final segments")
+    else:
+        final_ids = source_ids
+        final_count = int(final_event.get("stable_count") or 0)
+        if final_count != len(source_ids):
+            issues.append(
+                f"transcript_final stable_count {final_count} does not match replayed stable history {len(source_ids)}"
+            )
 
     if not expect_translation:
         return issues
@@ -223,6 +233,7 @@ def _compute_reference_cer(
     *,
     reference_srt: str | None,
     final_event: dict[str, Any] | None,
+    stable_segments: list[dict[str, Any]] | None = None,
     start_sec: float,
     duration_sec: float,
     strip_ruby: bool,
@@ -231,7 +242,10 @@ def _compute_reference_cer(
         return None
     from tools.sweep_cer_vs_srt import _cer, _normalize_for_cer, load_srt, srt_text_in_window
 
-    hyp_text = "".join(str(segment.get("text") or "") for segment in (final_event or {}).get("segments", []))
+    segments = (final_event or {}).get("segments")
+    if not isinstance(segments, list):
+        segments = stable_segments or []
+    hyp_text = "".join(str(segment.get("text") or "") for segment in segments if isinstance(segment, dict))
     ref_text = srt_text_in_window(load_srt(reference_srt, strip_ruby=strip_ruby), start_sec, duration_sec)
     return {
         "reference_srt": reference_srt,
@@ -253,6 +267,44 @@ def _normalized_chars(text: str) -> list[str]:
             continue
         chars.append(ch.lower())
     return chars
+
+
+def _detect_repetition_loop(text: str) -> dict[str, Any] | None:
+    normalized = "".join(_normalized_chars(text))
+    if len(normalized) < 80:
+        return None
+    max_unit = min(120, len(normalized) // 4)
+    for unit_len in range(8, max_unit + 1):
+        required_repeats = max(4, (80 + unit_len - 1) // unit_len)
+        limit = len(normalized) - unit_len * required_repeats + 1
+        for start in range(0, max(0, limit)):
+            unit = normalized[start : start + unit_len]
+            repeats = 1
+            while (
+                start + (repeats + 1) * unit_len <= len(normalized)
+                and normalized[start + repeats * unit_len : start + (repeats + 1) * unit_len] == unit
+            ):
+                repeats += 1
+            if repeats >= required_repeats:
+                return {
+                    "start_char": start,
+                    "unit_chars": unit_len,
+                    "repeat_count": repeats,
+                    "repeated_chars": repeats * unit_len,
+                    "preview": unit[:40],
+                }
+    return None
+
+
+def _repetition_validation_issues(segments: list[dict[str, Any]]) -> list[str]:
+    text = "".join(str(segment.get("text") or "") for segment in segments if isinstance(segment, dict))
+    loop = _detect_repetition_loop(text)
+    if loop is None:
+        return []
+    return [
+        "stable transcript contains a repetition loop: "
+        f"{loop['repeat_count']}x {loop['unit_chars']}-char unit at normalized char {loop['start_char']}"
+    ]
 
 
 def _build_reference_char_timeline(
@@ -303,6 +355,7 @@ def _compute_timestamp_quality(
     *,
     reference_srt: str | None,
     final_event: dict[str, Any] | None,
+    stable_segments: list[dict[str, Any]] | None = None,
     start_sec: float,
     duration_sec: float,
     strip_ruby: bool,
@@ -310,7 +363,10 @@ def _compute_timestamp_quality(
     if reference_srt is None or final_event is None:
         return None
 
-    segments = [segment for segment in final_event.get("segments", []) if isinstance(segment, dict)]
+    raw_segments = final_event.get("segments")
+    if not isinstance(raw_segments, list):
+        raw_segments = stable_segments or []
+    segments = [segment for segment in raw_segments if isinstance(segment, dict)]
     if not segments:
         return None
 
@@ -695,8 +751,10 @@ async def run_check(args: argparse.Namespace) -> dict[str, Any]:
         final_event[0],
         expect_translation=args.expect_translation,
     )
-    if abort_reason[0] is None and (translation_issues or event_stream_issues):
-        abort_reason[0] = "; ".join(translation_issues + event_stream_issues)
+    stable_segments = list(contract_state.get("source_stable_segments") or [])
+    repetition_issues = _repetition_validation_issues(stable_segments)
+    if abort_reason[0] is None and (translation_issues or event_stream_issues or repetition_issues):
+        abort_reason[0] = "; ".join(translation_issues + event_stream_issues + repetition_issues)
 
     summary = {
         "ok": abort_reason[0] is None and final_event[0] is not None,
@@ -712,7 +770,8 @@ async def run_check(args: argparse.Namespace) -> dict[str, Any]:
         "ready_event": ready_event,
         "translation_validation_issues": translation_issues,
         "event_stream_validation_issues": event_stream_issues,
-        "segment_count": len((final_event[0] or {}).get("segments", [])),
+        "repetition_validation_issues": repetition_issues,
+        "segment_count": len(contract_state.get("source_stable_segments") or []),
         "timing": _summarize_event_timings(
             event_times,
             finish_sent_wall_sec=finish_sent_wall_sec[0],
@@ -722,6 +781,7 @@ async def run_check(args: argparse.Namespace) -> dict[str, Any]:
         "cer": _compute_reference_cer(
             reference_srt=args.reference_srt,
             final_event=final_event[0],
+            stable_segments=stable_segments,
             start_sec=args.start_sec,
             duration_sec=args.max_audio_sec,
             strip_ruby=args.strip_ruby,
@@ -729,6 +789,7 @@ async def run_check(args: argparse.Namespace) -> dict[str, Any]:
         "timestamp_quality": _compute_timestamp_quality(
             reference_srt=args.reference_srt,
             final_event=final_event[0],
+            stable_segments=stable_segments,
             start_sec=args.start_sec,
             duration_sec=args.max_audio_sec,
             strip_ruby=args.strip_ruby,

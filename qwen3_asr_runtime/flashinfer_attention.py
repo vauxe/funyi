@@ -15,6 +15,7 @@ jumped from ~10% to >370%). That path is intentionally disabled.
 """
 from __future__ import annotations
 
+import math
 import os
 import shutil
 from typing import Any, Optional, Tuple
@@ -126,7 +127,9 @@ def flashinfer_attention_forward(
     if not v.is_contiguous():
         v = v.contiguous()
 
-    sm_scale = scaling
+    # Resolve the scale explicitly instead of relying on FlashInfer's internal default
+    # matching SDPA's default; the two paths must agree even if a library default changes.
+    sm_scale = float(scaling) if scaling is not None else (1.0 / math.sqrt(D))
 
     # window_left: not set here (full attention)
     out = flashinfer.single_decode_with_kv_cache(

@@ -641,10 +641,10 @@ class Qwen3ASRAudioEncoder(Qwen3ASRPreTrainedModel):
         self._requires_grad = False
 
     def get_input_embeddings(self) -> nn.Module:
-        return self.conv1
+        return self.conv2d1
 
     def set_input_embeddings(self, value: nn.Module):
-        self.conv1 = value
+        self.conv2d1 = value
 
     def _prepare_attention_mask(self, inputs_tensor: torch.Tensor, cu_seqlens: torch.Tensor) -> torch.Tensor:
         # Flash Attention 2 doesn't need a 4D mask and relies on `cu_seqlens/max_seqlen`
@@ -1120,7 +1120,12 @@ class Qwen3ASRThinkerForConditionalGeneration(Qwen3ASRPreTrainedModelForConditio
         self.vocab_size = config.text_config.vocab_size
         self.model = Qwen3ASRThinkerTextModel._from_config(config.text_config)
         if "forced_aligner" in config.model_type:
-            self.lm_head = nn.Linear(config.text_config.hidden_size, config.classify_num, bias=False)
+            classify_num = getattr(config, "classify_num", None)
+            if classify_num is None:
+                raise ValueError(
+                    "forced_aligner model_type requires config.classify_num to size the alignment head"
+                )
+            self.lm_head = nn.Linear(config.text_config.hidden_size, int(classify_num), bias=False)
         else:
             self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
         self.pad_token_id = self.config.pad_token_id if self.config.pad_token_id is not None else -1

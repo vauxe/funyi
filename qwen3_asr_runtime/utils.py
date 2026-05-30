@@ -33,6 +33,10 @@ AudioLike = Union[
 MaybeList = Union[Any, List[Any]]
 
 SAMPLE_RATE = 16000
+# Backstops for remote audio fetched via load_audio_any (str URL inputs). These bound a
+# misbehaving/hostile URL: a connect/read timeout and a hard response-size cap.
+REMOTE_AUDIO_FETCH_TIMEOUT_SEC = 30.0
+REMOTE_AUDIO_FETCH_MAX_BYTES = 512 * 1024 * 1024
 MAX_ASR_INPUT_SECONDS = 1200
 MAX_FORCE_ALIGN_INPUT_SECONDS = 180
 MIN_ASR_INPUT_SECONDS = 0.5
@@ -105,8 +109,12 @@ def decode_base64_bytes(b64: str) -> bytes:
 
 def load_audio_any(x: str) -> Tuple[np.ndarray, int]:
     if is_url(x):
-        with urllib.request.urlopen(x) as resp:
-            audio_bytes = resp.read()
+        with urllib.request.urlopen(x, timeout=REMOTE_AUDIO_FETCH_TIMEOUT_SEC) as resp:
+            audio_bytes = resp.read(REMOTE_AUDIO_FETCH_MAX_BYTES + 1)
+        if len(audio_bytes) > REMOTE_AUDIO_FETCH_MAX_BYTES:
+            raise ValueError(
+                f"remote audio exceeds maximum allowed size of {REMOTE_AUDIO_FETCH_MAX_BYTES} bytes"
+            )
         with io.BytesIO(audio_bytes) as f:
             audio, sr = sf.read(f, dtype="float32", always_2d=False)
     elif is_probably_base64(x):

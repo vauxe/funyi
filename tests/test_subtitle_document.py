@@ -69,6 +69,33 @@ class TestSubtitleDocument:
         assert window.previous.text == '正在处理'  # type: ignore[union-attr]
         assert window.current.text == '下一句'  # type: ignore[union-attr]
 
+    def test_malformed_timing_value_does_not_break_replay(self) -> None:
+        document = SubtitleDocument()
+        document.apply_event(
+            {
+                "type": "transcript_update",
+                "revision": 1,
+                "stable_base": 0,
+                "stable_count": 1,
+                "stable_appends": [stable_segment(1, "第一句", start_ms=0, end_ms=1200)],
+                "partial": None,
+            }
+        )
+
+        # A malformed timing value from the server must not raise out of replay.
+        document.apply_event(
+            {
+                "type": "transcript_timing_update",
+                "source_segment_id": "seg_000001",
+                "start_ms": "oops",
+                "end_ms": None,
+                "timing_status": "failed",
+            }
+        )
+
+        assert document.stable_lines[0].start_ms is None
+        assert document.stable_lines[0].timing_status == "failed"
+
     def test_srt_uses_stable_history_only(self) -> None:
         document = SubtitleDocument()
         document.apply_event(
@@ -280,4 +307,30 @@ class TestSubtitleDocument:
         window = document.window()
         assert window.previous.text == '第一句'  # type: ignore[union-attr]
         assert window.previous.translation == 'first line'  # type: ignore[union-attr]
+        assert window.current is None
+
+    def test_final_marker_without_snapshot_clears_current_and_keeps_replayed_stable_history(self) -> None:
+        document = SubtitleDocument()
+        document.apply_event(
+            {
+                "type": "transcript_update",
+                "revision": 1,
+                "stable_base": 0,
+                "stable_count": 1,
+                "stable_appends": [stable_segment(1, "第一句", start_ms=0, end_ms=1000)],
+                "partial": partial_segment("临时", start_ms=1000, end_ms=1400),
+            }
+        )
+
+        document.apply_event(
+            {
+                "type": "transcript_final",
+                "revision": 2,
+                "final_revision": 2,
+                "stable_count": 1,
+            }
+        )
+
+        window = document.window()
+        assert window.previous.text == "第一句"  # type: ignore[union-attr]
         assert window.current is None

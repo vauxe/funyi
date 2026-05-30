@@ -11,10 +11,10 @@ from typing import Any, Deque
 
 import numpy as np
 
+from .audio_utils import normalize_pcm
 from .transcript_store import TranscriptStore
 from .language_support import QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES
 from .utils import SAMPLE_RATE
-from .vad import normalize_pcm
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class StableTimingJob:
 
 
 class AudioTimelineBuffer:
-    """Append-only absolute-sample audio buffer for realtime alignment crops."""
+    """Absolute-sample audio buffer for realtime alignment crops."""
 
     def __init__(self) -> None:
         self.start_sample = 0
@@ -66,6 +66,30 @@ class AudioTimelineBuffer:
         if crop_end <= crop_start:
             return np.zeros((0,), dtype=np.float32), crop_start
         return self._copy_range(crop_start, crop_end), crop_start
+
+    def trim_before(self, sample: int) -> None:
+        target = max(int(self.start_sample), min(int(sample), int(self.end_sample)))
+        if target <= self.start_sample:
+            return
+
+        chunk_start = int(self.start_sample)
+        while self._chunks:
+            chunk = self._chunks[0]
+            chunk_end = chunk_start + int(chunk.shape[0])
+            if chunk_end <= target:
+                self._chunks.popleft()
+                self._sample_count -= int(chunk.shape[0])
+                self.start_sample = chunk_end
+                chunk_start = chunk_end
+                continue
+            if target > chunk_start:
+                drop = target - chunk_start
+                # .copy() is deliberate: a view would retain the full parent chunk and defeat
+                # bounded retention (see tools/ws_e2e_leak_check.py). Do not change to a slice.
+                self._chunks[0] = chunk[drop:].copy()
+                self._sample_count -= int(drop)
+                self.start_sample = target
+            break
 
     def _copy_range(self, start_sample: int, end_sample: int) -> np.ndarray:
         output = np.empty((int(end_sample) - int(start_sample),), dtype=np.float32)
@@ -123,24 +147,9 @@ class TimestampModelActor:
         language: str,
         timeout_sec: float | None,
     ) -> tuple[float | None, float | None, str | None]:
-        loop = asyncio.get_running_loop()
-        future = loop.run_in_executor(
-            self._executor,
-            partial(self._call_align, audio, text=text, language=language),
-        )
-        future.add_done_callback(_consume_future)
-        try:
-            result = await _wait_future_result(
-                future,
-                timeout_sec=None if timeout_sec is None else max(0.001, float(timeout_sec)),
-            )
-        except asyncio.TimeoutError:
-            future.cancel()
-            return None, None, "timeout"
-        except Exception:
-            _LOGGER.debug("Realtime forced alignment failed.", exc_info=True)
-            return None, None, "failed"
-
+        result, error = await self.align_items(audio, text=text, language=language, timeout_sec=timeout_sec)
+        if error is not None or result is None:
+            return None, None, error or "failed"
         items = list(getattr(result, "items", []) or [])
         if not items:
             return None, None, "failed"
@@ -158,6 +167,34 @@ class TimestampModelActor:
         end_sec = min(end_sec, audio_duration_sec)
         start_sec = min(start_sec, end_sec)
         return start_sec, end_sec, None
+
+    async def align_items(
+        self,
+        audio: np.ndarray,
+        *,
+        text: str,
+        language: str,
+        timeout_sec: float | None,
+    ) -> tuple[Any | None, str | None]:
+        """Return the forced-aligner item sequence for one audio/text window."""
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(
+            self._executor,
+            partial(self._call_align, audio, text=text, language=language),
+        )
+        future.add_done_callback(_consume_future)
+        try:
+            result = await _wait_future_result(
+                future,
+                timeout_sec=None if timeout_sec is None else max(0.001, float(timeout_sec)),
+            )
+        except asyncio.TimeoutError:
+            future.cancel()
+            return None, "timeout"
+        except Exception:
+            _LOGGER.debug("Realtime forced alignment failed.", exc_info=True)
+            return None, "failed"
+        return result, None
 
     def close(self, *, wait: bool = False) -> None:
         if self._owns_executor:
@@ -183,6 +220,11 @@ class RealtimeTimestampRuntime:
         event_queue: asyncio.Queue[dict[str, Any] | None],
         store_lock: asyncio.Lock | None = None,
     ) -> None:
+        if not getattr(store, "keep_segments", True):
+            raise ValueError(
+                "RealtimeTimestampRuntime requires a transcript store with keep_segments=True; "
+                "timing patches must reference retained stable segments"
+            )
         self.model_actor = model_actor
         self.store = store
         self.audio_buffer = audio_buffer
@@ -194,6 +236,7 @@ class RealtimeTimestampRuntime:
         self._finish_mode = False
         self._closed = False
         self._finish_events: list[dict[str, Any]] = []
+        self._completed_floor_sample = 0
 
         self._lock = asyncio.Lock()
         self._wake = asyncio.Event()
@@ -280,39 +323,68 @@ class RealtimeTimestampRuntime:
     ) -> dict[str, Any]:
         if job.source_language not in QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES:
             event = await self._timing_event(job, start_ms=None, end_ms=None, timing_status="failed")
-            if publish:
-                await self.event_queue.put(event)
-            return event
-
-        audio, crop_start_sample = self.audio_buffer.crop(
-            start_sample=job.start_sample,
-            end_sample=job.end_sample,
-            pad_samples=self._pad_samples(),
-        )
-        if audio.shape[0] == 0:
-            event = await self._timing_event(job, start_ms=None, end_ms=None, timing_status="failed")
         else:
-            start_sec, end_sec, _error_code = await self.model_actor.align_segment(
-                audio,
-                text=job.source_text,
-                language=job.source_language,
-                timeout_sec=timeout_sec,
+            audio, crop_start_sample = self.audio_buffer.crop(
+                start_sample=job.start_sample,
+                end_sample=job.end_sample,
+                pad_samples=self._pad_samples(),
             )
-            if start_sec is None or end_sec is None:
+            if audio.shape[0] == 0:
+                _LOGGER.warning(
+                    "Realtime timestamp crop empty for segment_id=%s start_sample=%d end_sample=%d "
+                    "buffer=[%d, %d); source audio was trimmed before this job could run.",
+                    job.source_segment_id,
+                    int(job.start_sample),
+                    int(job.end_sample),
+                    int(self.audio_buffer.start_sample),
+                    int(self.audio_buffer.end_sample),
+                )
                 event = await self._timing_event(job, start_ms=None, end_ms=None, timing_status="failed")
             else:
-                crop_start_ms = int(round(1000 * int(crop_start_sample) / SAMPLE_RATE))
-                start_ms = crop_start_ms + int(round(start_sec * 1000))
-                end_ms = crop_start_ms + int(round(end_sec * 1000))
-                event = await self._timing_event(job, start_ms=start_ms, end_ms=end_ms, timing_status="aligned")
+                start_sec, end_sec, _error_code = await self.model_actor.align_segment(
+                    audio,
+                    text=job.source_text,
+                    language=job.source_language,
+                    timeout_sec=timeout_sec,
+                )
+                if start_sec is None or end_sec is None:
+                    event = await self._timing_event(job, start_ms=None, end_ms=None, timing_status="failed")
+                else:
+                    crop_start_ms = int(round(1000 * int(crop_start_sample) / SAMPLE_RATE))
+                    start_ms = crop_start_ms + int(round(start_sec * 1000))
+                    end_ms = crop_start_ms + int(round(end_sec * 1000))
+                    event = await self._timing_event(job, start_ms=start_ms, end_ms=end_ms, timing_status="aligned")
 
         async with self._lock:
+            self._mark_job_completed(job)
             should_publish = publish and not self._closed and not self._finish_mode
             if publish and not should_publish and self._finish_mode and not self._closed:
                 self._finish_events.append(event)
         if should_publish:
-            await self.event_queue.put(event)
+            await self._publish_or_defer(event)
         return event
+
+    async def _publish_or_defer(self, event: dict[str, Any]) -> None:
+        try:
+            self.event_queue.put_nowait(event)
+            return
+        except asyncio.QueueFull:
+            _LOGGER.warning("Realtime timestamp event queue is full; deferring timing update until finish.")
+        async with self._lock:
+            if not self._closed:
+                self._finish_events.append(event)
+
+    def _mark_job_completed(self, job: StableTimingJob) -> None:
+        completed = max(int(job.start_sample), int(job.end_sample))
+        self._completed_floor_sample = max(int(self._completed_floor_sample), completed)
+        # Never trim past the oldest still-queued job: that keeps every queued job's padded
+        # crop intact. An empty crop in _run_job is the visible signal if this is violated.
+        pending_floor = min(
+            (int(queued.start_sample) for queued in self._stable_queue),
+            default=int(self._completed_floor_sample),
+        )
+        trim_floor = min(int(self._completed_floor_sample), pending_floor) - self._pad_samples()
+        self.audio_buffer.trim_before(trim_floor)
 
     async def _timing_event(
         self,
@@ -362,17 +434,15 @@ def _consume_future(future: Any) -> None:
 
 
 async def _wait_future_result(future: asyncio.Future[Any], *, timeout_sec: float | None) -> Any:
-    loop = asyncio.get_running_loop()
-    deadline = None if timeout_sec is None else loop.time() + float(timeout_sec)
-    while not future.done():
-        if deadline is None:
-            await asyncio.sleep(0.01)
-            continue
-        remaining = deadline - loop.time()
-        if remaining <= 0:
-            raise asyncio.TimeoutError
-        await asyncio.sleep(min(0.01, remaining))
-    return future.result()
+    # ``future`` is a ``loop.run_in_executor`` future; it is resolved through
+    # ``call_soon_threadsafe`` when the worker thread finishes, so awaiting it
+    # wakes the event loop immediately. Awaiting directly (instead of polling on
+    # a 0.01s timer) removes up to ~10ms of scheduling latency from every
+    # alignment result. On timeout ``wait_for`` cancels ``future`` (the caller's
+    # explicit ``future.cancel()`` then becomes a no-op).
+    if timeout_sec is None:
+        return await future
+    return await asyncio.wait_for(future, float(timeout_sec))
 
 
 __all__ = [
