@@ -1,7 +1,27 @@
 # coding=utf-8
 from __future__ import annotations
 
+import functools
+import threading
 from dataclasses import asdict, dataclass, field
+from typing import Any, Callable
+
+
+def _synchronized(method: Callable[..., Any]) -> Callable[..., Any]:
+    """Serialize a TranscriptStore method on ``self._lock``.
+
+    Stable appends now run on the ASR executor thread while timestamp patches
+    run on the event-loop thread, so every public read/write must hold the
+    reentrant store lock. Hold time is a few microseconds (no model work runs
+    under the lock), so loop-thread contention is negligible.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self: "TranscriptStore", *args: Any, **kwargs: Any) -> Any:
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
 
 
 @dataclass
@@ -44,23 +64,33 @@ class TranscriptStore:
         self.keep_segments = bool(keep_segments)
         self._next_segment_index = 1
         self._last_known_end = 0
+        # RLock (reentrant) because synchronized methods call other synchronized
+        # ones (update_event -> stable_count, clear_partial -> replace_partial).
+        # It gives per-call atomicity; cross-call ordering (a segment is appended
+        # before its timing patch arrives) is guaranteed by the caller, not here.
+        self._lock = threading.RLock()
 
     @property
+    @_synchronized
     def revision(self) -> int:
         return int(self.state.revision)
 
     @property
+    @_synchronized
     def stable_count(self) -> int:
         return int(self.state.stable_count)
 
     @property
+    @_synchronized
     def stable_segments(self) -> list[StableSegment]:
         return list(self.state.stable_segments)
 
     @property
+    @_synchronized
     def partial(self) -> PartialSegment | None:
         return self.state.partial
 
+    @_synchronized
     def append_stable_segment(
         self,
         *,
@@ -103,6 +133,7 @@ class TranscriptStore:
             self.state.stable_count += 1
         return segment
 
+    @_synchronized
     def replace_partial(self, segment: PartialSegment | None) -> bool:
         normalized = segment if segment is not None and str(segment.text or "").strip() else None
         if normalized == self.state.partial:
@@ -110,9 +141,11 @@ class TranscriptStore:
         self.state.partial = normalized
         return True
 
+    @_synchronized
     def clear_partial(self) -> bool:
         return self.replace_partial(None)
 
+    @_synchronized
     def update_event(
         self,
         *,
@@ -135,6 +168,7 @@ class TranscriptStore:
             "partial": asdict(self.state.partial) if self.state.partial is not None else None,
         }
 
+    @_synchronized
     def update_segment_timing(
         self,
         *,
@@ -169,6 +203,7 @@ class TranscriptStore:
         segment.timing_status = status
         return self._timing_update_payload(segment)
 
+    @_synchronized
     def final_event(self) -> dict[str, object]:
         self.state.revision += 1
         payload: dict[str, object] = {

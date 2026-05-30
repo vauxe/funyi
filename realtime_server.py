@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -191,9 +192,40 @@ class _DebugAudioRecorder:
         )
 
 
+# --- ASR executor helpers ---------------------------------------------------
+# These run on the dedicated single-worker ASR executor so the ~55ms GPU forward
+# no longer blocks the asyncio event loop. They bundle the session call with
+# consume_stable_timing_jobs_for_events because both mutate session state and must
+# run on the same thread; the returned (events, jobs) are handled back on the loop.
+
+
+def _asr_step(session: Any, call: Any, *args: Any) -> tuple[list[dict[str, Any]], list[Any]]:
+    """Run one session mutation `call(*args)` and consume its timing jobs.
+
+    Both run on the ASR executor thread: they mutate session state, so they must
+    not be split across threads. Returns (events, timing_jobs) for the loop.
+    """
+    events = call(*args)
+    return events, session.consume_stable_timing_jobs_for_events(events)
+
+
+def _asr_set_language(session: Any, language: str | None) -> tuple[list[dict[str, Any]], list[Any], bool]:
+    """Flush + switch ASR source language, only if it actually changed.
+
+    The current language is compared on the executor thread (the only thread that
+    writes ``session.config.language``), so the loop never reads session state.
+    Returns (events, timing_jobs, changed).
+    """
+    if language == session.config.language:
+        return [], [], False
+    events = session.set_language(language)
+    return events, session.consume_stable_timing_jobs_for_events(events), True
+
+
 def build_app(
     *,
     model: Any,
+    asr_executor: ThreadPoolExecutor,
     timestamp_actor: TimestampModelActor | None = None,
     timestamp_config: RealtimeTimestampConfig | None = None,
     translation_actor: TranslationModelActor | None = None,
@@ -234,6 +266,7 @@ def build_app(
     @app.websocket("/ws/asr")
     async def websocket_asr(websocket: WebSocket) -> None:
         await websocket.accept()
+        loop = asyncio.get_running_loop()
         event_queue: asyncio.Queue[dict[str, Any] | None] | None = None
         sender_task: asyncio.Task[None] | None = None
         translation: RealtimeTranslationRuntime | None = None
@@ -282,9 +315,10 @@ def build_app(
                 transcript_store=store,
                 config=config,
             )
-            # No store_lock: all TranscriptStore writes run on this event-loop thread
-            # (only the aligner runs off-loop). Add a shared lock if ASR writes ever move
-            # off-loop (e.g. to_thread).
+            # No asyncio store_lock needed: TranscriptStore is internally thread-safe
+            # (its own RLock). ASR stable appends now run on the ASR executor thread while
+            # forced-aligner timing patches run here on the event-loop thread; the store's
+            # lock serializes both. Translation never writes the store.
             timestamps = RealtimeTimestampRuntime(
                 timestamp_actor,
                 store=store,
@@ -350,11 +384,13 @@ def build_app(
                         if summary is not None:
                             _LOGGER.debug(summary)
                     timestamps.accept_audio(audio)
-                    events = session.ingest_audio(audio)
+                    events, timing_jobs = await loop.run_in_executor(
+                        asr_executor, _asr_step, session, session.ingest_audio, audio
+                    )
                     if await _publish_session_events(event_queue, translation, events, sender_task=sender_task):
                         await _drain_and_close(websocket, event_queue, sender_task, code=1011)
                         return
-                    await timestamps.accept_jobs(session.consume_stable_timing_jobs_for_events(events))
+                    await timestamps.accept_jobs(timing_jobs)
                     continue
 
                 if message.get("text") is None:
@@ -371,11 +407,11 @@ def build_app(
                 command_type = command.get("type")
                 if command_type == "flush":
                     _LOGGER.debug("Realtime command session_id=%s type=flush", session_id)
-                    events = session.flush()
+                    events, timing_jobs = await loop.run_in_executor(asr_executor, _asr_step, session, session.flush)
                     if await _publish_session_events(event_queue, translation, events, sender_task=sender_task):
                         await _drain_and_close(websocket, event_queue, sender_task, code=1011)
                         return
-                    await timestamps.accept_jobs(session.consume_stable_timing_jobs_for_events(events))
+                    await timestamps.accept_jobs(timing_jobs)
                 elif command_type == "set_language":
                     _LOGGER.debug("Realtime command session_id=%s type=set_language payload=%s", session_id, command)
                     try:
@@ -388,24 +424,25 @@ def build_app(
                         continue
 
                     current_target = translation.target_language if translation is not None else None
-                    language_changed = (
-                        "language" in language_update and language_update["language"] != session.config.language
-                    )
                     target_changed = (
                         "target_language" in language_update
                         and language_update["target_language"] != current_target
                     )
 
-                    if language_changed:
-                        events = session.set_language(language_update["language"])
-                    elif target_changed:
-                        events = session.flush()
+                    if "language" in language_update:
+                        events, timing_jobs, language_changed = await loop.run_in_executor(
+                            asr_executor, _asr_set_language, session, language_update["language"]
+                        )
                     else:
-                        events = []
+                        events, timing_jobs, language_changed = [], [], False
+                    # Target-only change: flush the current tail before switching the
+                    # translation target. A language change already flushed via set_language.
+                    if target_changed and not language_changed:
+                        events, timing_jobs = await loop.run_in_executor(asr_executor, _asr_step, session, session.flush)
                     if await _publish_session_events(event_queue, translation, events, sender_task=sender_task):
                         await _drain_and_close(websocket, event_queue, sender_task, code=1011)
                         return
-                    await timestamps.accept_jobs(session.consume_stable_timing_jobs_for_events(events))
+                    await timestamps.accept_jobs(timing_jobs)
 
                     if target_changed:
                         try:
@@ -421,8 +458,8 @@ def build_app(
                             continue
                 elif command_type == "finish":
                     _LOGGER.debug("Realtime command session_id=%s type=finish", session_id)
-                    events = session.flush()
-                    timing_events = await timestamps.finish(session.consume_stable_timing_jobs_for_events(events))
+                    events, timing_jobs = await loop.run_in_executor(asr_executor, _asr_step, session, session.flush)
+                    timing_events = await timestamps.finish(timing_jobs)
                     events.extend(timing_events)
                     events.append(store.final_event())
                     await _publish_finish_events(event_queue, translation, events, sender_task=sender_task)
@@ -1346,8 +1383,13 @@ def main() -> None:
     translation_service_config: TranslationServiceConfig | None = None
     timestamp_actor: TimestampModelActor | None = None
     timestamp_config: RealtimeTimestampConfig | None = None
+    # Single-worker ASR executor: realtime ASR forwards run here, off the asyncio
+    # event loop, so a ~55ms decode step no longer blocks event delivery, audio
+    # ingest, or the aligner/translation runtimes. The CUDA-graph prewarm runs on
+    # this same thread so graph capture and replay share one thread/stream.
+    asr_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="qwen3-asr")
     try:
-        _prepare_cuda_graph_runtime(model, args)
+        asr_executor.submit(_prepare_cuda_graph_runtime, model, args).result()
         translator, translation_service_config = _build_translation(args)
         if translator is not None:
             translation_actor = TranslationModelActor(
@@ -1364,9 +1406,11 @@ def main() -> None:
             translation_actor.close(wait=True)
         if timestamp_actor is not None:
             timestamp_actor.close(wait=True)
+        asr_executor.shutdown(wait=False, cancel_futures=True)
         raise
     app = build_app(
         model=model,
+        asr_executor=asr_executor,
         timestamp_actor=timestamp_actor,
         timestamp_config=timestamp_config,
         translation_actor=translation_actor,
@@ -1379,13 +1423,16 @@ def main() -> None:
     except ImportError as exc:
         raise RuntimeError("Install service dependencies with: uv sync --python 3.12") from exc
 
-    uvicorn.run(
-        app,
-        host=args.host,
-        port=args.port,
-        ws_ping_interval=None,
-        log_level=_uvicorn_log_level(log_level),
-    )
+    try:
+        uvicorn.run(
+            app,
+            host=args.host,
+            port=args.port,
+            ws_ping_interval=None,
+            log_level=_uvicorn_log_level(log_level),
+        )
+    finally:
+        asr_executor.shutdown(wait=True, cancel_futures=False)
 
 
 if __name__ == "__main__":
