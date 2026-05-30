@@ -211,21 +211,6 @@ where
     set_window_position(&window, frame.x, frame.y)
 }
 
-#[cfg(target_os = "windows")]
-fn combined_work_bounds(bounds: &[WorkBounds]) -> Option<WorkBounds> {
-    let (first, rest) = bounds.split_first()?;
-    Some(
-        rest.iter()
-            .copied()
-            .fold(*first, |combined, item| WorkBounds {
-                left: combined.left.min(item.left),
-                top: combined.top.min(item.top),
-                right: combined.right.max(item.right),
-                bottom: combined.bottom.max(item.bottom),
-            }),
-    )
-}
-
 fn current_window_frame(window: &WebviewWindow) -> Result<Frame, String> {
     let position = window.outer_position().map_err(|error| error.to_string())?;
     let size = window.outer_size().map_err(|error| error.to_string())?;

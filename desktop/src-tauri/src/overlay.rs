@@ -4,8 +4,6 @@ const COLLAPSED_WINDOW_WIDTH: f64 = 960.0;
 const COLLAPSED_WINDOW_HEIGHT: f64 = 180.0;
 const MIN_OVERLAY_WIDTH: f64 = 280.0;
 const MIN_OVERLAY_HEIGHT: f64 = 128.0;
-#[cfg(any(target_os = "windows", test))]
-const SNAP_EDGE_MARGIN_PX: i32 = 42;
 
 pub fn collapsed_logical_size() -> (f64, f64) {
     (COLLAPSED_WINDOW_WIDTH, COLLAPSED_WINDOW_HEIGHT)
@@ -65,7 +63,6 @@ pub struct Point {
 }
 
 impl WorkBounds {
-    #[cfg(any(target_os = "macos", test))]
     fn contains_frame(self, frame: Frame) -> bool {
         frame.x >= self.left
             && frame.y >= self.top
@@ -73,7 +70,6 @@ impl WorkBounds {
             && frame.y + frame.height <= self.bottom
     }
 
-    #[cfg(any(target_os = "macos", test))]
     fn contains_point(self, point: Point) -> bool {
         point.x >= self.left && point.x < self.right && point.y >= self.top && point.y < self.bottom
     }
@@ -138,44 +134,6 @@ pub fn logical_height(physical_height: i32, scale: f64) -> f64 {
     clamp_height(physical_height as f64 / scale)
 }
 
-#[cfg(any(target_os = "windows", test))]
-pub fn snapped_frame_near_point(
-    frame: Frame,
-    bounds: Option<WorkBounds>,
-    snap_point: Option<Point>,
-) -> Frame {
-    let Some(bounds) = bounds else {
-        return frame;
-    };
-    let (x, y) = snapped_clamped_position(bounds, frame);
-    let mut snapped = Frame { x, y, ..frame };
-    if let Some(point) = snap_point {
-        if point.x <= bounds.left + SNAP_EDGE_MARGIN_PX {
-            snapped.x = bounds.left;
-        } else if point.x >= bounds.right - SNAP_EDGE_MARGIN_PX {
-            snapped.x = bounds.right - frame.width;
-        }
-
-        if point.y <= bounds.top + SNAP_EDGE_MARGIN_PX {
-            snapped.y = bounds.top;
-        } else if point.y >= bounds.bottom - SNAP_EDGE_MARGIN_PX {
-            snapped.y = bounds.bottom - frame.height;
-        }
-
-        let (x, y) = clamped_position(
-            Some(bounds),
-            snapped.x,
-            snapped.y,
-            frame.width,
-            frame.height,
-        );
-        snapped.x = x;
-        snapped.y = y;
-    }
-    snapped
-}
-
-#[cfg(any(target_os = "macos", test))]
 pub fn frame_in_single_work_area_near_point(
     frame: Frame,
     work_areas: &[WorkBounds],
@@ -232,33 +190,11 @@ fn clamped_position(
     (x.clamp(bounds.left, max_x), y.clamp(bounds.top, max_y))
 }
 
-#[cfg(any(target_os = "windows", test))]
-fn snapped_clamped_position(bounds: WorkBounds, frame: Frame) -> (i32, i32) {
-    let mut x = frame.x;
-    let mut y = frame.y;
-
-    if (x - bounds.left).abs() <= SNAP_EDGE_MARGIN_PX {
-        x = bounds.left;
-    } else if (x + frame.width - bounds.right).abs() <= SNAP_EDGE_MARGIN_PX {
-        x = bounds.right - frame.width;
-    }
-
-    if (y - bounds.top).abs() <= SNAP_EDGE_MARGIN_PX {
-        y = bounds.top;
-    } else if (y + frame.height - bounds.bottom).abs() <= SNAP_EDGE_MARGIN_PX {
-        y = bounds.bottom - frame.height;
-    }
-
-    clamped_position(Some(bounds), x, y, frame.width, frame.height)
-}
-
-#[cfg(any(target_os = "macos", test))]
 fn clamped_frame_to_work_area(frame: Frame, bounds: WorkBounds) -> Frame {
     let (x, y) = clamped_position(Some(bounds), frame.x, frame.y, frame.width, frame.height);
     Frame { x, y, ..frame }
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn best_work_area_for_frame(frame: Frame, work_areas: &[WorkBounds]) -> Option<WorkBounds> {
     work_areas.iter().copied().max_by_key(|area| {
         (
@@ -268,21 +204,18 @@ fn best_work_area_for_frame(frame: Frame, work_areas: &[WorkBounds]) -> Option<W
     })
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn frame_intersection_area(frame: Frame, area: WorkBounds) -> i64 {
     let width = (frame.x + frame.width).min(area.right) - frame.x.max(area.left);
     let height = (frame.y + frame.height).min(area.bottom) - frame.y.max(area.top);
     i64::from(width.max(0)) * i64::from(height.max(0))
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn frame_distance_to_area_squared(frame: Frame, area: WorkBounds) -> i64 {
     let dx = range_distance(frame.x, frame.x + frame.width, area.left, area.right);
     let dy = range_distance(frame.y, frame.y + frame.height, area.top, area.bottom);
     dx * dx + dy * dy
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn range_distance(start_a: i32, end_a: i32, start_b: i32, end_b: i32) -> i64 {
     if end_a < start_b {
         i64::from(start_b - end_a)
@@ -297,12 +230,6 @@ fn range_distance(start_a: i32, end_a: i32, start_b: i32, end_b: i32) -> i64 {
 mod tests {
     use super::*;
 
-    const DESKTOP: WorkBounds = WorkBounds {
-        left: 0,
-        top: 0,
-        right: 3840,
-        bottom: 1080,
-    };
     const LEFT_SCREEN: WorkBounds = WorkBounds {
         left: 0,
         top: 0,
@@ -339,35 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn windows_snap_point_does_not_stick_to_internal_monitor_seam() {
-        let frame = Frame {
-            x: 1920,
-            y: 400,
-            width: 960,
-            height: 180,
-        };
-        let snapped =
-            snapped_frame_near_point(frame, Some(DESKTOP), Some(Point { x: 1920, y: 500 }));
-
-        assert_eq!(snapped.x, 1920);
-    }
-
-    #[test]
-    fn windows_snap_keeps_cross_monitor_visible_frame_inside_desktop_bounds() {
-        let frame = Frame {
-            x: 1500,
-            y: 400,
-            width: 960,
-            height: 180,
-        };
-        let snapped =
-            snapped_frame_near_point(frame, Some(DESKTOP), Some(Point { x: 1900, y: 500 }));
-
-        assert_eq!(snapped, frame);
-    }
-
-    #[test]
-    fn macos_release_keeps_fully_contained_frame_unchanged() {
+    fn release_keeps_fully_contained_frame_unchanged() {
         let frame = Frame {
             x: 400,
             y: 500,
@@ -386,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn macos_release_assigns_cross_monitor_frame_to_cursor_work_area() {
+    fn release_assigns_cross_monitor_frame_to_cursor_work_area() {
         let frame = Frame {
             x: 1500,
             y: 400,
@@ -413,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn macos_release_falls_back_to_largest_overlap_without_cursor() {
+    fn release_falls_back_to_largest_overlap_without_cursor() {
         let frame = Frame {
             x: 1700,
             y: 400,

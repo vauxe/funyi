@@ -1,6 +1,6 @@
 use tauri::{AppHandle, WebviewWindow};
 
-use crate::overlay;
+use crate::overlay::{self, Frame, Point, WorkBounds};
 
 use super::OverlayDragState;
 
@@ -40,7 +40,58 @@ pub(super) fn end_overlay_drag(
     state: tauri::State<'_, OverlayDragState>,
 ) -> Result<(), String> {
     *state.drag.lock().map_err(|error| error.to_string())? = None;
-    super::finish_overlay_drag(app, |frame, work_areas, cursor| {
-        overlay::snapped_frame_near_point(frame, super::combined_work_bounds(work_areas), cursor)
-    })
+    super::finish_overlay_drag(app, resolve_overlay_drag_frame)
+}
+
+fn resolve_overlay_drag_frame(
+    frame: Frame,
+    work_areas: &[WorkBounds],
+    cursor: Option<Point>,
+) -> Frame {
+    overlay::frame_in_single_work_area_near_point(frame, work_areas, cursor)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LEFT_SCREEN: WorkBounds = WorkBounds {
+        left: 0,
+        top: 0,
+        right: 1920,
+        bottom: 1080,
+    };
+    const RIGHT_SCREEN: WorkBounds = WorkBounds {
+        left: 1920,
+        top: 0,
+        right: 3840,
+        bottom: 1080,
+    };
+
+    #[test]
+    fn release_assigns_cross_monitor_frame_to_cursor_work_area() {
+        let frame = Frame {
+            x: 1500,
+            y: 400,
+            width: 960,
+            height: 180,
+        };
+
+        assert_eq!(
+            resolve_overlay_drag_frame(
+                frame,
+                &[LEFT_SCREEN, RIGHT_SCREEN],
+                Some(Point { x: 2500, y: 500 })
+            ),
+            Frame { x: 1920, ..frame }
+        );
+        assert_eq!(
+            resolve_overlay_drag_frame(
+                frame,
+                &[LEFT_SCREEN, RIGHT_SCREEN],
+                Some(Point { x: 1500, y: 500 })
+            ),
+            Frame { x: 960, ..frame }
+        );
+    }
 }
