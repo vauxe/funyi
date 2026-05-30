@@ -7,6 +7,13 @@ import {
 } from "./audio-capture-events.js";
 import { parseAudioSources, type AudioSource } from "./audio-source.js";
 import type { DesktopHost } from "./host-contract.js";
+import {
+  OVERLAY_DRAG_FINISHED_EVENT,
+  overlayDragFinishedParseError,
+  parseOverlayDragFinished,
+  parseOverlayDragId,
+  type OverlayDragFinished,
+} from "./overlay-events.js";
 import type { ResizeDirection } from "./overlay-contract.js";
 import { tauriRuntime } from "./tauri-runtime.js";
 
@@ -57,8 +64,13 @@ export const desktopHost: DesktopHost = {
     return listenOptional(AUDIO_CAPTURE_ERROR_EVENT, (payload) => handler(parseAudioCaptureError(payload)));
   },
 
-  async startOverlayDrag(): Promise<void> {
-    await invokeOptional(DESKTOP_COMMANDS.startOverlayDrag);
+  async startOverlayDrag(): Promise<number | null> {
+    const runtime = tauriRuntime();
+    if (!runtime) {
+      return null;
+    }
+    const dragId = await runtime.core.invoke<unknown>(DESKTOP_COMMANDS.startOverlayDrag);
+    return dragId === null ? null : parseOverlayDragId(dragId);
   },
 
   async updateOverlayDrag(): Promise<void> {
@@ -67,6 +79,18 @@ export const desktopHost: DesktopHost = {
 
   async endOverlayDrag(): Promise<void> {
     await invokeOptional(DESKTOP_COMMANDS.endOverlayDrag);
+  },
+
+  async listenOverlayDragFinished(handler: (event: OverlayDragFinished) => void): Promise<Unlisten> {
+    return listenOptional(OVERLAY_DRAG_FINISHED_EVENT, (payload) => {
+      let event: OverlayDragFinished;
+      try {
+        event = parseOverlayDragFinished(payload);
+      } catch (error) {
+        event = overlayDragFinishedParseError(error);
+      }
+      handler(event);
+    });
   },
 
   async startOverlayResize(direction: ResizeDirection): Promise<void> {

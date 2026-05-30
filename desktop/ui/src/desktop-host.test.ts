@@ -5,6 +5,7 @@ import { DESKTOP_COMMANDS, desktopHost } from "./desktop-host.js";
 import type { AudioCaptureError } from "./audio-capture-events.js";
 import { AUDIO_CAPTURE_ERROR_EVENT, AUDIO_FRAME_EVENT } from "./audio-capture-events.js";
 import type { AudioSource } from "./audio-source.js";
+import { OVERLAY_DRAG_FINISHED_EVENT } from "./overlay-events.js";
 import { clearBrowserGlobals } from "./test-browser-globals.fixture.js";
 import { installFakeTauriRuntime } from "./test-tauri-runtime.fixture.js";
 
@@ -37,6 +38,24 @@ test("reports unavailable native audio outside Tauri", async () => {
   assert.equal(sources[0]!.isAvailable, false);
   await assert.rejects(desktopHost.startAudioCapture("system_default"), /requires Tauri/);
   await desktopHost.stopAudioCapture();
+});
+
+test("uses no-op overlay operations outside Tauri", async () => {
+  clearBrowserGlobals("window");
+
+  const unlisten = await desktopHost.listenOverlayDragFinished(() => {
+    throw new Error("no Tauri listener should not fire");
+  });
+
+  assert.equal(await desktopHost.startOverlayDrag(), null);
+  await desktopHost.updateOverlayDrag();
+  await desktopHost.endOverlayDrag();
+  await desktopHost.startOverlayResize("North");
+  await desktopHost.updateOverlayResize();
+  await desktopHost.endOverlayResize();
+  await desktopHost.minimizeOverlay();
+  await desktopHost.closeOverlay();
+  unlisten();
 });
 
 test("uses Tauri commands and events for native capture", async () => {
@@ -89,9 +108,13 @@ test("uses Tauri commands and events for native capture", async () => {
 });
 
 test("uses Tauri commands for overlay window operations", async () => {
-  const runtime = installFakeTauriRuntime();
+  const runtime = installFakeTauriRuntime({
+    invoke(command) {
+      return command === DESKTOP_COMMANDS.startOverlayDrag ? 12 : undefined;
+    },
+  });
 
-  await desktopHost.startOverlayDrag();
+  const dragId = await desktopHost.startOverlayDrag();
   await desktopHost.updateOverlayDrag();
   await desktopHost.endOverlayDrag();
   await desktopHost.startOverlayResize("SouthEast");
@@ -110,6 +133,67 @@ test("uses Tauri commands for overlay window operations", async () => {
     { command: DESKTOP_COMMANDS.minimizeOverlay, args: undefined },
     { command: DESKTOP_COMMANDS.closeOverlay, args: undefined },
   ]);
+  assert.equal(dragId, 12);
+});
+
+test("listens for overlay drag finished events", async () => {
+  const runtime = installFakeTauriRuntime();
+  const dragFinishedEvents: unknown[] = [];
+  const unlistenDragFinished = await desktopHost.listenOverlayDragFinished((event) => {
+    dragFinishedEvents.push(event);
+  });
+
+  runtime.emit(OVERLAY_DRAG_FINISHED_EVENT, { dragId: 12, error: "rebound failed" });
+  runtime.emit(OVERLAY_DRAG_FINISHED_EVENT, { dragId: 14, error: "" });
+  runtime.emit(OVERLAY_DRAG_FINISHED_EVENT, { dragId: 16, error: 5 });
+  runtime.emit(OVERLAY_DRAG_FINISHED_EVENT, { drag_id: 15 });
+  unlistenDragFinished();
+  runtime.emit(OVERLAY_DRAG_FINISHED_EVENT, { dragId: 13 });
+
+  assert.deepEqual(dragFinishedEvents, [
+    { dragId: 12, error: "rebound failed" },
+    { dragId: 14, error: "overlay drag release failed" },
+    {
+      dragId: null,
+      error: "overlay drag finished payload error must be a string",
+    },
+    {
+      dragId: null,
+      error: "overlay drag finished payload dragId must be a non-negative integer",
+    },
+  ]);
+});
+
+test("does not convert overlay drag finished handler errors into parse errors", async () => {
+  const runtime = installFakeTauriRuntime();
+  const dragFinishedEvents: unknown[] = [];
+  await desktopHost.listenOverlayDragFinished((event) => {
+    dragFinishedEvents.push(event);
+    throw new Error("handler failed");
+  });
+
+  assert.throws(() => runtime.emit(OVERLAY_DRAG_FINISHED_EVENT, { dragId: 12 }), /handler failed/);
+  assert.deepEqual(dragFinishedEvents, [{ dragId: 12 }]);
+});
+
+test("accepts null overlay drag id from native platforms without release events", async () => {
+  installFakeTauriRuntime({
+    invoke(command) {
+      return command === DESKTOP_COMMANDS.startOverlayDrag ? null : undefined;
+    },
+  });
+
+  assert.equal(await desktopHost.startOverlayDrag(), null);
+});
+
+test("rejects undefined overlay drag id from a present Tauri runtime", async () => {
+  installFakeTauriRuntime({
+    invoke() {
+      return undefined;
+    },
+  });
+
+  await assert.rejects(() => desktopHost.startOverlayDrag(), /overlay drag id must be a non-negative integer/);
 });
 
 test("keeps independent listeners for the same Tauri event", async () => {

@@ -1,5 +1,6 @@
 import type { AudioCaptureError, Unlisten } from "./audio-capture-events.js";
 import type { AudioSource } from "./audio-source.js";
+import type { OverlayDragFinished } from "./overlay-events.js";
 import type { ResizeDirection } from "./overlay-contract.js";
 
 export interface AudioCaptureHost {
@@ -11,9 +12,10 @@ export interface AudioCaptureHost {
 }
 
 export interface OverlayHost {
-  startOverlayDrag(): Promise<void>;
+  startOverlayDrag(): Promise<number | null>;
   updateOverlayDrag(): Promise<void>;
   endOverlayDrag(): Promise<void>;
+  listenOverlayDragFinished(handler: (event: OverlayDragFinished) => void): Promise<Unlisten>;
   startOverlayResize(direction: ResizeDirection): Promise<void>;
   updateOverlayResize(): Promise<void>;
   endOverlayResize(): Promise<void>;

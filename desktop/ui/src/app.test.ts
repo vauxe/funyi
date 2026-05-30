@@ -65,6 +65,18 @@ test("window height switches history mode and inline settings drive start payloa
   assert.equal(payload.target_language, "Japanese");
 });
 
+test("overlay listener setup does not block app boot", async () => {
+  const elements = installDocument();
+  const overlay = createFakeOverlayHost();
+  overlay.listenOverlayDragFinished = () => deferred<() => void>().promise;
+
+  await bootApp({ overlay });
+
+  elements["session-button"]!.click();
+  assert.equal(elements["session-status"]!.textContent, "Connecting...");
+  assert.ok(FakeWebSocket.instances[0]);
+});
+
 test("empty translation target starts without translation request", async () => {
   const elements = installDocument();
 
@@ -207,7 +219,7 @@ test("recoverable command errors remain visible while running", async () => {
   assert.equal(elements["session-button"]!.title, "Stop");
 });
 
-test("drag uses one start/update/end contract across platforms", async () => {
+test("native drag keeps the shell active until native finished event", async () => {
   const elements = installDocument();
   const { overlay, windowRuntime } = await bootApp();
 
@@ -217,6 +229,29 @@ test("drag uses one start/update/end contract across platforms", async () => {
 
   assert.equal(elements["server-url"]!.blurred, true);
   assert.equal(elements["app-shell"]!.className, "is-dragging");
+  windowRuntime.dispatch("pointerup", pointerEvent({ pointerId: 7 }));
+  await nextTick();
+
+  const dragMethods = overlay.invocations
+    .map((invocation) => invocation.method)
+    .filter((method) => method.endsWith("OverlayDrag"));
+  assert.deepEqual(dragMethods, ["startOverlayDrag"]);
+  assert.equal(elements["app-shell"]!.className, "is-dragging");
+
+  overlay.emitOverlayDragFinished(0);
+  assert.equal(elements["app-shell"]!.className, "");
+});
+
+test("fallback drag uses start update end contract when native drag id is unavailable", async () => {
+  const elements = installDocument();
+  const { overlay, windowRuntime } = await bootApp();
+  overlay.startOverlayDrag = async () => {
+    overlay.invocations.push({ method: "startOverlayDrag" });
+    return null;
+  };
+
+  elements["caption-strip"]!.dispatch("pointerdown", pointerEvent({ pointerId: 7 }));
+  await nextTick();
   windowRuntime.dispatch("pointerup", pointerEvent({ pointerId: 7 }));
   await nextTick();
 
@@ -292,17 +327,18 @@ interface AppHarness {
 
 interface BootAppOptions {
   listSourcesError?: Error | null;
+  overlay?: FakeOverlayHost;
   sources?: AudioSource[];
   preferences?: PreferencesStore;
 }
 
 async function bootApp({
   listSourcesError = null,
+  overlay = createFakeOverlayHost(),
   sources = defaultAudioSources(),
   preferences = new PreferencesStore(new MemoryKeyValueStore()),
 }: BootAppOptions = {}): Promise<AppHarness> {
   const audio = createFakeAudioAdapter({ listSourcesError, sources });
-  const overlay = createFakeOverlayHost();
   const windowRuntime = installFakeWindowRuntime({ timerBehavior: "real" });
   const app = createFunyiApp({
     audio,
@@ -312,7 +348,19 @@ async function bootApp({
     createClient: ({ url, ...callbacks }) => new AsrClient({ url, ...callbacks }),
   });
   await app.boot();
+  await nextTick();
   return { overlay, windowRuntime, preferences };
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
 }
 
 function defaultAudioSources(): AudioSource[] {

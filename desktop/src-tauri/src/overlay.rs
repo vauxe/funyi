@@ -57,6 +57,12 @@ pub struct WorkBounds {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MonitorArea {
+    pub bounds: WorkBounds,
+    pub work_area: WorkBounds,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Point {
     pub x: i32,
     pub y: i32,
@@ -134,23 +140,27 @@ pub fn logical_height(physical_height: i32, scale: f64) -> f64 {
     clamp_height(physical_height as f64 / scale)
 }
 
-pub fn frame_in_single_work_area_near_point(
+pub fn frame_in_single_monitor_work_area_near_point(
     frame: Frame,
-    work_areas: &[WorkBounds],
+    monitor_areas: &[MonitorArea],
     point: Option<Point>,
 ) -> Frame {
-    if work_areas.iter().any(|area| area.contains_frame(frame)) {
+    if monitor_areas
+        .iter()
+        .any(|monitor| monitor.work_area.contains_frame(frame))
+    {
         return frame;
     }
 
     let target = point
         .and_then(|point| {
-            work_areas
+            monitor_areas
                 .iter()
                 .copied()
-                .find(|area| area.contains_point(point))
+                .find(|monitor| monitor.bounds.contains_point(point))
+                .map(|monitor| monitor.work_area)
         })
-        .or_else(|| best_work_area_for_frame(frame, work_areas));
+        .or_else(|| best_monitor_work_area_for_frame(frame, monitor_areas));
 
     target.map_or(frame, |bounds| clamped_frame_to_work_area(frame, bounds))
 }
@@ -195,13 +205,19 @@ fn clamped_frame_to_work_area(frame: Frame, bounds: WorkBounds) -> Frame {
     Frame { x, y, ..frame }
 }
 
-fn best_work_area_for_frame(frame: Frame, work_areas: &[WorkBounds]) -> Option<WorkBounds> {
-    work_areas.iter().copied().max_by_key(|area| {
-        (
-            frame_intersection_area(frame, *area),
-            -frame_distance_to_area_squared(frame, *area),
-        )
-    })
+fn best_monitor_work_area_for_frame(
+    frame: Frame,
+    monitor_areas: &[MonitorArea],
+) -> Option<WorkBounds> {
+    monitor_areas
+        .iter()
+        .map(|monitor| monitor.work_area)
+        .max_by_key(|area| {
+            (
+                frame_intersection_area(frame, *area),
+                -frame_distance_to_area_squared(frame, *area),
+            )
+        })
 }
 
 fn frame_intersection_area(frame: Frame, area: WorkBounds) -> i64 {
@@ -242,6 +258,14 @@ mod tests {
         right: 3840,
         bottom: 1080,
     };
+    const LEFT_MONITOR: MonitorArea = MonitorArea {
+        bounds: LEFT_SCREEN,
+        work_area: LEFT_SCREEN,
+    };
+    const RIGHT_MONITOR: MonitorArea = MonitorArea {
+        bounds: RIGHT_SCREEN,
+        work_area: RIGHT_SCREEN,
+    };
 
     #[test]
     fn resized_frame_corner_changes_both_axes() {
@@ -275,9 +299,9 @@ mod tests {
         };
 
         assert_eq!(
-            frame_in_single_work_area_near_point(
+            frame_in_single_monitor_work_area_near_point(
                 frame,
-                &[LEFT_SCREEN],
+                &[LEFT_MONITOR],
                 Some(Point { x: 1600, y: 600 })
             ),
             frame,
@@ -294,20 +318,61 @@ mod tests {
         };
 
         assert_eq!(
-            frame_in_single_work_area_near_point(
+            frame_in_single_monitor_work_area_near_point(
                 frame,
-                &[LEFT_SCREEN, RIGHT_SCREEN],
+                &[LEFT_MONITOR, RIGHT_MONITOR],
                 Some(Point { x: 2500, y: 500 })
             ),
             Frame { x: 1920, ..frame },
         );
         assert_eq!(
-            frame_in_single_work_area_near_point(
+            frame_in_single_monitor_work_area_near_point(
                 frame,
-                &[LEFT_SCREEN, RIGHT_SCREEN],
+                &[LEFT_MONITOR, RIGHT_MONITOR],
                 Some(Point { x: 1500, y: 500 })
             ),
             Frame { x: 960, ..frame },
+        );
+    }
+
+    #[test]
+    fn release_assigns_taskbar_point_to_monitor_physical_bounds() {
+        let left_work_area = WorkBounds {
+            bottom: 1040,
+            ..LEFT_SCREEN
+        };
+        let right_work_area = WorkBounds {
+            bottom: 1040,
+            ..RIGHT_SCREEN
+        };
+        let monitor_areas = [
+            MonitorArea {
+                bounds: LEFT_SCREEN,
+                work_area: left_work_area,
+            },
+            MonitorArea {
+                bounds: RIGHT_SCREEN,
+                work_area: right_work_area,
+            },
+        ];
+        let frame = Frame {
+            x: 1700,
+            y: 1050,
+            width: 960,
+            height: 180,
+        };
+
+        assert_eq!(
+            frame_in_single_monitor_work_area_near_point(
+                frame,
+                &monitor_areas,
+                Some(Point { x: 2500, y: 1079 })
+            ),
+            Frame {
+                x: 1920,
+                y: 860,
+                ..frame
+            }
         );
     }
 
@@ -321,7 +386,11 @@ mod tests {
         };
 
         assert_eq!(
-            frame_in_single_work_area_near_point(frame, &[LEFT_SCREEN, RIGHT_SCREEN], None),
+            frame_in_single_monitor_work_area_near_point(
+                frame,
+                &[LEFT_MONITOR, RIGHT_MONITOR],
+                None
+            ),
             Frame { x: 1920, ..frame },
         );
     }

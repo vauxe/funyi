@@ -31,11 +31,11 @@ fn stop_audio_capture(state: tauri::State<'_, AudioCaptureState>) -> Result<(), 
 }
 
 #[tauri::command]
-fn start_overlay_drag(
+async fn start_overlay_drag(
     app: AppHandle,
     state: tauri::State<'_, OverlayDragState>,
-) -> Result<(), String> {
-    overlay_window::start_overlay_drag(app, state)
+) -> Result<Option<u32>, String> {
+    overlay_window::start_overlay_drag(app, state).await
 }
 
 #[tauri::command]

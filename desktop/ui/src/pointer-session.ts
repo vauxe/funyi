@@ -1,15 +1,19 @@
 interface PointerSessionCallbacks {
+  onStaleSession?(token: number): void;
   onMove(event: PointerEvent): void;
-  onEnd(event: PointerEvent): void;
+  onEnd(event: PointerEvent, token: number): void;
 }
 
 interface ActivePointer {
+  ending: boolean;
   pointerId: number;
   surface: HTMLElement;
+  token: number;
 }
 
 export class PointerSession {
   private activePointer: ActivePointer | null = null;
+  private nextToken = 0;
 
   private readonly handleMove = (event: PointerEvent): void => {
     if (this.matches(event)) {
@@ -18,8 +22,11 @@ export class PointerSession {
   };
 
   private readonly handleEnd = (event: PointerEvent): void => {
-    if (this.matches(event)) {
-      this.callbacks.onEnd(event);
+    const activePointer = this.activePointer;
+    if (event.pointerId === activePointer?.pointerId && !activePointer.ending) {
+      activePointer.ending = true;
+      window.removeEventListener("pointermove", this.handleMove);
+      this.callbacks.onEnd(event, activePointer.token);
     }
   };
 
@@ -33,12 +40,25 @@ export class PointerSession {
     return this.activePointer !== null;
   }
 
+  get activeToken(): number | null {
+    return this.activePointer?.token ?? null;
+  }
+
   start(event: PointerEvent, surface: HTMLElement): boolean {
     if (this.activePointer) {
-      return false;
+      if (this.activePointer.ending) {
+        return false;
+      }
+      if (this.activePointer.surface.hasPointerCapture(this.activePointer.pointerId)) {
+        return false;
+      }
+      const staleToken = this.activePointer.token;
+      this.callbacks.onStaleSession?.(staleToken);
+      this.clear(staleToken);
     }
 
-    this.activePointer = { pointerId: event.pointerId, surface };
+    this.activePointer = { ending: false, pointerId: event.pointerId, surface, token: this.nextToken };
+    this.nextToken += 1;
     surface.setPointerCapture(event.pointerId);
     this.root.classList.add(this.activeClassName);
     window.addEventListener("pointermove", this.handleMove);
@@ -47,9 +67,23 @@ export class PointerSession {
     return true;
   }
 
-  clear(): void {
+  clearIfCaptureLost(): boolean {
+    const activePointer = this.activePointer;
+    if (!activePointer || activePointer.ending || activePointer.surface.hasPointerCapture(activePointer.pointerId)) {
+      return false;
+    }
+    const staleToken = activePointer.token;
+    this.callbacks.onStaleSession?.(staleToken);
+    this.clear(staleToken);
+    return true;
+  }
+
+  clear(token?: number | null): void {
     const activePointer = this.activePointer;
     if (!activePointer) {
+      return;
+    }
+    if (token != null && activePointer.token !== token) {
       return;
     }
 

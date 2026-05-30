@@ -875,9 +875,11 @@ dependencies = [
  "base64 0.22.1",
  "screencapturekit",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "wasapi",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

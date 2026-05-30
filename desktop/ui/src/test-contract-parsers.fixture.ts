@@ -48,9 +48,26 @@ export function rustStringConst(source: string, name: string): string {
   return match[1];
 }
 
+export function rustTauriCommandReturnType(source: string, name: string): string {
+  const match = new RegExp(
+    `#\\[tauri::command\\]\\s*(?:async\\s+)?fn\\s+${escapeRegExp(name)}\\b[\\s\\S]*?\\)\\s*->\\s*([^\\{]+)\\{`,
+    "u",
+  ).exec(source);
+  assert.ok(match?.[1], `missing Rust command return type ${name}`);
+  return normalizeWhitespace(match[1]);
+}
+
 export function rustTauriCommandNames(source: string): string[] {
-  return [...source.matchAll(/#\[tauri::command\]\s*fn\s+([a-z0-9_]+)/gu)]
+  return [...source.matchAll(/#\[tauri::command\]\s*(?:async\s+)?fn\s+([a-z0-9_]+)/gu)]
     .map((match) => match[1])
+    .filter((name): name is string => Boolean(name));
+}
+
+export function rustTauriGenerateHandlerNames(source: string): string[] {
+  const match = /generate_handler!\[([\s\S]*?)\]/u.exec(source);
+  assert.ok(match?.[1], "missing Rust Tauri generate_handler");
+  return [...match[1].matchAll(/\b([a-z][a-z0-9_]*)\b/gu)]
+    .map((name) => name[1])
     .filter((name): name is string => Boolean(name));
 }
 
@@ -72,4 +89,8 @@ function parseHtmlAttributes(source: string): HtmlAttributes {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function normalizeWhitespace(value: string): string {
+  return value.replace(/\s+/gu, " ").trim();
 }
