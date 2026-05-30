@@ -78,12 +78,26 @@ A/B (2026-05-30): alone ~0.94x (slower than gate/up-only), stacked on
 only with a higher-occupancy INT8 GEMV kernel for the out<=2048 linears. The
 forced aligner is a
 single prefill forward (no decode) → prefill-bound → do **not** apply W8A16.
-Its real win is **fused RMSNorm + linears** (same patches as the ASR path),
+Its real win is **fused RMSNorm** (same patch as the ASR path),
 default-on via `--timestamp-fused`: **~1.4x** on the per-segment align forward
-(interleaved A/B 34.7→25.0ms, paired-ratio IQR 1.37-1.44). Not bit-identical —
+(interleaved A/B 34.7→25.0ms; ~1.39x on short realtime-length segments).
+**Linear fusion is NOT applied to the aligner.** A 3-trial interleaved A/B +
+isolated-GEMM sweep (2026-05-30, RTX 4090) decomposed the win: `fused_rmsnorm`
+alone is **1.39x** on short segments and carries essentially all of it;
+`fused_linears` adds only ~4% on short segments and is
+**net-neutral-to-negative on long windows** (0.98x). Root cause: linear
+fusion's only benefit is kernel-LAUNCH-count amortization (3→1 qkv, 2→1
+gate/up) — the `.split` into strided views is free (fused-matmul ms ≈
+fused-matmul+split ms across all seq), so once the GEMMs are compute-bound
+(large seq) the larger fused matmul is a wash and occasionally a slight cuBLAS
+kernel-selection loss; in the attention-dominated long forward the linear is a
+sub-1% slice. fused_linears was also the larger argmax-drift source (0.32s
+alone vs 0.08s for rmsnorm), so dropping it is quality-neutral-to-better. W8A16
+needs fused linears, but the aligner never uses W8A16, so the aligner's
+`from_pretrained` now rejects a `fused_linears=` kwarg. Not bit-identical —
 bf16 argmax flips shift `<=~1%` of timestamps by `<=0.16s` (1-2 segment-time
-units) with **no word-count change** (60-segment validation: 57/60 byte-identical,
-max drift 0.16s) — so it diverges from the exact `_assert_same` parity golden
+units) with **no word-count change** (validation: fused_rmsnorm 99.7% per-word
+byte-identical vs the official golden, max drift 0.08s) — so it diverges from the exact `_assert_same` parity golden
 (an *implementation*-parity gate) but is well inside perceptual timestamp
 tolerance, the same trade the ASR fused stack already makes vs CER. FA2 and a
 hand-written block-local encoder attention were measured **flat** (encoder cost

@@ -37,10 +37,13 @@ validated single-user profile by default.
   is live45.
 - Local service default is the live20 model streaming profile with `cuda_graph +
   flashinfer + fused_rmsnorm + fused_linears` plus required forced-aligner
-  timestamp patches. The forced aligner also runs `fused_rmsnorm + fused_linears`
+  timestamp patches. The forced aligner also runs `fused_rmsnorm`
   by default (`--timestamp-fused`, ~1.4x on the align forward; timestamp drift
-  `<=0.16s` on `<=~1%` of boundaries, no word-count change). W8A16 is OFF for
-  streaming: its fp32 Triton GEMM slows
+  `<=0.16s` on `<=~1%` of boundaries, no word-count change). Linear fusion is NOT
+  applied to the aligner: it is prefill-bound, so linear fusion is
+  launch-overhead-only (~4% on short segments, net-neutral-to-negative on long
+  windows) and carries none of the real win, which is `fused_rmsnorm` alone.
+  W8A16 is OFF for streaming: its fp32 Triton GEMM slows
   multi-token prefill ~3x at equal CER (streaming is prefill-bound). W8A16 stays
   opt-in for the decode-bound offline path.
 - Translation (HY-MT) default has W8A16 ON (`--translation-w8a16`, on gate/up
