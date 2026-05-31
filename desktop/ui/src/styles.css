@@ -144,9 +144,8 @@ select:disabled {
 .caption-strip {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr) auto;
-  column-gap: 12px;
   row-gap: 8px;
   min-height: 0;
   overflow: hidden;
@@ -289,20 +288,34 @@ select:disabled {
   font-size: 18px;
 }
 
-.caption-controls {
+/* The footer chrome — status line (left) + session controls (right) — moves as
+   one element so idle auto-hide slides both at a single speed (see the
+   data-chrome rules below). */
+.chrome-bar {
   position: relative;
-  grid-column: 2;
+  display: flex;
+  grid-column: 1 / -1;
   grid-row: 2;
-  justify-self: end;
-  align-self: end;
+  align-items: end;
+  gap: 12px;
+  transform: translateY(0);
+  transition:
+    transform 260ms ease,
+    visibility 0s;
+  z-index: 7;
+}
+
+.app-shell[data-overlay-mode="history"] .chrome-bar {
+  grid-row: 3;
+}
+
+.caption-controls {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 6px;
   min-height: 24px;
   cursor: default;
-  opacity: 0.72;
-  transition: opacity 160ms ease;
-  z-index: 7;
 }
 
 .resize-handle {
@@ -373,15 +386,6 @@ select:disabled {
   bottom: -5px;
   left: -5px;
   cursor: nesw-resize;
-}
-
-.app-shell[data-overlay-mode="history"] .caption-controls {
-  grid-row: 3;
-}
-
-.caption-strip:hover .caption-controls,
-.caption-controls:focus-within {
-  opacity: 1;
 }
 
 .icon-button {
@@ -690,11 +694,8 @@ select:disabled {
 }
 
 .status-line {
-  position: relative;
   display: flex;
-  grid-column: 1;
-  grid-row: 2;
-  align-self: end;
+  flex: 1 1 auto;
   align-items: center;
   gap: 6px;
   min-width: 0;
@@ -703,30 +704,37 @@ select:disabled {
   color: rgba(234, 255, 251, 0.52);
   font-size: 11px;
   line-height: 1;
-  max-height: 22px;
-  transition:
-    max-height 150ms ease,
-    opacity 150ms ease;
-  z-index: 7;
 }
 
-.app-shell[data-overlay-mode="history"] .status-line {
-  grid-row: 3;
-}
-
-.app-shell[data-state="running"][data-status-active="false"] .status-line {
-  max-height: 0;
-  min-height: 0;
-  opacity: 0;
+/* Idle auto-hide: after a spell of inactivity (in any session state) the footer
+   chrome tucks away, leaving only captions. Pointer/keyboard activity flips
+   data-chrome back to "visible" (see chrome-controller.ts). The whole bar slides
+   straight down past the strip's clipped bottom edge by its own height plus the
+   bottom inset — one element, so the status line and controls move in lockstep
+   at a single speed and the distance self-sizes to the bar. No cross-fade — the
+   motion reads as a clean slide off the window edge. While the bar carries an
+   active status (warning/error) it stays put so a notice is never buried. The
+   delayed `visibility` transition keeps the slide on screen, then drops the bar
+   from the tab order once it is off the edge. */
+.app-shell[data-chrome="hidden"][data-status-active="false"] .chrome-bar {
+  transform: translateY(calc(100% + 12px));
+  visibility: hidden;
   pointer-events: none;
+  transition:
+    transform 260ms ease,
+    visibility 0s linear 260ms;
 }
 
-.app-shell[data-state="running"][data-status-active="false"] .caption-strip:hover .status-line,
-.app-shell[data-state="running"][data-status-active="false"] .status-line:focus-within {
-  max-height: 22px;
-  min-height: 22px;
-  opacity: 1;
+/* Keyboard focus is the accessibility escape hatch: a focused control must be
+   visible even while chrome is auto-hidden (pointer reveal is handled by the
+   controller flipping data-chrome). */
+.app-shell[data-chrome="hidden"][data-status-active="false"]:focus-within .chrome-bar {
+  transform: translateY(0);
+  visibility: visible;
   pointer-events: auto;
+  transition:
+    transform 260ms ease,
+    visibility 0s;
 }
 
 .status-controls,
@@ -1021,20 +1029,19 @@ select:disabled {
     row-gap: 6px;
   }
 
+  .chrome-bar {
+    display: block;
+  }
+
   .caption-controls {
-    grid-column: 1;
-    grid-row: 2;
-    align-self: start;
-    justify-self: end;
-    z-index: 8;
+    position: absolute;
+    top: 0;
+    right: 0;
   }
 
   .status-line {
     flex-direction: column;
-    grid-column: 1;
-    grid-row: 2;
     align-items: stretch;
-    max-height: none;
     min-height: 48px;
     overflow: visible;
     width: 100%;
@@ -1094,22 +1101,8 @@ select:disabled {
     max-width: none;
   }
 
-  .app-shell[data-state="running"][data-status-active="false"] .caption-strip:hover .status-line,
-  .app-shell[data-state="running"][data-status-active="false"] .status-line:focus-within {
-    max-height: 48px;
-    min-height: 48px;
-  }
-
   .app-shell[data-overlay-mode="history"] .caption-strip {
     grid-template-rows: minmax(0, 1fr) 150px auto;
-  }
-
-  .app-shell[data-overlay-mode="history"] .caption-controls {
-    grid-row: 3;
-  }
-
-  .app-shell[data-overlay-mode="history"] .status-line {
-    grid-row: 3;
   }
 }
 
@@ -1118,6 +1111,7 @@ select:disabled {
   .volume-indicator .volume-bar,
   .caption-strip,
   .caption-strip::before,
+  .chrome-bar,
   .history-panel,
   .history-item,
   .icon-button {

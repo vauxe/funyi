@@ -4,6 +4,7 @@ import { AudioSourceSelect } from "./audio-source-select.js";
 import type { AudioSource } from "./audio-source.js";
 import { objectUrlFromStored, prepareBackgroundImage } from "./background-image.js";
 import { CaptionView } from "./caption-view.js";
+import { ChromeController } from "./chrome-controller.js";
 import { errorMessage } from "./error-message.js";
 import type { OverlayHost } from "./host-contract.js";
 import { LanguageControls } from "./language-controls.js";
@@ -32,6 +33,7 @@ export interface FunyiAppOptions {
 export class FunyiApp {
   private readonly audioSourceSelect: AudioSourceSelect;
   private readonly captionView: CaptionView;
+  private readonly chromeController: ChromeController;
   private readonly languageControls: LanguageControls;
   private readonly liveSession: LiveSession;
   private readonly overlayController: OverlayController;
@@ -119,6 +121,12 @@ export class FunyiApp {
       objectUrlFromStored,
       revokeObjectUrl: (url) => URL.revokeObjectURL(url),
     });
+    this.chromeController = new ChromeController({
+      root: dom.appShell,
+      // An open settings panel keeps the controls pinned: a pause mid-adjustment
+      // should not tuck the panel's own toggle away beneath it.
+      shouldStayVisible: () => this.settingsController.isOpen,
+    });
   }
 
   async boot(): Promise<void> {
@@ -128,6 +136,7 @@ export class FunyiApp {
     await this.populateAudioSources();
     this.applyStoredAudioSource();
     this.settingsController.init();
+    this.chromeController.init();
     this.overlayController.bind();
     dom.sessionButton.addEventListener("click", () => void this.toggleSession());
     dom.minimizeButton.addEventListener("click", () => void this.overlayController.minimize());
@@ -258,6 +267,7 @@ export class FunyiApp {
   private setControlsState(state: SessionState, { canStart }: { canStart: boolean }): void {
     this.sessionControlsView.renderState(state, { canStart });
     this.statusController.setSessionState(state);
+    this.chromeController.setSessionState(state);
   }
 }
 

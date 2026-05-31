@@ -38,6 +38,10 @@ export class SettingsController {
 
   constructor(private readonly deps: SettingsControllerDeps) {}
 
+  get isOpen(): boolean {
+    return this.open;
+  }
+
   init(): void {
     const prefs = this.deps.preferences.load();
     this.opacity = prefs.captionOpacity ?? DEFAULT_CAPTION_OPACITY;
