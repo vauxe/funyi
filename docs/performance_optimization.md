@@ -34,50 +34,39 @@ RTX 4090, bf16, 60s CN median wall: base `~5s`, graph `1.89s`, FlashInfer
 Offline remains decode-bound. Streaming remains repeated-prefill bound until it
 gets stateful reuse.
 
-W8A16 is offline-only. Streaming is prefill-bound (decode is ~14% of a live20
-step), and the W8A16 Triton GEMM (fp32 `tl.dot`) makes multi-token prefill ~3x
-slower. live20 per-update steady-state: W8A16 on `~162ms` vs off `~52ms`
-(flashinfer); the 80-window live20 CER gate is equal (cer_mean `0.0961` off vs
-`0.0965` on, `recheck_w8a16_{on,off}.json`). The streaming service defaults
-W8A16 off; a fast tensor-core (not fp32 Triton) prefill GEMM is the only way
-quantization helps the streaming path.
+ASR W8A16 remains offline-only. ASR streaming is prefill-bound (decode is ~14%
+of a live20 step), and the W8A16 Triton GEMM (fp32 `tl.dot`) makes multi-token
+prefill ~3x slower. live20 per-update steady-state: W8A16 on `~162ms` vs off
+`~52ms` (flashinfer); the 80-window live20 CER gate is equal (cer_mean `0.0961`
+off vs `0.0965` on, `recheck_w8a16_{on,off}.json`). The ASR streaming service
+defaults W8A16 off; a fast tensor-core (not fp32 Triton) prefill GEMM is the
+only way quantization helps the streaming path.
 
 Roofline rule (validated on three paths): **decode-bound → W8A16 helps; prefill/
 compute-bound → W8A16 hurts** (fp32 Triton GEMM). (1) ASR offline = decode-bound
 → W8A16 helps (opt-in). (2) ASR streaming = prefill-bound → W8A16 hurts, off. (3)
-Translation HY-MT = decode-bound. The shipping stack is `fixed_mask` decode +
-W8A16 (gate/up) + `fused_rmsnorm`. Per-flag speedups, 3-trial interleaved A/B
-(RTX 4090, batch-1 single-user decode = the realtime path, amortized
-generate-wall/token, 2026-05-30):
+Translation HY-MT = decode-bound. The default Hy-MT2 service profile is
+`fixed_mask` decode + W8A16 (gate/up) + `fused_rmsnorm`.
 
-- `fixed_mask` static-cache decode loop vs HF `generate`: **~1.38x** — the largest
-  single win; this is the runtime default, not an opt-in flag.
-- **W8A16 on gate/up + cuBLAS prefill GEMM: ~1.12x** (`8.07`→`7.22` ms/tok; with
-  the fp32 Triton GEMM it was a net loss `0.82x`, so the cuBLAS GEMM path is
-  required).
-- `fused_rmsnorm` (`--translation-fused-rmsnorm`): **~1.07x** alone, **~1.13x** as
-  an increment on top of W8A16 (norms not linears, so independent of and stacking
-  with W8A16); passes the same golden gate (equal-or-better every direction).
-- Full stack (W8A16 gate/up + fused_rmsnorm): **~1.26x vs bf16, ~1.66x vs HF
-  generate**.
+Hy-MT2 validation on 1200 opus cases (RTX 4090, batch-1 single-user decode,
+2026-05-31):
+
+- stock Transformers golden: `644.07s`;
+- runtime `generate`: `232.44s`, no new errors, mean chrF drop `0.164`;
+- runtime full stack: `161.45s`, no new errors, one new length warning, mean chrF
+  drop `0.0279`;
+- steady-state ablation: `fixed_mask` **~1.19x** vs `generate`, W8A16 **~1.12x**
+  vs `fixed_mask`, `fused_rmsnorm` **~1.13x** vs `fixed_mask`, full stack
+  **~1.51x** vs `generate`.
 
 `--translation-max-new-tokens 256` is a runaway/latency safety bound, **not** a
 speedup: it never binds on subtitle-length text (max 75 tok over 240 cases), so
 512→256 changes nothing on real workloads.
-Both are **quality-safe vs the stock-model golden** (1200 opus cases, en<->zh/en<->ja, chrF2): funyi is
-statistically indistinguishable from stock in every direction (paired deltas
-within noise), 84% byte-identical, 0 new errors; W8A16's own on-vs-off effect is
-mean drop `-0.11`. See `@docs/realtime_translation_design.md` for the golden/gate.
-HY-MT q/o/down (out=2048) and k/v (out=512) under-occupy
-the int8 GEMV (~50% / ~12.5% of SMs) and give no gain; only gate/up (out=6144,
-full occupancy) help. Quantizing **all** linears (`--translation-w8a16-all`,
-q/k/v/o/down too) was measured net-neutral-to-negative on a 3-trial interleaved
-A/B (2026-05-30): alone ~0.94x (slower than gate/up-only), stacked on
-`fused_rmsnorm` ~1.00x — and it worsened the worst-direction golden chrF margin
-(ja→en drop `0.375`→`0.486` against the `0.5` gate), so it was removed. Reopen
-only with a higher-occupancy INT8 GEMV kernel for the out<=2048 linears. The
-forced aligner is a
-single prefill forward (no decode) → prefill-bound → do **not** apply W8A16.
+See `@docs/realtime_translation_design.md` for the translation golden/gate
+workflow.
+Only HY-MT gate/up are quantized; q/k/v/o/down under-occupy the int8 GEMV and
+were rejected. The forced aligner is a single prefill forward (no decode) →
+prefill-bound → do **not** apply W8A16.
 Its real win is **fused RMSNorm** (same patch as the ASR path),
 default-on via `--timestamp-fused`: **~1.4x** on the per-segment align forward
 (interleaved A/B 34.7→25.0ms; ~1.39x on short realtime-length segments).

@@ -688,14 +688,36 @@ class TestRealtimeServerCli:
 
     def test_translation_model_flag_uses_default_model_when_value_is_omitted(self) -> None:
         with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--translation-model"]):
-            assert _parse_args().translation_model == 'tencent/HY-MT1.5-1.8B'
+            args = _parse_args()
+
+        assert args.translation_model == 'tencent/Hy-MT2-1.8B'
+        assert not args.translation_trust_remote_code
+        assert args.translation_decode_backend == 'fixed_mask'
+        assert args.translation_w8a16
+        assert args.translation_fused_rmsnorm
 
     def test_translation_model_can_be_configured(self) -> None:
         with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--translation-model", "local/hymt"]):
             assert _parse_args().translation_model == 'local/hymt'
 
     def test_translation_model_enables_translation_without_default_target(self) -> None:
-        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--translation-model", "local/hymt"]):
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "realtime_server.py",
+                "--model",
+                "model",
+                "--translation-model",
+                "local/hymt",
+                "--translation-model-revision",
+                "abc123",
+                "--no-translation-local-files-only",
+                "--translation-trust-remote-code",
+                "--no-translation-w8a16",
+                "--no-translation-fused-rmsnorm",
+            ],
+        ):
             args = _parse_args()
 
         translator = object()
@@ -705,6 +727,12 @@ class TestRealtimeServerCli:
         assert built_translator is translator
         assert config is not None
         assert translator_class.call_args.args[0] == 'local/hymt'
+        kwargs = translator_class.call_args.kwargs
+        assert kwargs['model_revision'] == 'abc123'
+        assert not kwargs['local_files_only']
+        assert kwargs['trust_remote_code']
+        assert not kwargs['w8a16']
+        assert not kwargs['fused_rmsnorm']
 
     def test_translation_prewarm_uses_actor_and_configured_target_buckets(self) -> None:
         class FakeTranslationActor:

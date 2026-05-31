@@ -34,7 +34,14 @@ if str(ROOT) not in sys.path:
 
 # Reuse only pure contracts: prompt builder, and the gate's quality + chrF logic,
 # so the golden's errors/warnings/reference_similarity match what the gate computes.
-from qwen3_asr_runtime.translation import DEFAULT_HYMT_MODEL, build_hymt_prompt
+from qwen3_asr_runtime.translation import (
+    DEFAULT_HYMT_MODEL,
+    _normalize_model_revision,
+    _resolve_model_path,
+    _resolved_commit,
+    _revision_kwargs,
+    build_hymt_prompt,
+)
 from tools.gate_translation import (  # noqa: E402
     _REFERENCE_METRIC,
     _evaluate_quality,
@@ -80,20 +87,24 @@ def main() -> None:
 
     dtype = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}[args.dtype]
     local_only = not args.allow_download
+    model_revision = _normalize_model_revision(args.model_revision)
+    model_path = _resolve_model_path(args.model, local_files_only=local_only, model_revision=model_revision)
+    revision_kwargs = _revision_kwargs(model_path, model_revision)
     load_started = time.perf_counter()
     tokenizer = AutoTokenizer.from_pretrained(
-        args.model,
-        revision=args.model_revision,
+        model_path,
         local_files_only=local_only,
         trust_remote_code=args.trust_remote_code,
+        fix_mistral_regex=True,
+        **revision_kwargs,
     )
     model = AutoModelForCausalLM.from_pretrained(
-        args.model,
-        revision=args.model_revision,
+        model_path,
         dtype=dtype,
         attn_implementation=args.attn_implementation,
         local_files_only=local_only,
         trust_remote_code=args.trust_remote_code,
+        **revision_kwargs,
     )
     model.to(torch.device(args.device))
     model.eval()
@@ -141,7 +152,10 @@ def main() -> None:
         "generator": "stock_transformers",
         "reference_metric": _REFERENCE_METRIC,
         "model": args.model,
-        "model_revision": args.model_revision,
+        "model_revision": model_revision,
+        "resolved_model_commit": _resolved_commit(model, model_path),
+        "local_files_only": local_only,
+        "trust_remote_code": bool(args.trust_remote_code),
         "dtype": args.dtype,
         "attn_implementation": args.attn_implementation,
         # decode_backend lets the gate's run_config_diff surface the intended,
@@ -149,6 +163,11 @@ def main() -> None:
         "decode_backend": "stock_generate",
         "max_new_tokens": args.max_new_tokens,
         "repetition_penalty": args.repetition_penalty,
+        "generation": {
+            "do_sample": False,
+            "repetition_penalty": args.repetition_penalty,
+            "extra_generate_kwargs": {},
+        },
         "decode": "greedy",
         # Greedy bf16 argmax is not bit-reproducible across these versions; record
         # them so a golden/runtime environment mismatch is auditable.

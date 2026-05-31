@@ -173,10 +173,13 @@ model once at startup and never download weights from request handling.
 
 Default runtime path:
 
-- model: `tencent/HY-MT1.5-1.8B`;
+- model: `tencent/Hy-MT2-1.8B`;
 - attention: `sdpa`;
 - decode backend: `fixed_mask`;
-- generation parameters unchanged from the accepted baseline.
+- `trust_remote_code`: off; the pinned Transformers dependency has native
+  `hunyuan_v1_dense` support;
+- W8A16 on gate/up and fused RMSNorm: on, validated against the Hy-MT2 stock
+  golden.
 
 Prompt, sampling, tokenizer/model, or decode-path changes require the
 translation quality gate. Protocol/runtime-only changes do not.
@@ -230,37 +233,55 @@ delta is not mistaken for a model change when it is really a config change. chrF
 here is a self-contained char-n-gram F (whitespace-stripped); only the paired
 delta is used, never the absolute value (opus refs make absolutes meaningless).
 
-Workflow (generate the stock golden once, then gate funyi against it, then
-human-read the biggest movers):
+Workflow (generate the stock golden once, then gate the runtime profile against
+it, then human-read the biggest movers):
 
-    # golden, from the unmodified stock model (regenerate only when the eval set
-    # or the upstream model changes)
-    gen_translation_golden.py --dataset local_data/opus_mt_eval.jsonl \
-      --output local_goldens/translation/opus_mt_official_golden.json
-    # funyi runtime (shipping default = --w8a16) gated against the golden
-    gate_translation.py --dataset local_data/opus_mt_eval.jsonl --w8a16 \
-      --quality-baseline-json local_goldens/translation/opus_mt_official_golden.json \
+    # eval set, from a pinned opus-100 commit; only needed when the local file
+    # is missing or intentionally refreshed
+    uv run --with pyarrow python tools/fetch_opus_eval.py \
+      --output local_data/opus_mt_eval.jsonl
+    # immutable Hy-MT2 commit; use the Hugging Face id when passing a revision
+    MODEL=tencent/Hy-MT2-1.8B
+    MODEL_REVISION=0123456789abcdef0123456789abcdef01234567
+    # golden, from the unmodified stock model (regenerate when the eval set or
+    # upstream model revision changes)
+    uv run python tools/gen_translation_golden.py \
+      --model "$MODEL" \
+      --model-revision "$MODEL_REVISION" \
+      --allow-download \
+      --dataset local_data/opus_mt_eval.jsonl \
+      --output local_goldens/translation/opus_mt2_official_golden.json
+    # default HYMTTranslator profile gated against the stock golden
+    uv run python tools/gate_translation.py \
+      --model "$MODEL" \
+      --model-revision "$MODEL_REVISION" \
+      --allow-download \
+      --dataset local_data/opus_mt_eval.jsonl \
+      --quality-baseline-json local_goldens/translation/opus_mt2_official_golden.json \
       --max-mean-chrf-drop 0.5 \
-      --worst-output local_goldens/translation/opus_mt_funyi_vs_golden_worst.json
+      --worst-output local_goldens/translation/opus_mt2_funyi_vs_golden_worst.json
+
+For a pre-downloaded local directory, first download the same revision to
+`local_data/models/Hy-MT2-1.8B`, then run both model commands with
+`--model local_data/models/Hy-MT2-1.8B` and omit `--model-revision`. Existing
+local paths are treated as explicit contents; the revision flag is only applied
+to Hugging Face model ids.
 
 `--worst-output` writes the largest chrF-drop cases with source / reference /
 golden / candidate side by side, because the metric cannot tell a benign rephrase
 from a real nuance loss — a human reads those. Each gate row stores its `output`
 text so the comparison is possible at all.
 
-Reference point (1200 cases): funyi (w8a16 on) is statistically indistinguishable
-from the stock golden in all four directions -- paired chrF deltas (golden minus
-funyi) are -0.09 / -0.41 / -0.05 / -0.10, all within noise of 0, so this is
-parity, NOT "better" (the uniform sign is bf16/cache reference-luck, not a real
-win) -- with 0 new errors and 84% byte-identical outputs (agreement chrF mean
-96.6, median 100). This measures FIDELITY to the stock model, not correctness
-(chrF is adequacy-blind and both share the same weights); and the run is w8a16-on
-vs a w8a16-off golden, so the gate emits the `run_config_diff` warning by design.
-W8A16's own marginal effect (on vs off) is mean drop -0.11, worst direction
-+0.002; the worst movers were proper-noun transliteration and synonym swaps, not
-gross failures. So `--translation-w8a16` is quality-safe: the optimized runtime
-reproduces the original model within greedy bf16 noise. Read the `--worst-output`
-dump per direction before trusting a new run -- the metric cannot see adequacy.
+The service uses `--translation-max-new-tokens 256` as a latency/runaway cap.
+The model quality gate above uses the translator default `512` unless that cap is
+the change being tested.
+
+Current Hy-MT2 reference point (1200 cases): default optimized translator
+profile passes the stock golden gate with 0 new errors, one quality-gate length
+warning, 8 notably changed cases, and mean chrF drop `0.0279` (threshold `0.5`).
+The expected non-failing `run_config_diff` warning is separate. Read the
+`--worst-output` dump per direction before trusting a new run -- the metric
+cannot see adequacy.
 
 Private audio, transcripts, and generated outputs stay in `local_data/`,
 `local_goldens/`, or `/tmp`.

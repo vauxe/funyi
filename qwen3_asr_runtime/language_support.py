@@ -51,7 +51,7 @@ QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES: tuple[str, ...] = (
     "Spanish",
 )
 
-# HY-MT1.5-1.8B model-card language list. Realtime translation targets must
+# Hy-MT2-1.8B model-card language list. Realtime translation targets must
 # come from this list.
 HYMT_MODEL_CARD_LANGUAGES: tuple[str, ...] = (
     "Chinese",

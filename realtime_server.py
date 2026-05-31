@@ -37,7 +37,9 @@ from qwen3_asr_runtime.language_support import (
 from qwen3_asr_runtime.translation import (
     DEFAULT_HYMT_ATTN_IMPLEMENTATION,
     DEFAULT_HYMT_DECODE_BACKEND,
+    DEFAULT_HYMT_FUSED_RMSNORM,
     DEFAULT_HYMT_MODEL,
+    DEFAULT_HYMT_W8A16,
     HYMTGenerationConfig,
     HYMTTranslator,
 )
@@ -1097,6 +1099,11 @@ def _parse_args() -> argparse.Namespace:
             f"If no value is provided, uses {DEFAULT_HYMT_MODEL}."
         ),
     )
+    parser.add_argument(
+        "--translation-model-revision",
+        default=None,
+        help="Pin the HF model to an immutable commit/revision; only valid for a HF id, not a local path.",
+    )
     parser.add_argument("--translation-device", default="cuda:0")
     parser.add_argument("--translation-dtype", default=None, choices=["auto", "float16", "bfloat16", "float32"])
     parser.add_argument("--translation-preview", action=argparse.BooleanOptionalAction, default=True)
@@ -1110,17 +1117,16 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--translation-w8a16",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="W8A16 on HY-MT gate/up. Translation is decode-bound, so W8A16 cuts "
-        "per-token decode (~1.12x end-to-end) and passed the translation quality "
-        "gate (0 new errors). Default on; --no-translation-w8a16 to disable.",
+        default=DEFAULT_HYMT_W8A16,
+        help="Apply W8A16 to HY-MT gate/up linears. Enabled by default for the "
+        "validated Hy-MT2 translation profile; pass --no-translation-w8a16 to disable.",
     )
     parser.add_argument(
         "--translation-fused-rmsnorm",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Fused F.rms_norm on HY-MT (~1.12x decode, stacks with W8A16). Passes the "
-        "translation chrF golden (equal-or-better every direction). Default on.",
+        default=DEFAULT_HYMT_FUSED_RMSNORM,
+        help="Apply fused F.rms_norm to HY-MT. Enabled by default for the validated "
+        "Hy-MT2 translation profile; pass --no-translation-fused-rmsnorm to disable.",
     )
     parser.add_argument("--translation-local-files-only", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--translation-trust-remote-code", action="store_true")
@@ -1203,6 +1209,7 @@ def _build_translation(args: argparse.Namespace) -> tuple[Any | None, Translatio
         model_path,
         device=str(args.translation_device),
         dtype=dtype,
+        model_revision=args.translation_model_revision,
         local_files_only=bool(args.translation_local_files_only),
         trust_remote_code=bool(args.translation_trust_remote_code),
         attn_implementation=args.translation_attn_implementation,

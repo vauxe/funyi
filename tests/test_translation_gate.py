@@ -4,17 +4,22 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 
+from qwen3_asr_runtime.translation import DEFAULT_HYMT_FUSED_RMSNORM, DEFAULT_HYMT_W8A16
+import tools.gate_translation as gate_module
 from tools.gate_translation import (
     _evaluate_quality,
     _extract_format_markers,
+    _optimization_patch_issues,
     _parse_json_object,
     _parse_args,
     _performance_issues,
     _quality_gate,
     _reference_similarity,
+    _run_config_diff,
     _summarize,
 )
 
@@ -39,6 +44,175 @@ class TestTranslationGateQuality:
 
         assert args.sample is expected_sample
         assert not args.greedy
+
+    def test_runtime_optimization_flags_default_to_translation_profile(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(sys, "argv", ["gate_translation.py", "--dataset", "cases.jsonl"])
+
+        args = _parse_args()
+
+        assert args.w8a16 is DEFAULT_HYMT_W8A16
+        assert args.fused_rmsnorm is DEFAULT_HYMT_FUSED_RMSNORM
+
+    def test_runtime_optimization_flags_can_be_disabled_for_ablations(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["gate_translation.py", "--dataset", "cases.jsonl", "--no-w8a16", "--no-fused-rmsnorm"],
+        )
+
+        args = _parse_args()
+
+        assert not args.w8a16
+        assert not args.fused_rmsnorm
+
+    def test_main_forwards_and_records_runtime_config(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        dataset = tmp_path / "cases.jsonl"
+        dataset.write_text(
+            json.dumps({"id": "case-1", "text": "hello", "target_language": "Chinese"}) + "\n",
+            encoding="utf-8",
+        )
+        output = tmp_path / "gate.json"
+        constructed: dict[str, object] = {}
+
+        class FakeTranslator:
+            attn_implementation = "sdpa"
+            decode_backend = "generate"
+            w8a16 = False
+            fused_rmsnorm = False
+            w8a16_patch_count = 0
+            fused_rmsnorm_patch_count = 0
+            resolved_model_commit = "abc123"
+
+            def __init__(self, model: str, **kwargs: object) -> None:
+                constructed["model"] = model
+                constructed.update(kwargs)
+
+            def profile_translate(self, *args: object, **kwargs: object) -> SimpleNamespace:
+                del args, kwargs
+                return SimpleNamespace(text="你好")
+
+        monkeypatch.setattr(gate_module, "HYMTTranslator", FakeTranslator)
+        monkeypatch.setattr(
+            gate_module,
+            "_run_case",
+            lambda *args, **kwargs: {
+                "id": "case-1",
+                "errors": [],
+                "warnings": [],
+                "generated_tokens_median": 1,
+                "total_wall_sec_median": 0.01,
+                "generate_wall_sec_median": 0.01,
+                "decode_tokens_per_sec": 100.0,
+            },
+        )
+        monkeypatch.setattr(gate_module, "_summarize", lambda rows: {"total_wall_sec_sum": 0.01})
+        monkeypatch.setattr(gate_module, "_quality_gate", lambda *args, **kwargs: {"issues": []})
+        monkeypatch.setattr(gate_module, "_cuda_peak_allocated_mb", lambda device: None)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "gate_translation.py",
+                "--dataset",
+                str(dataset),
+                "--model",
+                "org/model",
+                "--model-revision",
+                "abc123",
+                "--decode-backend",
+                "generate",
+                "--no-w8a16",
+                "--no-fused-rmsnorm",
+                "--output-json",
+                str(output),
+            ],
+        )
+
+        gate_module.main()
+        capsys.readouterr()
+        payload = json.loads(output.read_text(encoding="utf-8"))
+
+        assert constructed["model"] == "org/model"
+        assert constructed["model_revision"] == "abc123"
+        assert constructed["w8a16"] is False
+        assert constructed["fused_rmsnorm"] is False
+        assert payload["model_revision"] == "abc123"
+        assert payload["resolved_model_commit"] == "abc123"
+        assert payload["w8a16"] is False
+        assert payload["w8a16_patch_count"] == 0
+        assert payload["fused_rmsnorm"] is False
+        assert payload["fused_rmsnorm_patch_count"] == 0
+
+    def test_optimization_patch_count_zero_is_error(self) -> None:
+        translator = SimpleNamespace(
+            w8a16=True,
+            w8a16_patch_count=0,
+            fused_rmsnorm=True,
+            fused_rmsnorm_patch_count=0,
+        )
+
+        issues = _optimization_patch_issues(translator)
+
+        assert {issue.code for issue in issues} == {"w8a16_patch_count_zero", "fused_rmsnorm_patch_count_zero"}
+        assert {issue.severity for issue in issues} == {"error"}
+
+    def test_main_fails_before_warmup_when_requested_optimization_did_not_patch(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        dataset = tmp_path / "cases.jsonl"
+        dataset.write_text(
+            json.dumps({"id": "case-1", "text": "hello", "target_language": "Chinese"}) + "\n",
+            encoding="utf-8",
+        )
+
+        class FakeTranslator:
+            attn_implementation = "sdpa"
+            decode_backend = "fixed_mask"
+            w8a16 = True
+            w8a16_patch_count = 0
+            fused_rmsnorm = False
+            fused_rmsnorm_patch_count = 0
+            model_revision = None
+            resolved_model_commit = None
+
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                del args, kwargs
+
+            def profile_translate(self, *args: object, **kwargs: object) -> SimpleNamespace:
+                del args, kwargs
+                raise AssertionError("gate should fail before warmup")
+
+        monkeypatch.setattr(gate_module, "HYMTTranslator", FakeTranslator)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "gate_translation.py",
+                "--dataset",
+                str(dataset),
+                "--no-fused-rmsnorm",
+            ],
+        )
+
+        with pytest.raises(SystemExit):
+            gate_module.main()
+        captured = capsys.readouterr()
+
+        assert "w8a16_patch_count_zero" in captured.err
 
     def test_parse_json_object_rejects_non_object(self) -> None:
         assert _parse_json_object('{"logits_to_keep": 1}') == {'logits_to_keep': 1}
@@ -212,6 +386,40 @@ class TestTranslationGatePerformance:
 
 
 class TestTranslationGateRegression:
+    def test_run_config_diff_compares_legacy_stock_golden_generation(self, tmp_path: Path) -> None:
+        baseline_path = tmp_path / "baseline.json"
+        baseline_path.write_text(
+            json.dumps(
+                {
+                    "generator": "stock_transformers",
+                    "decode": "greedy",
+                    "repetition_penalty": 1.05,
+                    "max_new_tokens": 512,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        diff = _run_config_diff(
+            baseline_path,
+            {
+                "max_new_tokens": 512,
+                "generation": {
+                    "do_sample": False,
+                    "top_k": 20,
+                    "repetition_penalty": 1.2,
+                    "extra_generate_kwargs": {"logits_to_keep": 1},
+                },
+            },
+        )
+
+        assert diff == {
+            "generation": {
+                "repetition_penalty": {"baseline": 1.05, "candidate": 1.2},
+                "extra_generate_kwargs": {"baseline": {}, "candidate": {"logits_to_keep": 1}},
+            }
+        }
+
     def test_quality_baseline_allows_existing_errors(self, tmp_path: Path) -> None:
         baseline_path = tmp_path / "baseline_gate.json"
         baseline_path.write_text(

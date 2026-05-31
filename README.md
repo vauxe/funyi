@@ -62,17 +62,23 @@ directly instead of trying to install a separate global shim.
 
 ## Start Live Captions
 
-Start the full local backend first:
+Start the full local backend first. On a fresh checkout or empty model cache,
+use the download target once:
+
+```bash
+make backend-download
+```
+
+Use the cached-model target after the ASR, forced-aligner, and translation
+models are already available locally:
 
 ```bash
 make backend
 ```
 
-This starts ASR with the forced aligner and translation enabled, using the
-validated local service optimization stack. Common variants:
+This starts ASR with the forced aligner and translation enabled. Common variants:
 
 ```bash
-make backend-download
 make backend-asr
 FUNYI_PORT=8001 make backend
 ```
@@ -117,12 +123,19 @@ capture.
 
 ## Enable Translation
 
-`make backend` enables `tencent/HY-MT1.5-1.8B` by default. To use a different
-model or local path:
+`make backend` enables `tencent/Hy-MT2-1.8B` by default. Use
+`make backend-download` on a fresh checkout or empty model cache. The repository
+pins a Transformers version with native `hunyuan_v1_dense` support, so the
+default path does not require `--translation-trust-remote-code`; it runs the
+validated `fixed_mask + W8A16 + fused_rmsnorm` translation profile. To point the
+service at a local Hy-MT2 checkout:
 
 ```bash
-FUNYI_TRANSLATION_MODEL=/path/to/HY-MT1.5-1.8B make backend
+FUNYI_TRANSLATION_MODEL=/path/to/Hy-MT2-1.8B make backend
 ```
+
+For release validation, use a fixed local Hy-MT2 checkout or regenerate the
+translation golden after updating the upstream model weights.
 
 Then choose a target language in the desktop UI. Set
 `FUNYI_TRANSLATION_MODEL=` to disable translation and leave the desktop target

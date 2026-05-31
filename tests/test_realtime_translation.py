@@ -125,10 +125,7 @@ async def assert_no_event(queue: asyncio.Queue[dict[str, object]], *, timeout: f
 
 
 async def wait_for_thread_event(event: threading.Event, *, timeout: float = 0.5) -> None:
-    deadline = time.monotonic() + timeout
-    while not event.is_set() and time.monotonic() < deadline:
-        await asyncio.sleep(0.005)
-    if not event.is_set():
+    if not await asyncio.to_thread(event.wait, timeout):
         raise AssertionError("timed out waiting for translator thread")
 
 
@@ -683,6 +680,35 @@ class TestRealtimeTranslationRuntime:
 
         assert results == [('English:one', None), ('English:two', None)]
         assert translator.max_active == 1
+
+    async def test_model_actor_cancels_queued_translate_after_timeout(self, translation_actor) -> None:
+        translator = BlockingTextTranslator(blocked_text="one")
+        actor = translation_actor(translator)
+        running = asyncio.create_task(
+            actor.translate(
+                "one",
+                target_language="English",
+                source_language="Chinese",
+                max_new_tokens=None,
+                timeout_sec=None,
+            )
+        )
+        await wait_for_thread_event(translator.started)
+
+        timed_out = await actor.translate(
+            "two",
+            target_language="English",
+            source_language="Chinese",
+            max_new_tokens=None,
+            timeout_sec=0.01,
+        )
+        assert timed_out == (None, "timeout")
+        assert translator.calls == ["one"]
+
+        translator.release.set()
+        assert await asyncio.wait_for(running, timeout=0.5) == ("English:one", None)
+        await asyncio.to_thread(actor.close, wait=True)
+        assert translator.calls == ["one"]
 
     async def test_model_actor_runs_prewarm_and_runtime_on_same_thread(
         self,

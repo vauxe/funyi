@@ -62,9 +62,9 @@ def _load_pair(config: str, a: str, b: str, *, min_chars: int, max_chars: int) -
         import pyarrow.parquet as pq
     except ImportError as exc:  # pragma: no cover - fetch-time only dependency
         raise SystemExit(
-            f"fetch needs huggingface_hub and pyarrow ({exc}); install them in a throwaway env, "
-            "e.g. `uv venv /tmp/ev && uv pip install --python /tmp/ev huggingface_hub pyarrow`, "
-            "then run this script with /tmp/ev/bin/python."
+            f"fetch needs huggingface_hub and pyarrow ({exc}); re-run via "
+            "`uv run --with pyarrow python tools/fetch_opus_eval.py ...` "
+            "(huggingface_hub is already a default dep)."
         ) from exc
     path = hf_hub_download(
         "Helsinki-NLP/opus-100",

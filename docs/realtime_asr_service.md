@@ -135,7 +135,7 @@ Optional `ready.translation`, present only when the session has a
 {
   "enabled": true,
   "target_language": "English",
-  "model": "tencent/HY-MT1.5-1.8B",
+  "model": "tencent/Hy-MT2-1.8B",
   "stable": {
     "enabled": true,
     "reliable": true,
@@ -435,7 +435,7 @@ forced alignment.
 ## Validation
 
 ```bash
-uv run python -m unittest discover tests
+uv run --group test pytest
 ```
 
 Use `tools/ws_e2e_leak_check.py` after starting `realtime_server.py` for service

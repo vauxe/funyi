@@ -21,8 +21,10 @@ if str(ROOT) not in sys.path:
 from qwen3_asr_runtime.translation import (
     DEFAULT_HYMT_ATTN_IMPLEMENTATION,
     DEFAULT_HYMT_DECODE_BACKEND,
+    DEFAULT_HYMT_FUSED_RMSNORM,
     DEFAULT_HYMT_MAX_NEW_TOKENS,
     DEFAULT_HYMT_MODEL,
+    DEFAULT_HYMT_W8A16,
     HYMTGenerationConfig,
     HYMTTranslator,
 )
@@ -48,6 +50,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", required=True, help="JSONL case file path.")
     parser.add_argument("--cases", default=None, help="Comma-separated case ids or groups. Default: all.")
     parser.add_argument("--model", default=DEFAULT_HYMT_MODEL, help="HY-MT model path or Hugging Face id.")
+    parser.add_argument(
+        "--model-revision",
+        default=None,
+        help="Pin a Hugging Face model id to an immutable commit for auditable candidate runs.",
+    )
     parser.add_argument("--device", default="cuda:0", help="cuda:0, cpu, or auto.")
     parser.add_argument("--dtype", default=None, choices=["auto", "float32", "float16", "bfloat16"])
     parser.add_argument(
@@ -97,13 +104,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--trust-remote-code", action="store_true")
     parser.add_argument(
         "--w8a16",
-        action="store_true",
-        help="Weight-only int8 on gate/up linears (decode speedup, CER-gated). Default off.",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_HYMT_W8A16,
+        help="Weight-only int8 on gate/up linears. Defaults to the runtime profile; "
+        "use --no-w8a16 for bf16/fp16 ablations.",
     )
     parser.add_argument(
         "--fused-rmsnorm",
-        action="store_true",
-        help="Fused F.rms_norm on HY-MT (~1.12x decode, chrF-gated). Default off.",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_HYMT_FUSED_RMSNORM,
+        help="Fused F.rms_norm on HY-MT. Defaults to the runtime profile; "
+        "use --no-fused-rmsnorm for ablations.",
     )
     parser.add_argument("--output-json", default=None, help="Optional path to write gate JSON.")
     parser.add_argument(
@@ -149,6 +160,7 @@ def main() -> None:
         args.model,
         device=args.device,
         dtype=args.dtype,
+        model_revision=args.model_revision,
         local_files_only=not args.allow_download,
         trust_remote_code=args.trust_remote_code,
         attn_implementation=args.attn_implementation,
@@ -158,6 +170,11 @@ def main() -> None:
         fused_rmsnorm=args.fused_rmsnorm,
     )
     load_wall_sec = time.perf_counter() - load_started
+    patch_issues = _optimization_patch_issues(translator)
+    if patch_issues:
+        for issue in patch_issues:
+            print(f"{issue.severity}: {issue.code}: {issue.message}", file=sys.stderr)
+        raise SystemExit(1)
 
     warmup_count = _resolve_warmup_count(args.warmup, len(cases))
     warmup_started = time.perf_counter()
@@ -224,17 +241,31 @@ def main() -> None:
         "repetition_penalty": args.repetition_penalty,
         "extra_generate_kwargs": generation_config.extra_generate_kwargs,
     }
+    model_revision = getattr(translator, "model_revision", args.model_revision)
+    resolved_model_commit = getattr(translator, "resolved_model_commit", None)
+    # Top-level run-config only; generation-scoped fields (do_sample,
+    # repetition_penalty, ...) live in the separate ``generation`` block so the
+    # legacy-golden fallback in _baseline_generation_block cannot double-count them.
+    run_config: dict[str, Any] = {
+        "model": args.model,
+        "model_revision": model_revision,
+        "resolved_model_commit": resolved_model_commit,
+        "local_files_only": not args.allow_download,
+        "trust_remote_code": bool(args.trust_remote_code),
+        "dtype": resolved_dtype,
+        "attn_implementation": translator.attn_implementation,
+        "decode_backend": translator.decode_backend,
+        "w8a16": translator.w8a16,
+        "w8a16_patch_count": translator.w8a16_patch_count,
+        "fused_rmsnorm": translator.fused_rmsnorm,
+        "fused_rmsnorm_patch_count": translator.fused_rmsnorm_patch_count,
+        "max_new_tokens": args.max_new_tokens,
+    }
     run_config_diff: dict[str, Any] = {}
     if args.quality_baseline_json:
         run_config_diff = _run_config_diff(
             Path(args.quality_baseline_json),
-            {
-                "dtype": resolved_dtype,
-                "attn_implementation": translator.attn_implementation,
-                "decode_backend": translator.decode_backend,
-                "max_new_tokens": args.max_new_tokens,
-                "generation": generation_block,
-            },
+            {**run_config, "generation": generation_block},
         )
         if run_config_diff:
             # Non-failing: when the change under test IS the backend/dtype, the
@@ -255,11 +286,8 @@ def main() -> None:
     payload = {
         "passed": passed,
         "case_count": len(rows),
+        **run_config,
         "device": args.device,
-        "dtype": resolved_dtype,
-        "attn_implementation": translator.attn_implementation,
-        "decode_backend": translator.decode_backend,
-        "max_new_tokens": args.max_new_tokens,
         "reference_metric": _REFERENCE_METRIC,
         "run_config_diff": run_config_diff,
         "generation": {
@@ -667,6 +695,28 @@ def _performance_issues(
     return issues
 
 
+def _optimization_patch_issues(translator: Any) -> list[TranslationIssue]:
+    checks = (
+        (
+            "w8a16",
+            "w8a16_patch_count",
+            "w8a16_patch_count_zero",
+            "W8A16 was requested but no matching HY-MT linears were patched",
+        ),
+        (
+            "fused_rmsnorm",
+            "fused_rmsnorm_patch_count",
+            "fused_rmsnorm_patch_count_zero",
+            "fused RMSNorm was requested but no RMSNorm modules were patched",
+        ),
+    )
+    return [
+        TranslationIssue("error", code, message)
+        for flag, count, code, message in checks
+        if getattr(translator, flag, False) and int(getattr(translator, count, 0)) <= 0
+    ]
+
+
 def _quality_gate(
     rows: list[dict[str, Any]],
     *,
@@ -884,20 +934,42 @@ def _run_config_diff(baseline_path: Path, candidate: dict[str, Any]) -> dict[str
         return {}
     diff: dict[str, Any] = {}
     for key, value in candidate.items():
-        if key not in baseline:
+        # ``generation`` is processed even when absent from the baseline: legacy
+        # stock goldens predate the structured block and have it reconstructed
+        # from flat keys by ``_baseline_generation_block`` below.
+        if key not in baseline and key != "generation":
             continue
         baseline_value = baseline.get(key)
-        if key == "generation" and isinstance(value, dict) and isinstance(baseline_value, dict):
+        if key == "generation" and isinstance(value, dict):
+            baseline_generation = _baseline_generation_block(baseline)
+            if baseline_generation is None:
+                continue
             sub = {
-                sub_key: {"baseline": baseline_value.get(sub_key), "candidate": sub_value}
+                sub_key: {"baseline": baseline_generation.get(sub_key), "candidate": sub_value}
                 for sub_key, sub_value in value.items()
-                if baseline_value.get(sub_key) != sub_value
+                if sub_key in baseline_generation and baseline_generation.get(sub_key) != sub_value
             }
             if sub:
                 diff[key] = sub
         elif baseline_value != value:
             diff[key] = {"baseline": baseline_value, "candidate": value}
     return diff
+
+
+def _baseline_generation_block(baseline: dict[str, Any]) -> dict[str, Any] | None:
+    generation = baseline.get("generation")
+    if isinstance(generation, dict):
+        return generation
+
+    fallback: dict[str, Any] = {}
+    if "decode" in baseline:
+        fallback["do_sample"] = str(baseline.get("decode") or "").strip().lower() not in {"greedy", "argmax"}
+    for key in ("repetition_penalty", "top_k", "top_p", "temperature", "extra_generate_kwargs"):
+        if key in baseline:
+            fallback[key] = baseline[key]
+    if baseline.get("generator") == "stock_transformers" and "extra_generate_kwargs" not in fallback:
+        fallback["extra_generate_kwargs"] = {}
+    return fallback or None
 
 
 def _cuda_peak_allocated_mb(device: str) -> float | None:

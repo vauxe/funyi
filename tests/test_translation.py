@@ -13,14 +13,20 @@ import qwen3_asr_runtime.translation as translation_module
 from qwen3_asr_runtime.translation import (
     DEFAULT_HYMT_ATTN_IMPLEMENTATION,
     DEFAULT_HYMT_DECODE_BACKEND,
+    DEFAULT_HYMT_FUSED_RMSNORM,
     DEFAULT_HYMT_MAX_NEW_TOKENS,
+    DEFAULT_HYMT_MODEL,
+    DEFAULT_HYMT_W8A16,
     HYMTGenerationConfig,
     HYMTTranslator,
     _attention_mask_for_step,
     _build_static_sdpa_attention_masks,
     build_hymt_prompt,
     _fast_stop_eos_token_ids,
+    _model_commit_hash,
+    _normalize_model_revision,
     _resolve_model_path,
+    _snapshot_commit_from_path,
 )
 
 
@@ -135,9 +141,41 @@ class TestTranslationPrompt:
 
 
 class TestHYMTTranslator:
+    def test_default_model_is_hymt2_with_optimized_decode(self) -> None:
+        assert DEFAULT_HYMT_MODEL == 'tencent/Hy-MT2-1.8B'
+        assert DEFAULT_HYMT_DECODE_BACKEND == 'fixed_mask'
+        assert DEFAULT_HYMT_W8A16
+        assert DEFAULT_HYMT_FUSED_RMSNORM
+
+    def test_injected_model_uses_default_optimization_profile(self) -> None:
+        tokenizer = FakeTokenizer()
+        model = FakeModel()
+        with mock.patch(
+            "qwen3_asr_runtime.quant_linears.patch_linears_w8a16",
+            return_value=2,
+        ) as patch_w8a16, mock.patch(
+            "qwen3_asr_runtime.fused_rmsnorm.patch_model_rmsnorms",
+            return_value=3,
+        ) as patch_rmsnorm:
+            translator = HYMTTranslator("fake-model", device="cpu", model=model, tokenizer=tokenizer)
+
+        assert translator.decode_backend == DEFAULT_HYMT_DECODE_BACKEND
+        assert translator.w8a16 is DEFAULT_HYMT_W8A16
+        assert translator.fused_rmsnorm is DEFAULT_HYMT_FUSED_RMSNORM
+        patch_w8a16.assert_called_once_with(model, suffixes=("gate_proj", "up_proj"), prefill_gemm="cublas")
+        patch_rmsnorm.assert_called_once()
+        assert translator.w8a16_patch_count == 2
+        assert translator.fused_rmsnorm_patch_count == 3
+
+    def test_pinned_transformers_has_native_hymt2_model_mapping(self) -> None:
+        from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
+        from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
+
+        assert CONFIG_MAPPING_NAMES['hunyuan_v1_dense'] == 'HunYuanDenseV1Config'
+        assert MODEL_FOR_CAUSAL_LM_MAPPING_NAMES['hunyuan_v1_dense'] == 'HunYuanDenseV1ForCausalLM'
+
     def test_default_attention_implementation_is_sdpa(self) -> None:
         assert DEFAULT_HYMT_ATTN_IMPLEMENTATION == 'sdpa'
-        assert DEFAULT_HYMT_DECODE_BACKEND == 'fixed_mask'
 
     def test_default_max_new_tokens_matches_asr_default(self) -> None:
         assert DEFAULT_HYMT_MAX_NEW_TOKENS == 512
@@ -159,11 +197,42 @@ class TestHYMTTranslator:
             "qwen3_asr_runtime.translation._resolve_model_path",
             return_value="fake-model",
         ):
-            HYMTTranslator("fake-model", device="cpu")
+            HYMTTranslator("fake-model", device="cpu", w8a16=False, fused_rmsnorm=False)
 
         from_tokenizer.assert_called_once()
         from_model.assert_called_once()
+        assert from_tokenizer.call_args.kwargs['trust_remote_code'] is False
+        assert from_tokenizer.call_args.kwargs['fix_mistral_regex'] is True
+        assert from_model.call_args.kwargs['trust_remote_code'] is False
         assert from_model.call_args.kwargs['attn_implementation'] == DEFAULT_HYMT_ATTN_IMPLEMENTATION
+
+    def test_model_load_forwards_revision_and_records_commit(self) -> None:
+        tokenizer = FakeTokenizer()
+        model = FakeModel()
+        model.config = SimpleNamespace(_commit_hash="commit456")  # type: ignore[attr-defined]
+        with mock.patch(
+            "transformers.AutoTokenizer.from_pretrained",
+            return_value=tokenizer,
+        ) as from_tokenizer, mock.patch(
+            "transformers.AutoModelForCausalLM.from_pretrained",
+            return_value=model,
+        ) as from_model, mock.patch(
+            "qwen3_asr_runtime.translation._resolve_model_path",
+            return_value="org/model",
+        ):
+            translator = HYMTTranslator(
+                "org/model",
+                device="cpu",
+                model_revision=" abc123 ",
+                local_files_only=False,
+                w8a16=False,
+                fused_rmsnorm=False,
+            )
+
+        assert translator.model_revision == "abc123"
+        assert translator.resolved_model_commit == "commit456"
+        assert from_tokenizer.call_args.kwargs["revision"] == "abc123"
+        assert from_model.call_args.kwargs["revision"] == "abc123"
 
     def test_translate_decodes_only_generated_tokens(self) -> None:
         tokenizer = FakeTokenizer()
@@ -171,6 +240,8 @@ class TestHYMTTranslator:
         translator = HYMTTranslator(
             "fake-model",
             device="cpu",
+            w8a16=False,
+            fused_rmsnorm=False,
             generation_config=HYMTGenerationConfig(
                 max_new_tokens=5,
                 do_sample=False,
@@ -204,22 +275,50 @@ class TestHYMTTranslator:
             "fake-model",
             device="cpu",
             decode_backend="generate",
+            w8a16=False,
+            fused_rmsnorm=False,
             generation_config=HYMTGenerationConfig(max_new_tokens=5),
             model=model,
             tokenizer=tokenizer,
         )
-
         translator.translate("hello", target_language="Chinese")
 
         assert translator.decode_backend == 'generate'
         assert 'custom_generate' not in model.generate_kwargs
+
+    def test_fixed_mask_backend_can_be_enabled(self) -> None:
+        tokenizer = FakeTokenizer()
+        model = FakeModel()
+        translator = HYMTTranslator(
+            "fake-model",
+            device="cpu",
+            decode_backend="fixed_mask",
+            w8a16=False,
+            fused_rmsnorm=False,
+            generation_config=HYMTGenerationConfig(max_new_tokens=5),
+            model=model,
+            tokenizer=tokenizer,
+        )
+        translator._can_use_fixed_mask_decode = lambda kwargs: True  # type: ignore[method-assign]
+
+        translator.translate("hello", target_language="Chinese")
+
+        assert translator.decode_backend == 'fixed_mask'
+        assert model.generate_kwargs['custom_generate'] is translation_module._hymt_fixed_mask_generate
 
     def test_load_disables_hymt_noop_dynamic_rope_update(self) -> None:
         tokenizer = FakeTokenizer()
         model = FakeHunyuanModel()
         rotary = model.model.rotary_emb
 
-        HYMTTranslator("fake-model", device="cpu", model=model, tokenizer=tokenizer)
+        HYMTTranslator(
+            "fake-model",
+            device="cpu",
+            w8a16=False,
+            fused_rmsnorm=False,
+            model=model,
+            tokenizer=tokenizer,
+        )
 
         assert rotary.rope_type == 'default'
         assert rotary._hymt_original_rope_type == 'dynamic'
@@ -228,6 +327,8 @@ class TestHYMTTranslator:
         translator = HYMTTranslator(
             "fake-model",
             device="cpu",
+            w8a16=False,
+            fused_rmsnorm=False,
             generation_config=HYMTGenerationConfig(),
             model=FakeModel(),
             tokenizer=FakeTokenizer(),
@@ -246,6 +347,8 @@ class TestHYMTTranslator:
         translator = HYMTTranslator(
             "fake-model",
             device="cpu",
+            w8a16=False,
+            fused_rmsnorm=False,
             generation_config=HYMTGenerationConfig(),
             model=model,
             tokenizer=tokenizer,
@@ -274,6 +377,8 @@ class TestHYMTTranslator:
         translator = HYMTTranslator(
             "fake-model",
             device="cpu",
+            w8a16=False,
+            fused_rmsnorm=False,
             generation_config=HYMTGenerationConfig(),
             model=FakeModel(),
             tokenizer=ShortBatchDecodeTokenizer(),
@@ -337,13 +442,30 @@ class TestHYMTFixedMaskDecode:
 
 
 class TestHYMTModelPath:
+    def test_empty_model_revision_is_none(self) -> None:
+        assert _normalize_model_revision("  ") is None
+
     def test_local_files_keeps_existing_path(self, tmp_path: Path) -> None:
         model_path = str(tmp_path)
 
         assert _resolve_model_path(model_path, local_files_only=True) == model_path
 
+    def test_model_revision_is_rejected_for_existing_local_path(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="model_revision only applies to Hugging Face model ids"):
+            _resolve_model_path(str(tmp_path), local_files_only=True, model_revision="abc123")
+
     def test_local_files_resolves_model_id_to_snapshot(self) -> None:
         with mock.patch("huggingface_hub.snapshot_download", return_value=Path("/cache/snapshot")) as download:
             assert _resolve_model_path('org/model', local_files_only=True) == '/cache/snapshot'
 
-        download.assert_called_once_with(repo_id="org/model", local_files_only=True)
+        download.assert_called_once_with(repo_id="org/model", revision=None, local_files_only=True)
+
+    def test_local_files_resolves_model_id_to_pinned_snapshot(self) -> None:
+        with mock.patch("huggingface_hub.snapshot_download", return_value=Path("/cache/snapshot")) as download:
+            assert _resolve_model_path('org/model', local_files_only=True, model_revision="abc123") == '/cache/snapshot'
+
+        download.assert_called_once_with(repo_id="org/model", revision="abc123", local_files_only=True)
+
+    def test_extracts_commit_from_model_or_snapshot_path(self) -> None:
+        assert _model_commit_hash(SimpleNamespace(config=SimpleNamespace(_commit_hash="abc123"))) == "abc123"
+        assert _snapshot_commit_from_path("/cache/models--org--model/snapshots/def456") == "def456"

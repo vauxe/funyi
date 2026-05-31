@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from dataclasses import dataclass
 
@@ -51,6 +52,27 @@ class SlowFakeAligner(FakeAligner):
     def align(self, *, audio: object, text: str, language: str) -> list[FakeAlignResult]:
         time.sleep(self._delay_sec)
         return super().align(audio=audio, text=text, language=language)
+
+
+class BlockingFakeAligner(FakeAligner):
+    def __init__(self, items: list[FakeAlignItem]) -> None:
+        super().__init__(items)
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def align(self, *, audio: object, text: str, language: str) -> list[FakeAlignResult]:
+        wav, sample_rate = audio  # type: ignore[misc]
+        if sample_rate != 16_000:
+            raise AssertionError(f"unexpected sample rate: {sample_rate}")
+        self.calls.append((np.asarray(wav), text, language))
+        self.started.set()
+        self.release.wait(timeout=2.0)
+        return [FakeAlignResult(items=self.items)]
+
+
+async def wait_for_thread_event(event: threading.Event, *, timeout: float = 0.5) -> None:
+    if not await asyncio.to_thread(event.wait, timeout):
+        raise AssertionError("timed out waiting for aligner thread")
 
 
 @pytest.fixture
@@ -111,6 +133,41 @@ class TestRealtimeTimestampRuntime:
         assert result is not None
         assert result.items == items
         assert aligner.calls[0][1:] == ("你", "Chinese")
+
+    async def test_model_actor_cancels_queued_align_items_when_task_is_cancelled(self, timestamp_actor) -> None:
+        items = [FakeAlignItem(text="你", start_time=0.1, end_time=0.2)]
+        aligner = BlockingFakeAligner(items)
+        actor = timestamp_actor(aligner)
+        running = asyncio.create_task(
+            actor.align_items(
+                np.zeros(4000, dtype=np.float32),
+                text="one",
+                language="Chinese",
+                timeout_sec=None,
+            )
+        )
+        await wait_for_thread_event(aligner.started)
+
+        queued = asyncio.create_task(
+            actor.align_items(
+                np.zeros(4000, dtype=np.float32),
+                text="two",
+                language="Chinese",
+                timeout_sec=None,
+            )
+        )
+        await asyncio.sleep(0)
+        queued.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await queued
+
+        aligner.release.set()
+        result, error = await asyncio.wait_for(running, timeout=0.5)
+        await asyncio.to_thread(actor.close, wait=True)
+
+        assert error is None
+        assert result is not None
+        assert [call[1] for call in aligner.calls] == ["one"]
 
     def test_audio_timeline_buffer_crops_across_appended_chunks(self) -> None:
         buffer = AudioTimelineBuffer()

@@ -8,10 +8,12 @@ from typing import Any, Iterable, Optional
 
 import torch
 
-DEFAULT_HYMT_MODEL = "tencent/HY-MT1.5-1.8B"
+DEFAULT_HYMT_MODEL = "tencent/Hy-MT2-1.8B"
 DEFAULT_HYMT_MAX_NEW_TOKENS = 512
 DEFAULT_HYMT_ATTN_IMPLEMENTATION = "sdpa"
 DEFAULT_HYMT_DECODE_BACKEND = "fixed_mask"
+DEFAULT_HYMT_W8A16 = True
+DEFAULT_HYMT_FUSED_RMSNORM = True
 _HYMT_PROMPT_TEMPLATE = (
     "Translate the following segment into {target_language}, keeping the original format, "
     "without additional explanation.\n\n{source_text}"
@@ -55,17 +57,20 @@ class HYMTTranslator:
         *,
         device: str = "cuda:0",
         dtype: str | torch.dtype | None = None,
+        model_revision: str | None = None,
         local_files_only: bool = True,
         trust_remote_code: bool = False,
         attn_implementation: str | None = DEFAULT_HYMT_ATTN_IMPLEMENTATION,
         decode_backend: str = DEFAULT_HYMT_DECODE_BACKEND,
         generation_config: HYMTGenerationConfig | None = None,
-        w8a16: bool = False,
-        fused_rmsnorm: bool = False,
+        w8a16: bool = DEFAULT_HYMT_W8A16,
+        fused_rmsnorm: bool = DEFAULT_HYMT_FUSED_RMSNORM,
         model: Any | None = None,
         tokenizer: Any | None = None,
     ) -> None:
         self.model_path = str(model_path)
+        self.model_revision = _normalize_model_revision(model_revision)
+        self.resolved_model_commit: str | None = None
         self.device = str(device or "cuda:0")
         self.dtype = _resolve_dtype(dtype, device=self.device)
         self.attn_implementation = _resolve_attn_implementation(attn_implementation)
@@ -83,25 +88,29 @@ class HYMTTranslator:
 
         self.tokenizer = tokenizer
         self.model = model.eval()
+        if self.resolved_model_commit is None:
+            self.resolved_model_commit = _model_commit_hash(self.model)
         _disable_noop_hymt_dynamic_rope(self.model)
         self.input_device = _infer_input_device(self.model)
         self.w8a16 = bool(w8a16)
+        self.w8a16_patch_count = 0
         if self.w8a16:
             # Decode-bound model: weight-only int8 on the full-occupancy gate/up
             # linears (out=6144) cuts per-token decode ~16%; the cuBLAS prefill
-            # GEMM avoids the Triton-GEMM penalty -> ~1.13x end-to-end. CER-gated.
+            # GEMM avoids the Triton-GEMM penalty -> ~1.12x end-to-end. chrF-gated.
             from .quant_linears import patch_linears_w8a16
-            self._w8a16_patched = patch_linears_w8a16(
+            self.w8a16_patch_count = patch_linears_w8a16(
                 self.model, suffixes=("gate_proj", "up_proj"), prefill_gemm="cublas"
             )
         self.fused_rmsnorm = bool(fused_rmsnorm)
+        self.fused_rmsnorm_patch_count = 0
         if self.fused_rmsnorm:
             # Decode-bound model: F.rms_norm fusion cuts per-layer norm overhead
             # ~1.12x on HY-MT (interleaved A/B). Independent of W8A16 (norms, not
             # linears). Not bit-identical -- a bf16 argmax flip can rephrase a
             # low-margin token -- gated by the translation chrF golden like W8A16.
             from .fused_rmsnorm import patch_model_rmsnorms
-            self._fused_rmsnorm_patched = patch_model_rmsnorms(self.model)
+            self.fused_rmsnorm_patch_count = patch_model_rmsnorms(self.model)
 
     def translate(
         self,
@@ -307,15 +316,23 @@ class HYMTTranslator:
     ) -> tuple[Any, Any]:
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
-        model_path = _resolve_model_path(self.model_path, local_files_only=local_files_only)
+        model_path = _resolve_model_path(
+            self.model_path,
+            local_files_only=local_files_only,
+            model_revision=self.model_revision,
+        )
+        revision_kwargs = _revision_kwargs(model_path, self.model_revision)
         tokenizer = AutoTokenizer.from_pretrained(
             model_path,
             local_files_only=local_files_only,
             trust_remote_code=trust_remote_code,
+            fix_mistral_regex=True,
+            **revision_kwargs,
         )
         kwargs: dict[str, Any] = {
             "local_files_only": local_files_only,
             "trust_remote_code": trust_remote_code,
+            **revision_kwargs,
         }
         if self.dtype is not None:
             kwargs["dtype"] = self.dtype
@@ -327,6 +344,7 @@ class HYMTTranslator:
             kwargs["device_map"] = {"": self.device}
 
         model = AutoModelForCausalLM.from_pretrained(model_path, **kwargs)
+        self.resolved_model_commit = _resolved_commit(model, model_path)
         if self.device != "auto" and not self.device.startswith("cuda"):
             model = model.to(torch.device(self.device))
         return tokenizer, model
@@ -447,14 +465,59 @@ def build_hymt_prompt(text: str, *, target_language: str, source_language: str =
     return _HYMT_PROMPT_TEMPLATE.format(target_language=target, source_text=source_text)
 
 
-def _resolve_model_path(model_path: str, *, local_files_only: bool) -> str:
+def _normalize_model_revision(model_revision: str | None) -> str | None:
+    if model_revision is None:
+        return None
+    value = str(model_revision).strip()
+    return value or None
+
+
+def _resolve_model_path(model_path: str, *, local_files_only: bool, model_revision: str | None = None) -> str:
     path = str(model_path)
-    if not local_files_only or Path(path).exists():
+    model_revision = _normalize_model_revision(model_revision)
+    if Path(path).exists():
+        if model_revision is not None:
+            raise ValueError(
+                "model_revision only applies to Hugging Face model ids; "
+                "omit it when model_path is an existing local path"
+            )
+        return path
+    if not local_files_only:
         return path
 
     from huggingface_hub import snapshot_download
 
-    return str(snapshot_download(repo_id=path, local_files_only=True))
+    return str(snapshot_download(repo_id=path, revision=model_revision, local_files_only=True))
+
+
+def _model_commit_hash(model: Any) -> str | None:
+    for source in (getattr(model, "config", None), model):
+        value = getattr(source, "_commit_hash", None)
+        if value:
+            return str(value)
+    return None
+
+
+def _snapshot_commit_from_path(model_path: str) -> str | None:
+    parts = Path(str(model_path)).parts
+    for index, part in enumerate(parts[:-1]):
+        if part == "snapshots":
+            return parts[index + 1] or None
+    return None
+
+
+def _revision_kwargs(model_path: str, model_revision: str | None) -> dict[str, Any]:
+    # ``revision`` only applies while ``model_path`` is still a bare HF id (the
+    # download happens in ``from_pretrained``); a resolved local snapshot dir has
+    # already pinned the commit, and ``_resolve_model_path`` rejects a revision
+    # against an existing local path.
+    if model_revision is not None and not Path(model_path).exists():
+        return {"revision": model_revision}
+    return {}
+
+
+def _resolved_commit(model: Any, model_path: str) -> str | None:
+    return _model_commit_hash(model) or _snapshot_commit_from_path(model_path)
 
 
 def _resolve_dtype(dtype: str | torch.dtype | None, *, device: str) -> Optional[torch.dtype]:
@@ -738,8 +801,10 @@ def _infer_input_device(model: Any) -> torch.device:
 __all__ = [
     "DEFAULT_HYMT_ATTN_IMPLEMENTATION",
     "DEFAULT_HYMT_DECODE_BACKEND",
+    "DEFAULT_HYMT_FUSED_RMSNORM",
     "DEFAULT_HYMT_MODEL",
     "DEFAULT_HYMT_MAX_NEW_TOKENS",
+    "DEFAULT_HYMT_W8A16",
     "HYMTGenerationConfig",
     "HYMTTranslationResult",
     "HYMTTranslator",

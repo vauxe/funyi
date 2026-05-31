@@ -20,7 +20,7 @@ No private audio required:
 
 ```bash
 uv run python -m compileall -q qwen3_asr_runtime realtime_server.py tools tests
-uv run python -m unittest discover tests
+uv run --group test pytest
 git diff --check
 ```
 
@@ -101,7 +101,7 @@ TRANSFORMERS_VERBOSITY=error uv run python tools/sweep_streaming_cer_vs_srt.py \
   --chunk-size-sec 0.5 --unfixed-chunk-num 4 \
   --max-window-sec 20 --max-prefix-tokens 64 \
   --timed --spec-decode --cuda-graph-len-bucket 64 \
-  --flashinfer --fused-rmsnorm --fused-linears --quantized-linears \
+  --flashinfer --fused-rmsnorm --fused-linears \
   --output local_goldens/cer/streaming_cer_service_profile.json
 ```
 
