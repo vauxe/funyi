@@ -13,10 +13,14 @@ pub const AUDIO_CAPTURE_ERROR_EVENT: &str = "audio-capture-error";
 pub const OUTPUT_SAMPLE_RATE: usize = 16_000;
 pub const OUTPUT_FORMAT: &str = "pcm_s16le";
 pub const OUTPUT_CHANNELS: usize = 1;
-#[cfg(target_os = "windows")]
 pub const OUTPUT_BITS: usize = 16;
+pub const OUTPUT_BYTES_PER_SAMPLE: usize = OUTPUT_BITS / 8;
 pub const FRAME_MS: usize = 100;
-pub const FRAME_BYTES: usize = OUTPUT_SAMPLE_RATE * FRAME_MS / 1000 * 2;
+// Single source of truth for the mono-s16le byte layout. The frame slicer, the
+// macOS PCM encoder, and the WASAPI block-align guard all depend on 2 bytes per
+// sample, so derive it from the format constants instead of hardcoding `* 2`.
+pub const FRAME_BYTES: usize =
+    OUTPUT_SAMPLE_RATE * FRAME_MS / 1000 * OUTPUT_CHANNELS * OUTPUT_BYTES_PER_SAMPLE;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

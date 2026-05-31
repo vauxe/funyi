@@ -382,3 +382,79 @@ test("final snapshot clears current and preserves stable translation", () => {
   assert.equal(document.stableLines.at(-1)?.translation, "first line");
   assert.equal(document.window().current, null);
 });
+
+test("final snapshot with omitted segments keeps stable history (unbounded session)", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 2,
+    stable_appends: [
+      stableSegment(1, "one", { startMs: 0, endMs: 1000 }),
+      stableSegment(2, "two", { startMs: 1000, endMs: 2000 }),
+    ],
+    partial: partialSegment("tail", { startMs: 2000, endMs: 2500 }),
+  });
+  document.applyEvent({
+    type: "translation_stable",
+    source_segment_id: "seg_000001",
+    source_segment_index: 1,
+    text: "first line",
+  });
+
+  // No `segments` key: the protocol says clients keep the history they replayed.
+  document.applyEvent({ type: "transcript_final", revision: 2, stable_count: 2 });
+
+  assert.equal(document.stableLines.length, 2);
+  assert.deepEqual(
+    document.stableLines.map((line) => line.text),
+    ["one", "two"],
+  );
+  assert.equal(document.stableLines[0]?.translation, "first line");
+  // Current caption is cleared at session end, matching the present-segments path.
+  assert.equal(document.window().current, null);
+});
+
+test("final snapshot with an explicit empty segments array still clears history", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 1,
+    stable_appends: [stableSegment(1, "one", { startMs: 0, endMs: 1000 })],
+    partial: null,
+  });
+
+  // Key present but empty: a genuine "no stable segments" snapshot rebuild.
+  document.applyEvent({ type: "transcript_final", revision: 2, stable_count: 0, segments: [] });
+
+  assert.equal(document.stableLines.length, 0);
+  assert.equal(document.window().current, null);
+});
+
+test("final snapshot with omitted segments clears the latest-stable-as-current view", () => {
+  const document = new SubtitleDocument();
+  // A `partial: null` update after appends makes window() surface the latest stable
+  // line as the current caption (showLatestStableAsCurrent = true). The omitted-segments
+  // final must reset that flag so the current view clears at session end — without the
+  // reset, window().current would keep showing "two" while history is preserved.
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 2,
+    stable_appends: [
+      stableSegment(1, "one", { startMs: 0, endMs: 1000 }),
+      stableSegment(2, "two", { startMs: 1000, endMs: 2000 }),
+    ],
+    partial: null,
+  });
+  assert.equal(document.window().current?.text, "two");
+
+  document.applyEvent({ type: "transcript_final", revision: 2, stable_count: 2 });
+
+  assert.equal(document.stableLines.length, 2);
+  assert.equal(document.window().current, null);
+});

@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "Main desktop client permissions.",
+  "description": "Scopes the main caption window to event listen/unlisten only (native audio frames, capture errors, overlay drag-finished). App-defined commands are invoked over IPC and are not part of this allowlist; no core window, path, menu, tray, or webview APIs are exposed to the webview.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
 }

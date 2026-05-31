@@ -141,6 +141,21 @@ export class SubtitleDocument {
   }
 
   private applyTranscriptFinal(event: RealtimeEvent): void {
+    // An unbounded session's transcript_final may OMIT `segments` entirely, which
+    // means "keep the stable history already replayed from transcript_update" — only
+    // a present `segments` array is a full-snapshot rebuild (an empty array still
+    // legitimately clears). The key-absent vs key-present distinction is the
+    // contract; letting recordArray() collapse both to [] would erase the whole
+    // transcript on the terminal event of a streaming session. Mirror the Python
+    // model, which guards on `"segments" not in event` (events are JSON, so a
+    // missing key reads as undefined here).
+    if (event.segments === undefined) {
+      this.currentLine = null;
+      this.showLatestStableAsCurrent = false;
+      this.revision = toInt(event.revision, this.revision);
+      return;
+    }
+
     const existing = new Map(this.stableLineList.filter((line) => line.id).map((line) => [line.id as string, line]));
     const revision = toInt(event.revision, this.revision);
     const lines = [];

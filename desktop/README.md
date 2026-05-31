@@ -55,10 +55,23 @@ If your shell does not expose a `pnpm` command, keep using `corepack pnpm ...`
 rather than assuming a separate global `pnpm` install exists.
 
 The client only connects to `ws://` loopback addresses (`127.0.0.0/8`,
-`localhost`, `::1`); `wss://`, remote hosts, and credentialed URLs are rejected,
-matching the Tauri CSP `connect-src ws://127.0.0.1:* ws://localhost:*`. The
-caption background image renders from a same-origin `blob:` URL (`img-src 'self'
-asset: blob:`); no remote or `data:` image source is permitted.
+`localhost`, `::1`); `wss://`, remote hosts, and credentialed URLs are rejected.
+This is enforced in layers: the `session-start-options` URL validator, the Tauri
+CSP, and the capability allowlist.
+
+The full CSP is `default-src 'self' tauri: asset:; connect-src ws://127.0.0.1:*
+ws://localhost:*; img-src 'self' asset: blob:; style-src 'self' 'unsafe-inline'`.
+`default-src`/`style-src` stay minimal but keep the `tauri:`/`asset:` schemes and
+inline styles the webview runtime needs; no remote script, `data:` image, or
+non-loopback connection is permitted. The caption background image renders from a
+same-origin `blob:` URL; no remote or `data:` image source is allowed.
+
+The webview is granted only `core:event` listen/unlisten (for native audio
+frames, capture errors, and overlay drag-finished events) — see
+`src-tauri/capabilities/default.json`. The app's own commands are invoked over
+IPC and are not part of the core/plugin permission allowlist, so no core window,
+path, menu, tray, or webview API reaches the webview. `withGlobalTauri` is
+enabled so the UI can reach the IPC and event bridge through `window.__TAURI__`.
 
 For Windows plus WSL development, run the Tauri client in the Windows checkout
 and point it at the WSL service URL, for example `ws://127.0.0.1:8000/ws/asr`
