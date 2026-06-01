@@ -19,6 +19,7 @@ webview's `localStorage`); the background image is downscaled before it is saved
 ## Status
 
 - Windows: default system output capture via WASAPI loopback.
+- Windows: microphone input capture via active WASAPI recording devices.
 - macOS: system audio capture through ScreenCaptureKit. The first capture start
   may require Screen & System Audio Recording permission in System Settings.
 - macOS: microphone input capture through ScreenCaptureKit on macOS 15+. The
@@ -83,7 +84,9 @@ alone is not enough; `cl.exe` and `link.exe` must be available in the build
 environment.
 
 The Windows client path is the important path for system-audio capture because
-WASAPI loopback captures the default Windows playback device.
+WASAPI loopback captures the default Windows playback device. Windows
+microphones are listed from active recording devices and captured through
+shared-mode WASAPI input.
 
 ## Development Checks
 
