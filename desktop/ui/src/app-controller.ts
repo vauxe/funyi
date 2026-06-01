@@ -14,7 +14,7 @@ import type { PreferencesStore } from "./preferences.js";
 import { readyEventTranslationEnabled } from "./realtime-events.js";
 import type { LiveSessionClient, LiveSessionClientCallbacks } from "./session-client.js";
 import type { SessionState } from "./session-state.js";
-import { buildSessionStartOptions } from "./session-start-options.js";
+import { buildSessionStartOptions, INVALID_AUDIO_SOURCE_MESSAGE } from "./session-start-options.js";
 import { SessionControlsView } from "./session-controls-view.js";
 import { NO_AUDIO_SOURCE_MESSAGE } from "./session-status.js";
 import { SettingsController } from "./settings-controller.js";
@@ -144,9 +144,7 @@ export class FunyiApp {
     dom.serverUrl.addEventListener("change", () =>
       this.preferences.save({ serverUrl: dom.serverUrl.value.trim() || null }),
     );
-    dom.audioSource.addEventListener("change", () =>
-      this.preferences.save({ audioSourceId: dom.audioSource.value || null }),
-    );
+    dom.audioSource.addEventListener("change", () => void this.applyAudioSourceChange());
     dom.language.addEventListener("change", () => {
       // ASR language does not change what is displayed, so no re-render here.
       this.preferences.save({ asrLanguage: this.languageControls.asrLanguage });
@@ -240,6 +238,24 @@ export class FunyiApp {
     }
     this.resetSessionState();
     await this.liveSession.start(startOptions.options);
+  }
+
+  private async applyAudioSourceChange(): Promise<void> {
+    const { dom } = this.options;
+    const audioSourceId = dom.audioSource.value || null;
+    this.preferences.save({ audioSourceId });
+
+    if (this.liveSession.getState() !== "running") {
+      return;
+    }
+
+    const audioSourceKind = this.audioSourceSelect.selectedKind;
+    if (!audioSourceId || !audioSourceKind) {
+      this.statusController.setStatus("captureStatus", INVALID_AUDIO_SOURCE_MESSAGE);
+      return;
+    }
+
+    await this.liveSession.switchAudioSource({ audioSourceId, audioSourceKind });
   }
 
   private resetSessionState(): void {

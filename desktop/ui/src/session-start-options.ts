@@ -2,7 +2,7 @@ import { AUDIO_FORMAT, AUDIO_SAMPLE_RATE } from "./audio-format.js";
 import type { AudioSourceKind } from "./audio-source-kind.js";
 import type { RealtimeStartPayload } from "./realtime-events.js";
 
-const INVALID_AUDIO_SOURCE_MESSAGE = "Selected audio source is invalid.";
+export const INVALID_AUDIO_SOURCE_MESSAGE = "Selected audio source is invalid.";
 const INVALID_SERVER_URL_MESSAGE = "Server URL must be a ws:// address on the local machine.";
 
 function isLoopbackHost(hostname: string): boolean {

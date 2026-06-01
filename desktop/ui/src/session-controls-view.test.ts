@@ -16,7 +16,7 @@ test("renders session control state for active and finishing sessions", () => {
   assert.equal(elements.serverUrl.disabled, true);
   assert.equal(elements.language.disabled, false);
   assert.equal(elements.translationTargetLanguage.disabled, false);
-  assert.equal(elements.audioSource.disabled, true);
+  assert.equal(elements.audioSource.disabled, false);
 
   view.renderState("finishing", { canStart: true });
 
@@ -24,6 +24,7 @@ test("renders session control state for active and finishing sessions", () => {
   assert.equal(elements.sessionButton.title, "Cancel final transcript");
   assert.equal(elements.language.disabled, true);
   assert.equal(elements.translationTargetLanguage.disabled, true);
+  assert.equal(elements.audioSource.disabled, true);
 });
 
 test("renders status summary datasets and clears stale level", () => {

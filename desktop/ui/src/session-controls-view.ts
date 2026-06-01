@@ -28,7 +28,7 @@ export class SessionControlsView {
     this.elements.serverUrl.disabled = active;
     this.elements.language.disabled = configurationLocked;
     this.elements.translationTargetLanguage.disabled = configurationLocked;
-    this.elements.audioSource.disabled = active;
+    this.elements.audioSource.disabled = configurationLocked;
   }
 
   renderStatus({ text, tone, level, volume = 0 }: StatusSummary): void {

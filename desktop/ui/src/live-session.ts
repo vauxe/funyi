@@ -25,9 +25,9 @@ interface LiveSessionOptions {
   finishTimeoutMs?: number;
 }
 
-interface SelectedAudioSource {
-  id: string;
-  kind: AudioSourceKind;
+interface LiveSessionAudioSource {
+  audioSourceId: string;
+  audioSourceKind: AudioSourceKind;
 }
 
 export class LiveSession {
@@ -40,9 +40,11 @@ export class LiveSession {
   private readonly onTranscriptEvent?: (event: RealtimeEvent) => void | Promise<void>;
 
   private audioAvailable = false;
+  private audioSourceSwitch: Promise<void> | null = null;
   private client: LiveSessionClient | null = null;
   private pendingLanguageConfig: LanguageConfigUpdate | null = null;
-  private selectedAudioSource: SelectedAudioSource | null = null;
+  private requestedAudioSource: LiveSessionAudioSource | null = null;
+  private selectedAudioSource: LiveSessionAudioSource | null = null;
   private state: SessionState = "idle";
   private teardown: Promise<void> | null = null;
 
@@ -87,7 +89,7 @@ export class LiveSession {
       this.client.setLanguageConfig(config);
       return;
     }
-    // Buffer changes made while the socket is still opening and flush them once
+    // Buffer changes made while the socket is still opening and apply them once
     // the session is ready, so the UI and the server never diverge.
     if (this.state === "connecting") {
       this.pendingLanguageConfig = { ...this.pendingLanguageConfig, ...config };
@@ -108,7 +110,7 @@ export class LiveSession {
       return false;
     }
 
-    this.selectedAudioSource = { id: audioSourceId, kind: audioSourceKind };
+    this.selectedAudioSource = { audioSourceId, audioSourceKind };
     this.setState("connecting");
     this.setStatus("connectionStatus", "WS...");
 
@@ -138,6 +140,32 @@ export class LiveSession {
     await this.abort();
   }
 
+  async switchAudioSource({ audioSourceId, audioSourceKind }: LiveSessionAudioSource): Promise<void> {
+    const client = this.client;
+    if (this.state !== "running" || client === null) {
+      return;
+    }
+
+    const source = { audioSourceId, audioSourceKind };
+    if (
+      this.audioSourceSwitch === null &&
+      this.audioCapture.isActive() &&
+      sameAudioSource(this.selectedAudioSource, source)
+    ) {
+      return;
+    }
+
+    this.requestedAudioSource = source;
+    if (this.audioSourceSwitch === null) {
+      this.audioSourceSwitch = this.runAudioSourceSwitches(client).finally(() => {
+        if (this.client === client) {
+          this.audioSourceSwitch = null;
+        }
+      });
+    }
+    await this.audioSourceSwitch;
+  }
+
   private async abort(message = "", { closeSocket = true }: { closeSocket?: boolean } = {}): Promise<void> {
     if (this.teardown === null && this.state === "idle" && this.client === null) {
       return;
@@ -155,6 +183,54 @@ export class LiveSession {
     });
   }
 
+  private async runAudioSourceSwitches(client: LiveSessionClient): Promise<void> {
+    while (this.isCurrentSession(client) && this.requestedAudioSource !== null) {
+      const source = this.requestedAudioSource;
+      this.requestedAudioSource = null;
+      if (this.audioCapture.isActive() && sameAudioSource(this.selectedAudioSource, source)) {
+        continue;
+      }
+      if (this.audioCapture.isActive()) {
+        await this.stopCaptureOnly();
+        if (!this.isCurrentSession(client)) {
+          return;
+        }
+      }
+      if (this.requestedAudioSource !== null) {
+        continue;
+      }
+      await this.startCaptureSource(source, client, { abortOnFailure: false });
+    }
+  }
+
+  private async startCaptureSource(
+    source: LiveSessionAudioSource,
+    client: LiveSessionClient,
+    { abortOnFailure = true }: { abortOnFailure?: boolean } = {},
+  ): Promise<void> {
+    if (!this.isCurrentSession(client)) {
+      return;
+    }
+    try {
+      await this.audioCapture.start({
+        abortOnCaptureError: false,
+        sourceId: source.audioSourceId,
+        sourceKind: source.audioSourceKind,
+        sendPcm: (bytes) => (this.isCurrentSession(client) ? client.sendPcm(bytes) : false),
+      });
+      if (!this.isCurrentSession(client)) {
+        return;
+      }
+      this.selectedAudioSource = source;
+    } catch (error) {
+      const message = errorMessage(error);
+      this.setStatus("captureStatus", message);
+      if (abortOnFailure && this.isCurrentSession(client)) {
+        await this.abort(message);
+      }
+    }
+  }
+
   private async handleRealtimeEvent(event: RealtimeEvent, client: LiveSessionClient): Promise<void> {
     if (client !== this.client) {
       return;
@@ -165,7 +241,11 @@ export class LiveSession {
         this.setState("running");
         this.onReady?.(event);
         this.flushPendingLanguageConfig();
-        await this.startCaptureAfterReady();
+        const source = this.selectedAudioSource;
+        if (source === null) {
+          throw new Error("No audio source selected.");
+        }
+        await this.startCaptureSource(source, client);
       } catch (error) {
         const message = errorMessage(error);
         this.setStatus("captureStatus", message);
@@ -288,23 +368,12 @@ export class LiveSession {
   private releaseActiveSession(): LiveSessionClient | null {
     const client = this.client;
     this.client = null;
+    this.audioSourceSwitch = null;
     this.selectedAudioSource = null;
     this.pendingLanguageConfig = null;
+    this.requestedAudioSource = null;
     this.finishTimeout.clear();
     return client;
-  }
-
-  private async startCaptureAfterReady(): Promise<void> {
-    const source = this.selectedAudioSource;
-    if (!source) {
-      throw new Error("No audio source selected.");
-    }
-
-    await this.audioCapture.start({
-      sourceId: source.id,
-      sourceKind: source.kind,
-      sendPcm: (bytes) => this.client?.sendPcm(bytes) ?? false,
-    });
   }
 
   private async stopCaptureOnly(): Promise<void> {
@@ -323,4 +392,12 @@ export class LiveSession {
   private setStatus<K extends StatusKey>(key: K, value: StatusValue<K>): void {
     this.onStatus?.(key, value);
   }
+
+  private isCurrentSession(client: LiveSessionClient): boolean {
+    return this.client === client && this.state === "running";
+  }
+}
+
+function sameAudioSource(left: LiveSessionAudioSource | null, right: LiveSessionAudioSource): boolean {
+  return left !== null && left.audioSourceId === right.audioSourceId && left.audioSourceKind === right.audioSourceKind;
 }

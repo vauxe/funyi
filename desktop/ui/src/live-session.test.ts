@@ -115,6 +115,22 @@ async function startRunningSession(
   await harness.clients[0]!.emit({ type: "ready", sample_rate: 16000 });
 }
 
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
+}
+
+function assertNoRuntimeCommands(client: FakeAsrClient): void {
+  assert.deepEqual(client.commands, []);
+  assert.deepEqual(client.languageConfigs, []);
+}
+
 test("starts capture after ready and forwards only valid pcm frames", async () => {
   const harness = createHarness();
   await startRunningSession(harness);
@@ -189,6 +205,285 @@ test("reports dropped frames when websocket backpressure refuses pcm", async () 
 
   assert.equal(harness.clients[0]!.sentPcm.length, 0);
   assert.deepEqual(harness.statuses.get("audioStats"), { levelDb: null, droppedFrames: 2 });
+});
+
+test("switches audio source inside the running websocket session", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness);
+
+  await harness.session.switchAudioSource({
+    audioSourceId: "mic_default",
+    audioSourceKind: "microphone",
+  });
+
+  assert.equal(harness.session.getState(), "running");
+  assert.equal(harness.clients.length, 1);
+  assert.equal(harness.clients[0]!.closed, false);
+  assertNoRuntimeCommands(harness.clients[0]!);
+  assert.deepEqual(harness.audio.startCalls, ["system_default", "mic_default"]);
+  assert.equal(harness.audio.stopCalls, 1);
+  assert.equal(harness.statuses.get("captureStatus"), "Mic");
+
+  harness.audio.frameHandler?.({ sampleRate: 16000, format: "pcm_s16le", dataBase64: "abcd" });
+  assert.deepEqual([...harness.clients[0]!.sentPcm.at(-1)!], [4]);
+});
+
+test("switching while initial capture is starting replaces the native source", async () => {
+  const harness = createHarness();
+  const systemStart = deferred<void>();
+  harness.audio.startCapture = async (sourceId: string) => {
+    harness.audio.startCalls.push(sourceId);
+    if (sourceId === "system_default") {
+      await systemStart.promise;
+    }
+  };
+
+  harness.session.setAudioAvailable(true);
+  await harness.session.start({
+    audioSourceId: "system_default",
+    audioSourceKind: "system",
+    startPayload: { type: "start", sample_rate: 16000 },
+    url: "ws://127.0.0.1:8000/ws/asr",
+  });
+  const ready = harness.clients[0]!.emit({ type: "ready", sample_rate: 16000 });
+  await nextTick();
+
+  const switching = harness.session.switchAudioSource({
+    audioSourceId: "mic_default",
+    audioSourceKind: "microphone",
+  });
+  await nextTick();
+
+  systemStart.resolve();
+  await Promise.all([ready, switching]);
+
+  assert.equal(harness.session.getState(), "running");
+  assertNoRuntimeCommands(harness.clients[0]!);
+  assert.deepEqual(harness.audio.startCalls, ["system_default", "mic_default"]);
+  assert.equal(harness.audio.stopCalls, 1);
+  assert.equal(harness.statuses.get("captureStatus"), "Mic");
+});
+
+test("stale initial source startup failure after switching does not close the ASR session", async () => {
+  const harness = createHarness();
+  const systemStart = deferred<void>();
+  harness.audio.startCapture = async (sourceId: string) => {
+    harness.audio.startCalls.push(sourceId);
+    if (sourceId === "system_default") {
+      await systemStart.promise;
+      throw new Error("system source unavailable");
+    }
+  };
+
+  harness.session.setAudioAvailable(true);
+  await harness.session.start({
+    audioSourceId: "system_default",
+    audioSourceKind: "system",
+    startPayload: { type: "start", sample_rate: 16000 },
+    url: "ws://127.0.0.1:8000/ws/asr",
+  });
+  const ready = harness.clients[0]!.emit({ type: "ready", sample_rate: 16000 });
+  await nextTick();
+
+  const switching = harness.session.switchAudioSource({
+    audioSourceId: "mic_default",
+    audioSourceKind: "microphone",
+  });
+  await nextTick();
+
+  systemStart.resolve();
+  await Promise.all([ready, switching]);
+
+  assert.equal(harness.session.getState(), "running");
+  assert.equal(harness.clients[0]!.closed, false);
+  assertNoRuntimeCommands(harness.clients[0]!);
+  assert.deepEqual(harness.audio.startCalls, ["system_default", "mic_default"]);
+  assert.equal(harness.audio.stopCalls, 0);
+  assert.equal(harness.statuses.get("captureStatus"), "Mic");
+});
+
+test("switching before initial capture listeners are ready still replaces the native source", async () => {
+  const harness = createHarness();
+  const frameListenerReady = deferred<void>();
+  harness.audio.listenFrames = async (handler) => {
+    await frameListenerReady.promise;
+    harness.audio.frameHandler = handler;
+    return () => {
+      harness.audio.frameHandler = null;
+      harness.audio.unlistenFrames += 1;
+    };
+  };
+
+  harness.session.setAudioAvailable(true);
+  await harness.session.start({
+    audioSourceId: "system_default",
+    audioSourceKind: "system",
+    startPayload: { type: "start", sample_rate: 16000 },
+    url: "ws://127.0.0.1:8000/ws/asr",
+  });
+  const ready = harness.clients[0]!.emit({ type: "ready", sample_rate: 16000 });
+  await nextTick();
+
+  const switching = harness.session.switchAudioSource({
+    audioSourceId: "mic_default",
+    audioSourceKind: "microphone",
+  });
+  await nextTick();
+
+  frameListenerReady.resolve();
+  await Promise.all([ready, switching]);
+
+  assert.equal(harness.session.getState(), "running");
+  assertNoRuntimeCommands(harness.clients[0]!);
+  assert.deepEqual(harness.audio.startCalls, ["mic_default"]);
+  assert.equal(harness.audio.stopCalls, 0);
+  assert.equal(harness.statuses.get("captureStatus"), "Mic");
+});
+
+test("runtime audio source start failure does not close the ASR session", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness);
+  harness.audio.startCapture = async (sourceId: string) => {
+    harness.audio.startCalls.push(sourceId);
+    if (sourceId === "mic_default") {
+      throw new Error("microphone unavailable");
+    }
+  };
+
+  await harness.session.switchAudioSource({
+    audioSourceId: "mic_default",
+    audioSourceKind: "microphone",
+  });
+
+  assert.equal(harness.session.getState(), "running");
+  assert.equal(harness.clients.length, 1);
+  assert.equal(harness.clients[0]!.closed, false);
+  assertNoRuntimeCommands(harness.clients[0]!);
+  assert.deepEqual(harness.audio.startCalls, ["system_default", "mic_default"]);
+  assert.equal(harness.audio.stopCalls, 1);
+  assert.equal(harness.statuses.get("captureStatus"), "microphone unavailable");
+});
+
+test("runtime capture errors after an audio source switch do not close the ASR session", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness);
+
+  await harness.session.switchAudioSource({
+    audioSourceId: "mic_default",
+    audioSourceKind: "microphone",
+  });
+  harness.audio.captureErrorHandler?.({ message: "device lost" });
+  await nextTick();
+
+  assert.equal(harness.session.getState(), "running");
+  assert.equal(harness.clients[0]!.closed, false);
+  assertNoRuntimeCommands(harness.clients[0]!);
+  assert.equal(harness.statuses.get("captureStatus"), "device lost");
+});
+
+test("ignores a runtime audio source switch to the already active source", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness);
+
+  await harness.session.switchAudioSource({
+    audioSourceId: "system_default",
+    audioSourceKind: "system",
+  });
+
+  assertNoRuntimeCommands(harness.clients[0]!);
+  assert.deepEqual(harness.audio.startCalls, ["system_default"]);
+  assert.equal(harness.audio.stopCalls, 0);
+});
+
+test("applies the last audio source selected during an in-flight switch", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness);
+  const firstStop = deferred<void>();
+  let holdFirstStop = true;
+  harness.audio.stopCapture = async () => {
+    harness.audio.stopCalls += 1;
+    if (holdFirstStop) {
+      holdFirstStop = false;
+      await firstStop.promise;
+    }
+  };
+
+  const switchToMic = harness.session.switchAudioSource({
+    audioSourceId: "mic_default",
+    audioSourceKind: "microphone",
+  });
+  await nextTick();
+  const switchToSystem = harness.session.switchAudioSource({
+    audioSourceId: "system_default",
+    audioSourceKind: "system",
+  });
+
+  firstStop.resolve();
+  await Promise.all([switchToMic, switchToSystem]);
+
+  assertNoRuntimeCommands(harness.clients[0]!);
+  assert.deepEqual(harness.audio.startCalls, ["system_default", "system_default"]);
+  assert.equal(harness.statuses.get("captureStatus"), "Sys");
+});
+
+test("stop during an in-flight source switch prevents stale source start", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness);
+  const firstStop = deferred<void>();
+  let holdFirstStop = true;
+  harness.audio.stopCapture = async () => {
+    harness.audio.stopCalls += 1;
+    if (holdFirstStop) {
+      holdFirstStop = false;
+      await firstStop.promise;
+    }
+  };
+
+  const switching = harness.session.switchAudioSource({
+    audioSourceId: "mic_default",
+    audioSourceKind: "microphone",
+  });
+  await nextTick();
+  const stopping = harness.session.stop({ sendFinish: false });
+  await nextTick();
+
+  firstStop.resolve();
+  await Promise.all([switching, stopping]);
+
+  assert.equal(harness.session.getState(), "idle");
+  assert.deepEqual(harness.audio.startCalls, ["system_default"]);
+  assert.equal(harness.audio.stopCalls, 1);
+  assert.equal(harness.audio.frameHandler, null);
+  assert.equal(harness.audio.captureErrorHandler, null);
+});
+
+test("stop during new source startup leaves capture stopped", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness);
+  const micStart = deferred<void>();
+  harness.audio.startCapture = async (sourceId: string) => {
+    harness.audio.startCalls.push(sourceId);
+    if (sourceId === "mic_default") {
+      await micStart.promise;
+    }
+  };
+
+  const switching = harness.session.switchAudioSource({
+    audioSourceId: "mic_default",
+    audioSourceKind: "microphone",
+  });
+  await nextTick();
+  assert.deepEqual(harness.audio.startCalls, ["system_default", "mic_default"]);
+
+  const stopping = harness.session.stop({ sendFinish: false });
+  await nextTick();
+  micStart.resolve();
+  await Promise.all([switching, stopping]);
+
+  assert.equal(harness.session.getState(), "idle");
+  assert.equal(harness.audio.stopCalls, 2);
+  assert.equal(harness.audio.frameHandler, null);
+  assert.equal(harness.audio.captureErrorHandler, null);
 });
 
 test("ready callback errors abort before capture starts", async () => {
@@ -294,18 +589,17 @@ test("immediate stop waits for socket close before returning to idle", async () 
   assert.equal(harness.session.getState(), "idle");
 });
 
-test("capture errors abort the active session and clean listeners", async () => {
+test("capture errors report status without closing the ASR session", async () => {
   const harness = createHarness();
   await startRunningSession(harness);
 
   harness.audio.captureErrorHandler?.({ message: "device lost" });
   await nextTick();
 
-  assert.equal(harness.session.getState(), "idle");
-  assert.equal(harness.clients[0]!.closed, true);
-  assert.equal(harness.audio.frameHandler, null);
-  assert.equal(harness.audio.captureErrorHandler, null);
-  assert.equal(harness.statuses.get("connectionStatus"), "device lost");
+  assert.equal(harness.session.getState(), "running");
+  assert.equal(harness.clients[0]!.closed, false);
+  assertNoRuntimeCommands(harness.clients[0]!);
+  assert.equal(harness.statuses.get("captureStatus"), "device lost");
 });
 
 test("aborts and reports the reason when the socket closes mid-session", async () => {

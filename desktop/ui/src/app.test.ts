@@ -182,7 +182,7 @@ test("language controls stay editable while running and send runtime updates", a
   assert.equal(elements["language"]!.disabled, false);
   assert.equal(elements["translation-target-language"]!.disabled, false);
   assert.equal(elements["server-url"]!.disabled, true);
-  assert.equal(elements["audio-source"]!.disabled, true);
+  assert.equal(elements["audio-source"]!.disabled, false);
 
   elements["language"]!.value = "Japanese";
   elements["language"]!.dispatch("change", {});
@@ -197,6 +197,66 @@ test("language controls stay editable while running and send runtime updates", a
     type: "set_language",
     target_language: null,
   });
+});
+
+test("audio source changes hot-switch capture without reopening the websocket", async () => {
+  const elements = installDocument();
+  const { audio } = await bootApp({
+    sources: [
+      {
+        id: "system_default",
+        name: "Audio",
+        kind: "system",
+        isAvailable: true,
+        detail: "available",
+      },
+      {
+        id: "mic_default",
+        name: "Studio Mic",
+        kind: "microphone",
+        isAvailable: true,
+        detail: "available",
+      },
+    ],
+  });
+
+  elements["session-button"]!.click();
+  const socket = FakeWebSocket.instances[0];
+  assert.ok(socket);
+  socket.open();
+  socket.message({ type: "ready", sample_rate: 16000 });
+  await nextTick();
+
+  elements["audio-source"]!.value = "mic_default";
+  elements["audio-source"]!.dispatch("change", {});
+  await nextTick();
+
+  assert.equal(FakeWebSocket.instances.length, 1);
+  assert.equal(socket.sent.length, 1);
+  assert.deepEqual(audio.startCalls, ["system_default", "mic_default"]);
+  assert.equal(audio.stopCalls, 1);
+  assert.equal(elements["session-status"]!.textContent, "");
+});
+
+test("invalid audio source changes are rejected while running", async () => {
+  const elements = installDocument();
+
+  await bootApp();
+
+  elements["session-button"]!.click();
+  const socket = FakeWebSocket.instances[0];
+  assert.ok(socket);
+  socket.open();
+  socket.message({ type: "ready", sample_rate: 16000 });
+  await nextTick();
+
+  elements["audio-source"]!.value = "missing";
+  elements["audio-source"]!.dispatch("change", {});
+  await nextTick();
+
+  assert.equal(FakeWebSocket.instances.length, 1);
+  assert.equal(socket.sent.length, 1);
+  assert.equal(elements["session-status"]!.textContent, "Selected audio source is invalid.");
 });
 
 test("recoverable command errors remain visible while running", async () => {
@@ -320,6 +380,7 @@ function selectValues(element: FakeElement): string[] {
 }
 
 interface AppHarness {
+  audio: ReturnType<typeof createFakeAudioAdapter>;
   overlay: FakeOverlayHost;
   windowRuntime: FakeWindowRuntime;
   preferences: PreferencesStore;
@@ -349,7 +410,7 @@ async function bootApp({
   });
   await app.boot();
   await nextTick();
-  return { overlay, windowRuntime, preferences };
+  return { audio, overlay, windowRuntime, preferences };
 }
 
 function deferred<T>(): {

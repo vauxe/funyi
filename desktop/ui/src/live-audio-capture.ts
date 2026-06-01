@@ -20,18 +20,23 @@ interface LiveAudioCaptureOptions {
 }
 
 interface StartCaptureOptions {
+  abortOnCaptureError?: boolean;
   sourceId: string;
   sourceKind: AudioSourceKind;
   sendPcm(bytes: Uint8Array): boolean;
 }
 
 export class LiveAudioCapture {
+  private abortOnCaptureError = true;
+  private active = false;
   private droppedAudioFrames = 0;
   private lastAudioLevelDb: number | null = null;
+  private operation: Promise<void> = Promise.resolve();
   private sendPcm: ((bytes: Uint8Array) => boolean) | null = null;
   private silentFrameWarningActive = false;
   private silentFrames = 0;
   private sourceKind: AudioSourceKind = "system";
+  private startToken = 0;
   private unlistenCaptureError: Unlisten | null = null;
   private unlistenFrame: Unlisten | null = null;
 
@@ -46,29 +51,69 @@ export class LiveAudioCapture {
     this.setStatus("audioStats", EMPTY_AUDIO_STATS);
   }
 
-  async start({ sourceId, sourceKind, sendPcm }: StartCaptureOptions): Promise<void> {
-    if (this.unlistenFrame !== null) {
+  isActive(): boolean {
+    return this.active || this.unlistenFrame !== null;
+  }
+
+  async start({ abortOnCaptureError = true, sourceId, sourceKind, sendPcm }: StartCaptureOptions): Promise<void> {
+    this.startToken += 1;
+    const token = this.startToken;
+    this.active = true;
+    return this.enqueueOperation(() => this.startNow({ abortOnCaptureError, sourceId, sourceKind, sendPcm }, token));
+  }
+
+  async stop(): Promise<void> {
+    this.active = false;
+    return this.enqueueOperation(() => this.stopNow());
+  }
+
+  private async startNow(
+    { abortOnCaptureError = true, sourceId, sourceKind, sendPcm }: StartCaptureOptions,
+    token: number,
+  ): Promise<void> {
+    if (!this.isCurrentStart(token) || this.unlistenFrame !== null) {
       return;
     }
 
+    this.abortOnCaptureError = abortOnCaptureError;
     this.sourceKind = sourceKind;
     this.sendPcm = sendPcm;
     try {
       this.unlistenFrame = await this.options.audio.listenFrames((frame) => this.handleAudioFrame(frame));
+      if (!this.isCurrentStart(token)) {
+        this.clearStoppedStart();
+        return;
+      }
       this.unlistenCaptureError = await this.options.audio.listenCaptureErrors((payload) => {
         this.abortCapture(payload.message);
       });
+      if (!this.isCurrentStart(token)) {
+        this.clearStoppedStart();
+        return;
+      }
       await this.options.audio.startCapture(sourceId);
+      if (!this.isCurrentStart(token)) {
+        await this.stopStartedCapture();
+        return;
+      }
     } catch (error) {
-      this.clearListeners();
-      this.sendPcm = null;
+      if (!this.isCurrentStart(token)) {
+        this.clearStoppedStart();
+        return;
+      }
+      this.active = false;
+      this.clearStoppedStart();
       throw error;
     }
-    this.setStatus("audioHealth", "");
+    this.resetSourceHealth();
     this.setStatus("captureStatus", this.captureSourceLabel());
   }
 
-  async stop(): Promise<void> {
+  private async stopNow(): Promise<void> {
+    if (this.unlistenFrame === null) {
+      this.sendPcm = null;
+      return;
+    }
     try {
       await this.options.audio.stopCapture();
     } catch (error) {
@@ -76,6 +121,16 @@ export class LiveAudioCapture {
     }
     this.clearListeners();
     this.sendPcm = null;
+  }
+
+  private enqueueOperation(run: () => Promise<void>): Promise<void> {
+    const next = this.operation.catch(() => undefined).then(run);
+    this.operation = next.catch(() => undefined);
+    return next;
+  }
+
+  private isCurrentStart(token: number): boolean {
+    return this.active && token === this.startToken;
   }
 
   private handleAudioFrame(frame: unknown): void {
@@ -106,7 +161,9 @@ export class LiveAudioCapture {
   private abortCapture(message: string): void {
     const status = message || AUDIO_CAPTURE_FAILED_MESSAGE;
     this.setStatus("captureStatus", status);
-    this.options.onAbort(status);
+    if (this.abortOnCaptureError) {
+      this.options.onAbort(status);
+    }
   }
 
   private clearListeners(): void {
@@ -114,6 +171,28 @@ export class LiveAudioCapture {
     this.unlistenCaptureError?.();
     this.unlistenFrame = null;
     this.unlistenCaptureError = null;
+  }
+
+  private clearStoppedStart(): void {
+    this.clearListeners();
+    this.sendPcm = null;
+  }
+
+  private async stopStartedCapture(): Promise<void> {
+    try {
+      await this.options.audio.stopCapture();
+    } catch (error) {
+      this.setStatus("captureStatus", errorMessage(error));
+    }
+    this.clearStoppedStart();
+  }
+
+  private resetSourceHealth(): void {
+    this.lastAudioLevelDb = null;
+    this.silentFrameWarningActive = false;
+    this.silentFrames = 0;
+    this.setStatus("audioHealth", "");
+    this.updateAudioStats();
   }
 
   private updateAudioStats(): void {
