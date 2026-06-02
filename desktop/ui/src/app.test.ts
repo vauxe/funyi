@@ -47,7 +47,7 @@ test("window height switches history mode and inline settings drive start payloa
 
   elements["language"]!.value = "Chinese";
   elements["translation-target-language"]!.value = "Japanese";
-  elements["session-button"]!.click();
+  elements["transport-button"]!.click();
 
   const socket = FakeWebSocket.instances[0];
   assert.ok(socket);
@@ -72,7 +72,7 @@ test("overlay listener setup does not block app boot", async () => {
 
   await bootApp({ overlay });
 
-  elements["session-button"]!.click();
+  elements["transport-button"]!.click();
   assert.equal(elements["session-status"]!.textContent, "Connecting...");
   assert.ok(FakeWebSocket.instances[0]);
 });
@@ -82,7 +82,7 @@ test("empty translation target starts without translation request", async () => 
 
   await bootApp();
 
-  elements["session-button"]!.click();
+  elements["transport-button"]!.click();
   const socket = FakeWebSocket.instances[0];
   assert.ok(socket);
 
@@ -97,7 +97,8 @@ test("audio source listing failures keep the UI in a disabled idle state", async
 
   await bootApp({ listSourcesError: new Error("audio source probe failed") });
 
-  assert.equal(elements["session-button"]!.disabled, true);
+  assert.equal(elements["transport-button"]!.disabled, true);
+  assert.equal(elements["stop-button"]!.disabled, true);
   assert.equal(elements["session-status"]!.textContent, "audio source probe failed");
 });
 
@@ -107,7 +108,7 @@ test("invalid selected audio source is rejected before opening a websocket", asy
   await bootApp();
 
   elements["audio-source"]!.value = "missing";
-  elements["session-button"]!.click();
+  elements["transport-button"]!.click();
 
   assert.equal(FakeWebSocket.instances.length, 0);
   assert.equal(elements["session-status"]!.textContent, "Selected audio source is invalid.");
@@ -119,7 +120,7 @@ test("normal running sessions do not show redundant status text", async () => {
   await bootApp();
 
   elements["translation-target-language"]!.value = "Japanese";
-  elements["session-button"]!.click();
+  elements["transport-button"]!.click();
   const socket = FakeWebSocket.instances[0];
   assert.ok(socket);
 
@@ -134,14 +135,56 @@ test("normal running sessions do not show redundant status text", async () => {
   assert.equal(elements["session-status"]!.textContent, "");
   assert.equal(elements["app-shell"]!.dataset.statusActive, "false");
 
-  elements["session-button"]!.click();
+  elements["stop-button"]!.click();
   await nextTick();
 
-  assert.equal(elements["session-button"]!.title, "Cancel final transcript");
-  assert.equal(elements["session-button"]!.attributes.get("aria-label"), "Cancel final transcript");
+  assert.equal(elements["transport-button"]!.disabled, true);
+  assert.equal(elements["stop-button"]!.title, "Cancel final transcript");
+  assert.equal(elements["stop-button"]!.attributes.get("aria-label"), "Cancel final transcript");
 
   socket.message({ type: "transcript_final", segments: [] });
   await nextTick();
+});
+
+test("pause control stops native capture and resumes on the same websocket", async () => {
+  const elements = installDocument();
+  const { audio } = await bootApp();
+
+  elements["transport-button"]!.click();
+  const socket = FakeWebSocket.instances[0];
+  assert.ok(socket);
+
+  socket.open();
+  socket.message({ type: "ready", sample_rate: 16000 });
+  await nextTick();
+
+  audio.frameHandler?.({ sampleRate: 16000, format: "pcm_s16le", dataBase64: "abcd" });
+  elements["transport-button"]!.click();
+  await nextTick();
+
+  assert.equal(elements["app-shell"]!.attributes.get("data-state"), "paused");
+  assert.equal(elements["transport-button"]!.title, "Resume");
+  assert.equal(elements["stop-button"]!.title, "Stop");
+  assert.equal(elements["session-status"]!.textContent, "Paused");
+  assert.equal(audio.stopCalls, 1);
+  assert.equal(audio.frameHandler, null);
+  assert.equal(FakeWebSocket.instances.length, 1);
+  assert.equal(socket.closeCalls, 0);
+  assert.equal(socket.sent.length, 2);
+
+  elements["transport-button"]!.click();
+  await nextTick();
+
+  assert.equal(elements["app-shell"]!.attributes.get("data-state"), "running");
+  assert.equal(elements["transport-button"]!.title, "Pause");
+  assert.deepEqual(audio.startCalls, ["system_default", "system_default"]);
+
+  emitAudioFrame(audio, "efgh");
+
+  assert.equal(FakeWebSocket.instances.length, 1);
+  assert.equal(socket.closeCalls, 0);
+  assert.equal(socket.sent.length, 3);
+  assert.deepEqual(socket.sent.slice(1), [new Uint8Array([4]), new Uint8Array([4])]);
 });
 
 test("active server session errors are shown as a retryable user status", async () => {
@@ -149,7 +192,7 @@ test("active server session errors are shown as a retryable user status", async 
 
   await bootApp();
 
-  elements["session-button"]!.click();
+  elements["transport-button"]!.click();
   const socket = FakeWebSocket.instances[0];
   assert.ok(socket);
 
@@ -167,7 +210,7 @@ test("language controls stay editable while running and send runtime updates", a
 
   elements["language"]!.value = "Chinese";
   elements["translation-target-language"]!.value = "English";
-  elements["session-button"]!.click();
+  elements["transport-button"]!.click();
   const socket = FakeWebSocket.instances[0];
   assert.ok(socket);
 
@@ -220,7 +263,7 @@ test("audio source changes hot-switch capture without reopening the websocket", 
     ],
   });
 
-  elements["session-button"]!.click();
+  elements["transport-button"]!.click();
   const socket = FakeWebSocket.instances[0];
   assert.ok(socket);
   socket.open();
@@ -243,7 +286,7 @@ test("invalid audio source changes are rejected while running", async () => {
 
   await bootApp();
 
-  elements["session-button"]!.click();
+  elements["transport-button"]!.click();
   const socket = FakeWebSocket.instances[0];
   assert.ok(socket);
   socket.open();
@@ -264,7 +307,7 @@ test("recoverable command errors remain visible while running", async () => {
 
   await bootApp();
 
-  elements["session-button"]!.click();
+  elements["transport-button"]!.click();
   const socket = FakeWebSocket.instances[0];
   assert.ok(socket);
 
@@ -276,7 +319,7 @@ test("recoverable command errors remain visible while running", async () => {
   await nextTick();
 
   assert.equal(elements["session-status"]!.textContent, "Unsupported target_language: Swedish.");
-  assert.equal(elements["session-button"]!.title, "Stop");
+  assert.equal(elements["stop-button"]!.title, "Stop");
 });
 
 test("native drag keeps the shell active until native finished event", async () => {
@@ -377,6 +420,12 @@ function installDocument(): Record<string, FakeElement> {
 
 function selectValues(element: FakeElement): string[] {
   return element.children.map((child) => child.value);
+}
+
+function emitAudioFrame(audio: ReturnType<typeof createFakeAudioAdapter>, dataBase64: string): void {
+  const frameHandler = audio.frameHandler;
+  assert.ok(frameHandler);
+  frameHandler({ sampleRate: 16000, format: "pcm_s16le", dataBase64 });
 }
 
 interface AppHarness {

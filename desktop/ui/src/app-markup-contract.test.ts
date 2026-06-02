@@ -33,7 +33,8 @@ test("caption opacity control exposes the full 0 to 100 percent range", () => {
 test("caption controls put the session action before secondary actions", () => {
   assert.deepEqual(controlIdsInOrder("caption-controls"), [
     "volume-indicator",
-    "session-button",
+    "transport-button",
+    "stop-button",
     "settings-button",
     "minimize-button",
     "close-button",

@@ -26,6 +26,10 @@ test("summarizes connection lifecycle without redundant running text", () => {
     level: "silent",
     volume: 0,
   });
+  assert.deepEqual(summarizeStatus(EMPTY_STATUS, "paused"), {
+    text: "Paused",
+    tone: "active",
+  });
 });
 
 test("maps technical errors to compact user-facing status text", () => {

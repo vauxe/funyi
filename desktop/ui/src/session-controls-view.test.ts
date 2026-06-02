@@ -8,20 +8,59 @@ test("renders session control state for active and finishing sessions", () => {
   const elements = createElements();
   const view = new SessionControlsView(sessionControlsElements(elements));
 
+  view.renderState("idle", { canStart: true });
+
+  assert.equal(elements.transportButton.disabled, false);
+  assert.equal(elements.transportButton.className, "");
+  assert.equal(elements.transportButton.title, "Start");
+  assert.equal(elements.stopButton.disabled, true);
+  assert.equal(elements.stopButton.className, "");
+  assert.equal(elements.stopButton.title, "Stop");
+
+  view.renderState("connecting", { canStart: true });
+
+  assert.equal(elements.transportButton.disabled, true);
+  assert.equal(elements.transportButton.title, "Starting");
+  assert.equal(elements.stopButton.disabled, false);
+  assert.equal(elements.stopButton.className, "is-cancel");
+  assert.equal(elements.stopButton.title, "Cancel start");
+
   view.renderState("running", { canStart: true });
 
   assert.equal(elements.appShell.attributes.get("data-state"), "running");
-  assert.equal(elements.sessionButton.className, "is-stop");
-  assert.equal(elements.sessionButton.title, "Stop");
+  assert.equal(elements.transportButton.disabled, false);
+  assert.equal(elements.transportButton.className, "is-pause");
+  assert.equal(elements.transportButton.title, "Pause");
+  assert.equal(elements.stopButton.disabled, false);
+  assert.equal(elements.stopButton.className, "");
+  assert.equal(elements.stopButton.title, "Stop");
   assert.equal(elements.serverUrl.disabled, true);
   assert.equal(elements.language.disabled, false);
   assert.equal(elements.translationTargetLanguage.disabled, false);
   assert.equal(elements.audioSource.disabled, false);
 
+  view.renderState("paused", { canStart: true });
+
+  assert.equal(elements.appShell.attributes.get("data-state"), "paused");
+  assert.equal(elements.transportButton.disabled, false);
+  assert.equal(elements.transportButton.className, "");
+  assert.equal(elements.transportButton.title, "Resume");
+  assert.equal(elements.stopButton.disabled, false);
+  assert.equal(elements.stopButton.className, "");
+  assert.equal(elements.stopButton.title, "Stop");
+  assert.equal(elements.serverUrl.disabled, true);
+  assert.equal(elements.language.disabled, true);
+  assert.equal(elements.translationTargetLanguage.disabled, true);
+  assert.equal(elements.audioSource.disabled, false);
+
   view.renderState("finishing", { canStart: true });
 
-  assert.equal(elements.sessionButton.className, "is-stop is-finishing");
-  assert.equal(elements.sessionButton.title, "Cancel final transcript");
+  assert.equal(elements.transportButton.disabled, true);
+  assert.equal(elements.transportButton.className, "");
+  assert.equal(elements.transportButton.title, "Finalizing");
+  assert.equal(elements.stopButton.disabled, false);
+  assert.equal(elements.stopButton.className, "is-cancel");
+  assert.equal(elements.stopButton.title, "Cancel final transcript");
   assert.equal(elements.language.disabled, true);
   assert.equal(elements.translationTargetLanguage.disabled, true);
   assert.equal(elements.audioSource.disabled, true);
@@ -63,8 +102,9 @@ function createElements(): Record<
   | "audioSource"
   | "language"
   | "serverUrl"
-  | "sessionButton"
   | "sessionStatus"
+  | "stopButton"
+  | "transportButton"
   | "translationTargetLanguage"
   | "volumeIndicator",
   FakeElement
@@ -74,8 +114,9 @@ function createElements(): Record<
     audioSource: new FakeElement(),
     language: new FakeElement(),
     serverUrl: new FakeElement(),
-    sessionButton: new FakeElement(),
     sessionStatus: new FakeElement(),
+    stopButton: new FakeElement(),
+    transportButton: new FakeElement(),
     translationTargetLanguage: new FakeElement(),
     volumeIndicator: new FakeElement(),
   };
@@ -89,8 +130,9 @@ function sessionControlsElements(
     audioSource: asDomElement<HTMLSelectElement>(elements.audioSource),
     language: asDomElement<HTMLSelectElement>(elements.language),
     serverUrl: asDomElement<HTMLInputElement>(elements.serverUrl),
-    sessionButton: asDomElement<HTMLButtonElement>(elements.sessionButton),
     sessionStatus: asDomElement(elements.sessionStatus),
+    stopButton: asDomElement<HTMLButtonElement>(elements.stopButton),
+    transportButton: asDomElement<HTMLButtonElement>(elements.transportButton),
     translationTargetLanguage: asDomElement<HTMLSelectElement>(elements.translationTargetLanguage),
     volumeIndicator: asDomElement(elements.volumeIndicator),
   };

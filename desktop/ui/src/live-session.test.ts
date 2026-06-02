@@ -21,6 +21,7 @@ class FakeAsrClient implements LiveSessionClient {
   sendPcmResult = true;
   sentPcm: Uint8Array[] = [];
   startPayload: RealtimeStartPayload | null = null;
+  transportEvents: string[] = [];
   url: string;
 
   constructor({ url, onClose, onError, onEvent, onStatus }: LiveSessionClientCallbacks) {
@@ -48,11 +49,13 @@ class FakeAsrClient implements LiveSessionClient {
 
   setLanguageConfig(config: LanguageConfigUpdate): void {
     this.languageConfigs.push(config);
+    this.transportEvents.push("config");
   }
 
   sendPcm(bytes: Uint8Array): boolean {
     if (this.sendPcmResult) {
       this.sentPcm.push(bytes);
+      this.transportEvents.push("pcm");
     }
     return this.sendPcmResult;
   }
@@ -131,6 +134,12 @@ function assertNoRuntimeCommands(client: FakeAsrClient): void {
   assert.deepEqual(client.languageConfigs, []);
 }
 
+function emitAudioFrame(audio: ReturnType<typeof createFakeAudioAdapter>, dataBase64: string): void {
+  const frameHandler = audio.frameHandler;
+  assert.ok(frameHandler);
+  frameHandler({ sampleRate: 16000, format: "pcm_s16le", dataBase64 });
+}
+
 test("starts capture after ready and forwards only valid pcm frames", async () => {
   const harness = createHarness();
   await startRunningSession(harness);
@@ -147,18 +156,41 @@ test("starts capture after ready and forwards only valid pcm frames", async () =
   assert.deepEqual(harness.statuses.get("audioStats"), { levelDb: null, droppedFrames: 0 });
 });
 
-test("forwards language config only while running", async () => {
+test("ignores language config changes while paused", async () => {
   const harness = createHarness();
 
   harness.session.setLanguageConfig({ language: "English" });
   await startRunningSession(harness);
 
   harness.session.setLanguageConfig({ target_language: "Japanese" });
+  await harness.session.pause();
+  harness.session.setLanguageConfig({ language: "Chinese" });
+  assert.deepEqual(harness.clients[0]!.languageConfigs, [{ target_language: "Japanese" }]);
+
+  await harness.session.resume();
   assert.deepEqual(harness.clients[0]!.languageConfigs, [{ target_language: "Japanese" }]);
 
   await harness.session.stop({ sendFinish: false });
   harness.session.setLanguageConfig({ language: null });
   assert.deepEqual(harness.clients[0]!.languageConfigs, [{ target_language: "Japanese" }]);
+});
+
+test("does not send paused language config before resumed pcm", async () => {
+  const harness = createHarness();
+  harness.audio.startCapture = async (sourceId: string) => {
+    harness.audio.startCalls.push(sourceId);
+    if (harness.audio.startCalls.length === 2) {
+      emitAudioFrame(harness.audio, "abcd");
+    }
+  };
+  await startRunningSession(harness);
+
+  await harness.session.pause();
+  harness.session.setLanguageConfig({ language: "Chinese" });
+  await harness.session.resume();
+
+  assert.deepEqual(harness.clients[0]!.languageConfigs, []);
+  assert.deepEqual(harness.clients[0]!.transportEvents, ["pcm"]);
 });
 
 test("keeps running session open after non-fatal service command error", async () => {
@@ -226,6 +258,236 @@ test("switches audio source inside the running websocket session", async () => {
 
   harness.audio.frameHandler?.({ sampleRate: 16000, format: "pcm_s16le", dataBase64: "abcd" });
   assert.deepEqual([...harness.clients[0]!.sentPcm.at(-1)!], [4]);
+});
+
+test("pauses capture without closing the websocket and resumes on the same session", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness);
+
+  harness.audio.frameHandler?.({ sampleRate: 16000, format: "pcm_s16le", dataBase64: "abcd" });
+  await harness.session.pause();
+
+  assert.equal(harness.session.getState(), "paused");
+  assert.equal(harness.clients[0]!.closed, false);
+  assertNoRuntimeCommands(harness.clients[0]!);
+  assert.equal(harness.audio.stopCalls, 1);
+  assert.equal(harness.audio.frameHandler, null);
+  assert.equal(harness.audio.captureErrorHandler, null);
+
+  await harness.session.resume();
+
+  assert.equal(harness.session.getState(), "running");
+  assert.equal(harness.clients.length, 1);
+  assert.equal(harness.clients[0]!.closed, false);
+  assertNoRuntimeCommands(harness.clients[0]!);
+  assert.deepEqual(harness.audio.startCalls, ["system_default", "system_default"]);
+  assert.equal(harness.statuses.get("captureStatus"), "Sys");
+
+  emitAudioFrame(harness.audio, "efgh");
+  assert.deepEqual(
+    harness.clients[0]!.sentPcm.map((bytes) => [...bytes]),
+    [[4], [4]],
+  );
+});
+
+test("drops late audio frames after pause before native capture has stopped", async () => {
+  const harness = createHarness();
+  const stopCapture = deferred<void>();
+  harness.audio.stopCapture = async () => {
+    harness.audio.stopCalls += 1;
+    await stopCapture.promise;
+  };
+  await startRunningSession(harness);
+
+  emitAudioFrame(harness.audio, "abcd");
+  const pausing = harness.session.pause();
+  await nextTick();
+
+  assert.equal(harness.session.getState(), "paused");
+  emitAudioFrame(harness.audio, "efgh");
+  assert.deepEqual(
+    harness.clients[0]!.sentPcm.map((bytes) => [...bytes]),
+    [[4]],
+  );
+  assert.deepEqual(harness.statuses.get("audioStats"), { levelDb: null, droppedFrames: 0 });
+
+  stopCapture.resolve();
+  await pausing;
+});
+
+test("resume before pause stop settles does not re-enable the old capture sender", async () => {
+  const harness = createHarness();
+  const stopCapture = deferred<void>();
+  harness.audio.stopCapture = async () => {
+    harness.audio.stopCalls += 1;
+    await stopCapture.promise;
+  };
+  await startRunningSession(harness);
+
+  emitAudioFrame(harness.audio, "abcd");
+  const pausing = harness.session.pause();
+  await nextTick();
+  const resuming = harness.session.resume();
+  await nextTick();
+
+  assert.equal(harness.session.getState(), "running");
+  emitAudioFrame(harness.audio, "efgh");
+  assert.deepEqual(
+    harness.clients[0]!.sentPcm.map((bytes) => [...bytes]),
+    [[4]],
+  );
+
+  stopCapture.resolve();
+  await Promise.all([pausing, resuming]);
+  emitAudioFrame(harness.audio, "ijkl");
+  assert.deepEqual(
+    harness.clients[0]!.sentPcm.map((bytes) => [...bytes]),
+    [[4], [4]],
+  );
+});
+
+test("stop while paused still requests the final transcript without restarting capture", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness);
+
+  await harness.session.pause();
+  await harness.session.stop();
+
+  assert.equal(harness.session.getState(), "finishing");
+  assert.deepEqual(harness.clients[0]!.commands, ["finish"]);
+  assert.equal(harness.audio.stopCalls, 1);
+  assert.deepEqual(harness.audio.startCalls, ["system_default"]);
+});
+
+test("transcript final after stopping while paused completes the session", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness);
+
+  await harness.session.pause();
+  await harness.session.stop();
+  await harness.clients[0]!.emit({ type: "transcript_final", segments: [] });
+
+  assert.equal(harness.session.getState(), "idle");
+  assert.equal(harness.clients[0]!.closed, true);
+  assert.equal(harness.statuses.get("captureStatus"), "Done");
+});
+
+test("uses audio source selected while paused when capture resumes", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness);
+
+  await harness.session.pause();
+  await harness.session.switchAudioSource({
+    audioSourceId: "mic_default",
+    audioSourceKind: "microphone",
+  });
+  await harness.session.resume();
+
+  assert.equal(harness.session.getState(), "running");
+  assert.deepEqual(harness.audio.startCalls, ["system_default", "mic_default"]);
+  assert.equal(harness.statuses.get("captureStatus"), "Mic");
+  assertNoRuntimeCommands(harness.clients[0]!);
+});
+
+test("source selected during resume startup wins over the stale resumed source", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness);
+  const micStart = deferred<void>();
+  harness.audio.startCapture = async (sourceId: string) => {
+    harness.audio.startCalls.push(sourceId);
+    if (sourceId === "mic_default") {
+      await micStart.promise;
+    }
+  };
+
+  await harness.session.pause();
+  await harness.session.switchAudioSource({
+    audioSourceId: "mic_default",
+    audioSourceKind: "microphone",
+  });
+  const resuming = harness.session.resume();
+  await nextTick();
+  const switchingBack = harness.session.switchAudioSource({
+    audioSourceId: "system_default",
+    audioSourceKind: "system",
+  });
+  await nextTick();
+
+  micStart.resolve();
+  await Promise.all([resuming, switchingBack]);
+
+  assert.equal(harness.session.getState(), "running");
+  assert.deepEqual(harness.audio.startCalls, ["system_default", "mic_default", "system_default"]);
+  assert.equal(harness.statuses.get("captureStatus"), "Sys");
+  assertNoRuntimeCommands(harness.clients[0]!);
+});
+
+test("pause during an in-flight source switch resumes the requested source", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness);
+  const firstStop = deferred<void>();
+  let holdFirstStop = true;
+  harness.audio.stopCapture = async () => {
+    harness.audio.stopCalls += 1;
+    if (holdFirstStop) {
+      holdFirstStop = false;
+      await firstStop.promise;
+    }
+  };
+
+  const switching = harness.session.switchAudioSource({
+    audioSourceId: "mic_default",
+    audioSourceKind: "microphone",
+  });
+  await nextTick();
+  const pausing = harness.session.pause();
+  await nextTick();
+
+  assert.equal(harness.session.getState(), "paused");
+  firstStop.resolve();
+  await Promise.all([switching, pausing]);
+  await harness.session.resume();
+
+  assert.equal(harness.session.getState(), "running");
+  assert.deepEqual(harness.audio.startCalls, ["system_default", "mic_default"]);
+  assert.equal(harness.statuses.get("captureStatus"), "Mic");
+  assertNoRuntimeCommands(harness.clients[0]!);
+});
+
+test("paused source selection wins over a stale in-flight source switch", async () => {
+  const harness = createHarness();
+  await startRunningSession(harness);
+  const firstStop = deferred<void>();
+  let holdFirstStop = true;
+  harness.audio.stopCapture = async () => {
+    harness.audio.stopCalls += 1;
+    if (holdFirstStop) {
+      holdFirstStop = false;
+      await firstStop.promise;
+    }
+  };
+
+  const switching = harness.session.switchAudioSource({
+    audioSourceId: "mic_default",
+    audioSourceKind: "microphone",
+  });
+  await nextTick();
+  const pausing = harness.session.pause();
+  await nextTick();
+  await harness.session.switchAudioSource({
+    audioSourceId: "system_default",
+    audioSourceKind: "system",
+  });
+  const resuming = harness.session.resume();
+  await nextTick();
+
+  firstStop.resolve();
+  await Promise.all([switching, pausing, resuming]);
+
+  assert.equal(harness.session.getState(), "running");
+  assert.deepEqual(harness.audio.startCalls, ["system_default", "system_default"]);
+  assert.equal(harness.statuses.get("captureStatus"), "Sys");
+  assertNoRuntimeCommands(harness.clients[0]!);
 });
 
 test("switching while initial capture is starting replaces the native source", async () => {

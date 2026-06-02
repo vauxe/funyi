@@ -53,8 +53,9 @@ export class FunyiApp {
       audioSource: dom.audioSource,
       language: dom.language,
       serverUrl: dom.serverUrl,
-      sessionButton: dom.sessionButton,
       sessionStatus: dom.sessionStatus,
+      stopButton: dom.stopButton,
+      transportButton: dom.transportButton,
       translationTargetLanguage: dom.translationTargetLanguage,
       volumeIndicator: dom.volumeIndicator,
     });
@@ -138,7 +139,8 @@ export class FunyiApp {
     this.settingsController.init();
     this.chromeController.init();
     this.overlayController.bind();
-    dom.sessionButton.addEventListener("click", () => void this.toggleSession());
+    dom.transportButton.addEventListener("click", () => void this.toggleTransport());
+    dom.stopButton.addEventListener("click", () => void this.stopSession());
     dom.minimizeButton.addEventListener("click", () => void this.overlayController.minimize());
     dom.closeButton.addEventListener("click", () => void this.closeOverlay());
     dom.serverUrl.addEventListener("change", () =>
@@ -178,11 +180,22 @@ export class FunyiApp {
     }
   }
 
-  private async toggleSession(): Promise<void> {
-    if (this.liveSession.getState() === "idle") {
+  private async toggleTransport(): Promise<void> {
+    const state = this.liveSession.getState();
+    if (state === "idle") {
       await this.startSession();
       return;
     }
+    if (state === "paused") {
+      await this.liveSession.resume();
+      return;
+    }
+    if (state === "running") {
+      await this.liveSession.pause();
+    }
+  }
+
+  private async stopSession(): Promise<void> {
     await this.liveSession.stop();
   }
 
@@ -245,7 +258,8 @@ export class FunyiApp {
     const audioSourceId = dom.audioSource.value || null;
     this.preferences.save({ audioSourceId });
 
-    if (this.liveSession.getState() !== "running") {
+    const state = this.liveSession.getState();
+    if (state !== "running" && state !== "paused") {
       return;
     }
 

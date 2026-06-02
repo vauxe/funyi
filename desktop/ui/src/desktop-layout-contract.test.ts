@@ -52,6 +52,31 @@ test("caption background image fades as one clipped layer behind content", () =>
   assert.match(imageLayer, /opacity:\s*var\(--caption-bg-image-opacity\);/u);
 });
 
+test("transport pause pseudo-elements share the same grid cell", () => {
+  const pauseRule = cssRuleBody(UI_STYLES, ".transport-control.is-pause::before,\n.transport-control.is-pause::after");
+
+  assert.match(pauseRule, /grid-area:\s*1\s*\/\s*1/u);
+});
+
+test("narrow overlay transport controls fit beside the minimum service URL", () => {
+  const narrowStyles = cssMediaBlock(UI_STYLES, "max-width: 420px");
+  const minimumInnerWidth = overlaySize("MIN_OVERLAY_WIDTH") - 24;
+  const minimumServiceUrlWidth = 98;
+  const controlWidth = 18 + 5 * 24 + 5 * 3;
+
+  assert.ok(controlWidth <= minimumInnerWidth - minimumServiceUrlWidth);
+  assert.match(narrowStyles, /\.caption-controls\s*\{[\s\S]*gap:\s*3px;/u);
+  assert.match(
+    narrowStyles,
+    /\.caption-controls \.icon-button,[\s\S]*\.caption-controls #transport-button\s*\{[\s\S]*width:\s*24px;/u,
+  );
+  assert.match(
+    narrowStyles,
+    /\.caption-controls \.icon-button,[\s\S]*\.caption-controls #transport-button\s*\{[\s\S]*height:\s*24px;/u,
+  );
+  assert.match(narrowStyles, /\.caption-controls \.volume-indicator\s*\{[\s\S]*width:\s*18px;[\s\S]*height:\s*24px;/u);
+});
+
 test("narrow overlays keep the service URL visible on the upper status row", () => {
   const narrowStyles = cssMediaBlock(UI_STYLES, "max-width: 420px");
 

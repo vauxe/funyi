@@ -18,11 +18,12 @@ export const APP_ELEMENT_SELECTORS = {
   language: "#language",
   minimizeButton: "#minimize-button",
   serverUrl: "#server-url",
-  sessionButton: "#session-button",
   sessionStatus: "#session-status",
   settingsButton: "#settings-button",
   settingsPanel: "#settings-panel",
   settingsStatus: "#settings-status",
+  stopButton: "#stop-button",
+  transportButton: "#transport-button",
   translationTargetLanguage: "#translation-target-language",
   volumeIndicator: "#volume-indicator",
 } as const;
@@ -35,7 +36,8 @@ export interface AppElements {
   language: HTMLSelectElement;
   translationTargetLanguage: HTMLSelectElement;
   audioSource: HTMLSelectElement;
-  sessionButton: HTMLButtonElement;
+  transportButton: HTMLButtonElement;
+  stopButton: HTMLButtonElement;
   minimizeButton: HTMLButtonElement;
   closeButton: HTMLButtonElement;
   sessionStatus: HTMLSpanElement;
@@ -64,7 +66,8 @@ export function getAppElements(): AppElements {
     language: requireElement<HTMLSelectElement>(APP_ELEMENT_SELECTORS.language),
     translationTargetLanguage: requireElement<HTMLSelectElement>(APP_ELEMENT_SELECTORS.translationTargetLanguage),
     audioSource: requireElement<HTMLSelectElement>(APP_ELEMENT_SELECTORS.audioSource),
-    sessionButton: requireElement<HTMLButtonElement>(APP_ELEMENT_SELECTORS.sessionButton),
+    transportButton: requireElement<HTMLButtonElement>(APP_ELEMENT_SELECTORS.transportButton),
+    stopButton: requireElement<HTMLButtonElement>(APP_ELEMENT_SELECTORS.stopButton),
     minimizeButton: requireElement<HTMLButtonElement>(APP_ELEMENT_SELECTORS.minimizeButton),
     closeButton: requireElement<HTMLButtonElement>(APP_ELEMENT_SELECTORS.closeButton),
     sessionStatus: requireElement<HTMLSpanElement>(APP_ELEMENT_SELECTORS.sessionStatus),

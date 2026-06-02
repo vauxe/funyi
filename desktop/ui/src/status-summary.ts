@@ -57,6 +57,9 @@ export function summarizeStatus(statusValues: StatusValues, sessionState: Sessio
     if (sessionState === "connecting") {
       return { text: "Connecting...", tone: "active" };
     }
+    if (sessionState === "paused") {
+      return { text: "Paused", tone: "active" };
+    }
     if (sessionState === "finishing") {
       return { text: "Finishing...", tone: "active" };
     }

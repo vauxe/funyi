@@ -23,7 +23,7 @@ interface StartCaptureOptions {
   abortOnCaptureError?: boolean;
   sourceId: string;
   sourceKind: AudioSourceKind;
-  sendPcm(bytes: Uint8Array): boolean;
+  sendPcm(bytes: Uint8Array): boolean | undefined;
 }
 
 export class LiveAudioCapture {
@@ -32,7 +32,7 @@ export class LiveAudioCapture {
   private droppedAudioFrames = 0;
   private lastAudioLevelDb: number | null = null;
   private operation: Promise<void> = Promise.resolve();
-  private sendPcm: ((bytes: Uint8Array) => boolean) | null = null;
+  private sendPcm: ((bytes: Uint8Array) => boolean | undefined) | null = null;
   private silentFrameWarningActive = false;
   private silentFrames = 0;
   private sourceKind: AudioSourceKind = "system";
@@ -148,7 +148,7 @@ export class LiveAudioCapture {
 
     this.lastAudioLevelDb = pcmLevelDb(bytes);
     this.updateSilentCaptureStatus(this.lastAudioLevelDb);
-    if (this.sendPcm && !this.sendPcm(bytes)) {
+    if (this.sendPcm?.(bytes) === false) {
       this.droppedAudioFrames += 1;
     }
     this.updateAudioStats();

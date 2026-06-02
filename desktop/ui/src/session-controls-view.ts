@@ -1,4 +1,9 @@
-import { isActiveSessionState, isSessionConfigurationLocked, type SessionState } from "./session-state.js";
+import {
+  isActiveSessionState,
+  isAudioSourceConfigurationLocked,
+  isLanguageConfigurationLocked,
+  type SessionState,
+} from "./session-state.js";
 import type { StatusSummary } from "./status-summary.js";
 
 interface SessionControlsElements {
@@ -6,8 +11,9 @@ interface SessionControlsElements {
   audioSource: HTMLSelectElement;
   language: HTMLSelectElement;
   serverUrl: HTMLInputElement;
-  sessionButton: HTMLButtonElement;
   sessionStatus: HTMLElement;
+  stopButton: HTMLButtonElement;
+  transportButton: HTMLButtonElement;
   translationTargetLanguage: HTMLSelectElement;
   volumeIndicator: HTMLElement;
 }
@@ -17,18 +23,24 @@ export class SessionControlsView {
 
   renderState(state: SessionState, { canStart }: { canStart: boolean }): void {
     const active = isActiveSessionState(state);
-    const configurationLocked = isSessionConfigurationLocked(state);
+    const languageConfigurationLocked = isLanguageConfigurationLocked(state);
+    const audioSourceLocked = isAudioSourceConfigurationLocked(state);
     this.elements.appShell.setAttribute("data-state", state);
-    this.elements.sessionButton.disabled = state === "idle" && !canStart;
-    this.elements.sessionButton.classList.toggle("is-stop", active);
-    this.elements.sessionButton.classList.toggle("is-finishing", state === "finishing");
-    const sessionButtonLabel = buttonLabelForState(state);
-    this.elements.sessionButton.title = sessionButtonLabel;
-    this.elements.sessionButton.setAttribute("aria-label", sessionButtonLabel);
+    this.elements.transportButton.disabled =
+      state === "connecting" || state === "finishing" || (state === "idle" && !canStart);
+    this.elements.transportButton.classList.toggle("is-pause", state === "running");
+    const transportButtonLabel = transportButtonLabelForState(state);
+    this.elements.transportButton.title = transportButtonLabel;
+    this.elements.transportButton.setAttribute("aria-label", transportButtonLabel);
+    this.elements.stopButton.disabled = state === "idle";
+    this.elements.stopButton.classList.toggle("is-cancel", state === "connecting" || state === "finishing");
+    const stopButtonLabel = stopButtonLabelForState(state);
+    this.elements.stopButton.title = stopButtonLabel;
+    this.elements.stopButton.setAttribute("aria-label", stopButtonLabel);
     this.elements.serverUrl.disabled = active;
-    this.elements.language.disabled = configurationLocked;
-    this.elements.translationTargetLanguage.disabled = configurationLocked;
-    this.elements.audioSource.disabled = configurationLocked;
+    this.elements.language.disabled = languageConfigurationLocked;
+    this.elements.translationTargetLanguage.disabled = languageConfigurationLocked;
+    this.elements.audioSource.disabled = audioSourceLocked;
   }
 
   renderStatus({ text, tone, level, volume = 0 }: StatusSummary): void {
@@ -61,12 +73,28 @@ function volumeBarScale(volume: number, base: number, range: number): string {
   return (base + volume * range).toFixed(2);
 }
 
-function buttonLabelForState(state: SessionState): string {
+function transportButtonLabelForState(state: SessionState): string {
+  if (state === "connecting") {
+    return "Starting";
+  }
+  if (state === "running") {
+    return "Pause";
+  }
+  if (state === "paused") {
+    return "Resume";
+  }
+  if (state === "finishing") {
+    return "Finalizing";
+  }
+  return "Start";
+}
+
+function stopButtonLabelForState(state: SessionState): string {
   if (state === "finishing") {
     return "Cancel final transcript";
   }
-  if (isActiveSessionState(state)) {
-    return "Stop";
+  if (state === "connecting") {
+    return "Cancel start";
   }
-  return "Start";
+  return "Stop";
 }
