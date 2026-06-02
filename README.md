@@ -7,6 +7,10 @@ WebSocket service, and provides a lightweight Tauri desktop caption client.
 Funyi is designed for local, single-user use. It is not a hosted service or a
 public multi-user ASR server.
 
+## Demo
+
+[Watch the Funyi desktop live captions demo](docs/assets/funyi-desktop-demo.mp4).
+
 ## Requirements
 
 - Python 3.10 or newer; Python 3.12 is recommended.

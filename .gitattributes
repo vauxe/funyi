@@ -9,3 +9,4 @@ Makefile text eol=lf
 *.jpeg binary
 *.png binary
 *.webp binary
+*.mp4 binary
