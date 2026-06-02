@@ -34,7 +34,7 @@
   },
   "bundle": {
     "active": true,
-    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "icon": ["icons/funyi-icon.png", "icons/funyi-icon.icns", "icons/funyi-icon.ico"],
     "targets": "all"
   }
 }
