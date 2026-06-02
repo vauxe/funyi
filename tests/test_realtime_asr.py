@@ -21,6 +21,7 @@ from realtime_server import (
     _PcmDebugSummary,
     TranslationServiceConfig,
     WebSocketSendTimeout,
+    _build_speech_gate,
     _build_realtime_session_config,
     _build_model_load,
     _build_translation,
@@ -550,6 +551,11 @@ class TestRealtimeServerCli:
         assert args.log_level == "info"
         assert not args.save_debug_audio
         assert args.debug_audio_dir == "local_data/realtime_debug_audio"
+        assert not args.no_vad
+
+    def test_no_vad_can_disable_vad(self) -> None:
+        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--no-vad"]):
+            assert _parse_args().no_vad
 
     def test_debug_log_level_can_be_configured(self) -> None:
         with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--log-level", "debug"]):
@@ -1535,6 +1541,21 @@ class TestRealtimeASRSession:
 
 
 class TestRealtimeConnectionSession:
+    def test_no_vad_gate_streams_initial_silence_to_asr(self) -> None:
+        model = FakeStreamingModel(outputs=["静音也进入模型"])
+        session = RealtimeConnectionSession(
+            model,
+            config=RealtimeASRConfig(language="Chinese"),
+            speech_gate=_build_speech_gate(no_vad=True),
+        )
+
+        events = session.ingest_audio(np.zeros(16_000, dtype=np.float32))
+
+        assert partial_texts(events) == ["静音也进入模型"]
+        assert model.init_count == 1
+        assert model.stream_calls == 1
+        assert session.active_asr is not None
+
     def test_connection_timing_jobs_are_consumed_after_runtime_handoff(self) -> None:
         model = FakeStreamingModel(outputs=["第一秒", "第一秒第二秒"])
         session = RealtimeConnectionSession(

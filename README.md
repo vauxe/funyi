@@ -95,6 +95,7 @@ usually `ws://127.0.0.1:8000/ws/asr`.
 | `./scripts/start_backend.sh` | Start the full backend from cached or local models. |
 | `FUNYI_TRANSLATION_MODEL= ./scripts/start_backend.sh` | Start ASR plus the required forced aligner, without translation. |
 | `FUNYI_PORT=8001 ./scripts/start_backend.sh` | Start the backend on another port. |
+| `./scripts/start_backend.sh --no-vad` | Start without VAD speech gating; all received audio is passed to ASR. |
 | `corepack pnpm install` | Install desktop dependencies from `desktop/`. |
 | `corepack pnpm run dev` | Start the desktop client from `desktop/`. |
 

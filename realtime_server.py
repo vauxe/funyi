@@ -30,6 +30,7 @@ from qwen3_asr_runtime.realtime_translation import (
     RealtimeTranslationRuntime,
     TranslationModelActor,
 )
+from qwen3_asr_runtime.speech_gate import SpeechGate
 from qwen3_asr_runtime.language_support import (
     HYMT_MODEL_CARD_LANGUAGES,
     QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES,
@@ -45,6 +46,7 @@ from qwen3_asr_runtime.translation import (
 )
 from qwen3_asr_runtime.transcript_store import TranscriptStore
 from qwen3_asr_runtime.utils import SAMPLE_RATE, normalize_language_name, validate_language
+from qwen3_asr_runtime.vad import VadDecision
 
 _SERVICE_SEND_TIMEOUT_SEC = 5.0
 _SERVICE_EVENT_QUEUE_MAXSIZE = 128
@@ -224,6 +226,42 @@ def _asr_set_language(session: Any, language: str | None) -> tuple[list[dict[str
     return events, session.consume_stable_timing_jobs_for_events(events), True
 
 
+class _NoVadAdapter:
+    def __init__(self) -> None:
+        self._active = False
+        self._samples_seen = 0
+
+    @property
+    def speech_active(self) -> bool:
+        return self._active
+
+    def reset(self) -> None:
+        self._active = False
+        self._samples_seen = 0
+
+    def accept(self, audio: np.ndarray) -> VadDecision:
+        sample_count = int(np.asarray(audio).reshape(-1).shape[0])
+        if sample_count == 0:
+            return VadDecision(speech_active=self._active)
+        start_sample = self._samples_seen
+        self._samples_seen += sample_count
+        speech_started = not self._active
+        self._active = True
+        return VadDecision(
+            speech_started=speech_started,
+            has_speech=True,
+            speech_active=True,
+            speech_start_sample=start_sample if speech_started else None,
+            last_speech_end_sample=self._samples_seen,
+        )
+
+
+def _build_speech_gate(*, no_vad: bool) -> SpeechGate:
+    if no_vad:
+        return SpeechGate(vad=_NoVadAdapter())
+    return SpeechGate()
+
+
 def build_app(
     *,
     model: Any,
@@ -233,6 +271,7 @@ def build_app(
     translation_actor: TranslationModelActor | None = None,
     translation_service_config: TranslationServiceConfig | None = None,
     debug_audio_dir: str | Path | None = None,
+    no_vad: bool = False,
 ) -> Any:
     try:
         from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -316,6 +355,7 @@ def build_app(
                 model,
                 transcript_store=store,
                 config=config,
+                speech_gate=_build_speech_gate(no_vad=no_vad),
             )
             # No asyncio store_lock needed: TranscriptStore is internally thread-safe
             # (its own RLock). ASR stable appends now run on the ASR executor thread while
@@ -351,9 +391,10 @@ def build_app(
                 ready["translation"] = translation.ready_payload()
             await _queue_event(event_queue, ready, sender_task=sender_task)
             _LOGGER.info(
-                "Realtime ASR session started session_id=%s language=%s mode=aligned_streaming aligner=%s translation=%s",
+                "Realtime ASR session started session_id=%s language=%s mode=aligned_streaming vad=%s aligner=%s translation=%s",
                 session_id,
                 config.language or "auto",
+                "none" if no_vad else "silero",
                 timestamp_actor.model_path or "configured",
                 translation is not None,
             )
@@ -1069,6 +1110,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--cuda-graph-prewarm-language", default="Chinese")
     parser.add_argument("--cuda-graph-prewarm-window-sec", type=float, default=20.0)
     parser.add_argument("--cuda-graph-prewarm-prefix-tokens", type=int, default=64)
+    parser.add_argument(
+        "--no-vad",
+        action="store_true",
+        help="Pass all received audio to ASR instead of using VAD speech gating.",
+    )
     parser.add_argument("--timestamp-model", default=None, help="Required forced-aligner model for realtime ASR.")
     parser.add_argument("--timestamp-device-map", default=None, help="Forced-aligner device_map. Default: cuda:0.")
     parser.add_argument(
@@ -1423,6 +1469,7 @@ def main() -> None:
         translation_actor=translation_actor,
         translation_service_config=translation_service_config,
         debug_audio_dir=args.debug_audio_dir if args.save_debug_audio else None,
+        no_vad=args.no_vad,
     )
 
     try:
