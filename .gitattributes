@@ -1,5 +1,9 @@
 * text=auto
 
+.gitattributes text eol=lf
+*.sh text eol=lf
+Makefile text eol=lf
+
 *.ico binary
 *.jpg binary
 *.jpeg binary

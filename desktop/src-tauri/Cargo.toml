@@ -2,6 +2,7 @@
 name = "funyi-desktop"
 version = "0.1.0"
 description = "Lightweight desktop client for the local Funyi realtime ASR service"
+license = "MIT"
 edition = "2021"
 
 [build-dependencies]

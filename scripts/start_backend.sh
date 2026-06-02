@@ -36,4 +36,4 @@ case "$allow_downloads" in
     ;;
 esac
 
-exec uv run "${args[@]}" "$@"
+exec uv run --frozen "${args[@]}" "$@"
