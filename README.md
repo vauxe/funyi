@@ -9,7 +9,7 @@ public multi-user ASR server.
 
 ## Demo
 
-[Watch the Funyi desktop live captions demo](assets/funyi-desktop-demo.mp4).
+https://github.com/user-attachments/assets/cda710b8-5a05-4bd0-9e9f-5d2c9bc1de68
 
 ## Requirements
 
