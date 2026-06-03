@@ -244,7 +244,7 @@ history.
 
 Keep `abs-delta` drift separate from `worse-delta` quality regression.
 
-## Low-Latency Library Preset
+## Low-Latency Single-User Preset
 
 Load-time flags:
 
@@ -255,7 +255,7 @@ Qwen3ASRModel.from_pretrained(
     flashinfer=True,
     fused_rmsnorm=True,
     fused_linears=True,
-    quantized_linears=True,
+    quantized_linears=False,
     dtype=torch.bfloat16,
     device_map="cuda:0",
 )
@@ -277,6 +277,10 @@ stay `1`. The realtime service requires forced-aligned timestamp patches for
 stable segments, while clients can render replaceable `partial` text for
 low-latency live subtitles. This is a service/session policy, not a library
 streaming default.
+
+Keep ASR W8A16 / `quantized_linears` off for this streaming preset. The current
+W8A16 kernels help decode-bound offline ASR but slow the repeated-prefill live
+path at equal CER.
 
 ## Spec Decode
 
@@ -324,7 +328,8 @@ Property tests should cover:
 Open architecture work:
 
 - replace full-window re-feed with stateful audio/prefill reuse;
-- introduce timestamp or aligner support if strict audio-text trimming becomes
-  required;
+- introduce a library-level `TimestampTrim` policy if strict audio-text trimming
+  becomes required; service forced-aligner timestamp patches already exist but
+  are not a proof that model audio can be trimmed;
 - introduce a separate `WindowedStreamingRecognizer` only if another caller or
   stateful audio/prefill reuse makes the current model wrapper too broad.

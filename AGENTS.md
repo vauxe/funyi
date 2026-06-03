@@ -12,7 +12,8 @@ validated single-user profile by default.
 
 ## Invariants
 
-- Runtime scope is transcription only.
+- The ASR model/runtime path is transcription-only. Optional HY-MT translation
+  is a service-layer side track that consumes source transcript events.
 - Public releases must not include private audio, transcripts, or audio-derived
   goldens.
 - Keep validation audio in `local_data/` and generated outputs in
@@ -55,7 +56,8 @@ validated single-user profile by default.
   deltas within noise, 84% byte-identical, 0 new errors); W8A16's own effect is
   mean chrF2 drop -0.11. This is the decode-bound mirror of the prefill-bound
   streaming case above.
-- W8A16 means qkv/gate_up only.
+- ASR W8A16 means fused qkv/gate_up only. HY-MT W8A16 means gate/up
+  projections only.
 
 ## Important Paths
 

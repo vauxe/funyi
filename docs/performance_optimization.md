@@ -13,10 +13,13 @@ validated single-user service profile.
 | `flashinfer=True` | `--flashinfer` | decode attention |
 | `fused_rmsnorm=True` | `--fused-rmsnorm` | `F.rms_norm` |
 | `fused_linears=True` | `--fused-linears` | fused qkv and gate/up |
-| `quantized_linears=True` | `--quantized-linears` | W8A16 qkv/gate_up |
+| `quantized_linears=True` | `--quantized-linears` in tools, `--w8a16` for service ASR | W8A16 qkv/gate_up |
 
 Rules:
 
+- This table is for ASR model-load flags. HY-MT translation has separate
+  service flags (`--translation-w8a16`, `--translation-fused-rmsnorm`) and
+  quantizes gate/up projections only.
 - FlashInfer only uses a custom kernel for single-token text decode. Text
   prefill and audio-encoder attention still enter the same attention dispatcher,
   then fall back to SDPA; keep this route because direct SDPA/FA2 dispatch was

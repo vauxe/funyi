@@ -171,7 +171,7 @@ optional stable-batching path with the same target/source language contract.
 Runtime calls both through the single `TranslationModelActor` thread. Load the
 model once at startup and never download weights from request handling.
 
-Default runtime path:
+Default runtime path when translation is enabled:
 
 - model: `tencent/Hy-MT2-1.8B`;
 - attention: `sdpa`;

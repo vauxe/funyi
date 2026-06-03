@@ -409,6 +409,9 @@ Protocol-visible service defaults:
   `--timestamp-local-files-only`;
 - translation is available only when the service starts with
   `--translation-model`.
+- direct `realtime_server.py` starts with translation disabled unless
+  `--translation-model` is passed; `scripts/start_backend.sh` passes the default
+  HY-MT2 model unless `FUNYI_TRANSLATION_MODEL=` disables it.
 - startup prewarms enabled model paths before the HTTP/WebSocket interface is
   created: ASR cuda graph, translation target buckets, and forced-aligner
   timestamps. Prewarm failure fails startup instead of exposing a cold or

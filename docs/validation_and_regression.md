@@ -120,6 +120,12 @@ ss -ltnp sport = :8000
 nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader
 ```
 
+This command is the ASR+timestamp-only service gate. It intentionally omits
+`--translation-model` so ASR, timestamp, throughput, and shutdown metrics stay
+comparable. Use `./scripts/start_backend.sh` for a full launcher smoke, or
+`FUNYI_TRANSLATION_MODEL= ./scripts/start_backend.sh` for the same ASR+timestamp
+shape through the launcher.
+
 ```bash
 uv run python realtime_server.py \
   --model Qwen/Qwen3-ASR-1.7B \
