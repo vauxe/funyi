@@ -15,10 +15,15 @@ dependencies = [
   "websockets>=13.0",
   "silero-vad==5.1.2",
   "torchaudio==2.9.1",
-  "flashinfer-python>=0.6.9",
-  "ninja>=1.13",
+  # flashinfer and its Triton/CUDA build toolchain (ninja) only resolve on
+  # Linux+CUDA. On macOS/Apple Silicon the MLX backend replaces this whole
+  # optimized stack.
+  "flashinfer-python>=0.6.9 ; sys_platform == 'linux'",
+  "ninja>=1.13 ; sys_platform == 'linux'",
   "nagisa==0.2.11",
   "soynlp==0.0.493",
+  # MLX backend (Apple Silicon only). Pure-Metal model layer; no CUDA.
+  "mlx>=0.18 ; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 
 [tool.uv]

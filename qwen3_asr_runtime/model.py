@@ -82,9 +82,16 @@ class Qwen3ASRModel:
         **kwargs,
     ) -> "Qwen3ASRModel":
         backend_name = str(backend).lower().strip()
-        if backend_name != "transformers":
+        if backend_name == "transformers":
+            backend_runtime = TransformersASRBackend.from_pretrained(pretrained_model_name_or_path, **kwargs)
+        elif backend_name == "mlx":
+            # Lazy import: MLX is only available on Apple Silicon, so importing it
+            # must not be required on CUDA-only hosts.
+            from .backends.mlx import MLXASRBackend
+
+            backend_runtime = MLXASRBackend.from_pretrained(pretrained_model_name_or_path, **kwargs)
+        else:
             raise ValueError(f"Unsupported backend: {backend}")
-        backend_runtime = TransformersASRBackend.from_pretrained(pretrained_model_name_or_path, **kwargs)
         return cls(
             backend_runtime=backend_runtime,
             max_inference_batch_size=max_inference_batch_size,
@@ -110,6 +117,26 @@ class Qwen3ASRModel:
             "max_window_sec": 20.0,
             "max_prefix_tokens": 64,
             "spec_decode": True,
+        }
+
+    @classmethod
+    def mlx_streaming_preset_kwargs(cls) -> Dict[str, Any]:
+        """Streaming kwargs tuned for the MLX (Apple Silicon) backend.
+
+        The MLX backend has no cuda_graph/flashinfer, so every step re-encodes the
+        audio window and re-prefills the decoder; per-step latency is dominated by
+        that re-prefill (prefill-bound). A shorter window and larger chunk keep it
+        under the chunk budget on typical speech. ``spec_decode`` is off: the MLX
+        backend has no speculative draft path, so the streaming loop uses the plain
+        full-window re-feed.
+        """
+        return {
+            "chunk_size_sec": 1.0,
+            "unfixed_chunk_num": 2,
+            "unfixed_token_num": 5,
+            "max_window_sec": 8.0,
+            "max_prefix_tokens": 48,
+            "spec_decode": False,
         }
 
     def eval(self) -> "Qwen3ASRModel":

@@ -63,6 +63,8 @@ validated single-user profile by default.
 
 - `qwen3_asr_runtime/model.py`: public offline/streaming wrapper
 - `qwen3_asr_runtime/backends/transformers.py`: backend and opt-in flags
+- `qwen3_asr_runtime/backends/mlx.py`: macOS/Apple Silicon backend (`backend="mlx"`)
+- `qwen3_asr_runtime/mlx_qwen3_asr/`: ground-up MLX model layer (offline+streaming)
 - `qwen3_asr_runtime/hf_qwen3_asr/`: local HF model/config/processor
 - `qwen3_asr_runtime/decode_runtime.py`: CUDA graph decode loop
 - `qwen3_asr_runtime/spec_decode.py`: streaming speculative verification
@@ -81,6 +83,7 @@ validated single-user profile by default.
   `tools/fetch_opus_eval.py`: HY-MT quality gate (chrF2 vs golden), the
   stock-model golden generator, and the opus-100 eval-set fetcher
 - `tools/ws_e2e_leak_check.py`: service E2E and resource check
+- `tools/parity_mlx_vs_hf.py`: MLX-vs-official-code parity + CER gate (macOS)
 
 Desktop client (`make desktop-check` gates it):
 

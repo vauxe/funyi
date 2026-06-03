@@ -16,6 +16,8 @@ https://github.com/user-attachments/assets/cda710b8-5a05-4bd0-9e9f-5d2c9bc1de68
 - Python 3.10 or newer; Python 3.12 is recommended.
 - `uv` for Python dependencies.
 - Linux or WSL with an NVIDIA CUDA GPU for the realtime backend.
+- macOS / Apple Silicon can run the ASR model (offline + streaming) on Metal via
+  the MLX backend (`backend="mlx"`). The full realtime service still targets CUDA.
 - Access to download the ASR, forced-aligner, and translation models, or local
   model directories.
 - For the desktop client: Node.js with Corepack-enabled `pnpm`, Rust/Cargo, and
