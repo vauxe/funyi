@@ -158,20 +158,25 @@ def _record_event_contract(state: dict[str, Any], event: dict[str, Any]) -> list
             )
     elif event_type == "translation_stable":
         segment_id = str(event.get("source_segment_id") or "")
+        covered_ids = _translation_source_segment_ids(event)
+        issues.extend(_translation_coverage_issues(state, event, event_type=event_type))
         translated_ids = state.setdefault("translation_stable_segment_ids", [])
         seen_translated_ids = state.setdefault("seen_translation_stable_segment_ids", set())
         if not segment_id:
             issues.append("translation_stable is missing source_segment_id")
-        elif segment_id in seen_translated_ids:
-            issues.append(f"duplicate translation_stable for source segment: {segment_id}")
         else:
-            translated_ids.append(segment_id)
-            seen_translated_ids.add(segment_id)
+            if segment_id not in covered_ids:
+                issues.append("translation_stable source_segment_ids does not include source_segment_id")
+            for covered_id in covered_ids:
+                if covered_id in seen_translated_ids:
+                    issues.append(f"duplicate translation_stable for source segment: {covered_id}")
+                    continue
+                translated_ids.append(covered_id)
+                seen_translated_ids.add(covered_id)
     elif event_type == "translation_status" and str(event.get("scope") or "") == "stable":
+        issues.extend(_translation_coverage_issues(state, event, event_type=event_type))
         status_ids = state.setdefault("translation_status_segment_ids", [])
-        segment_id = str(event.get("source_segment_id") or "")
-        if segment_id:
-            status_ids.append(segment_id)
+        status_ids.extend(_translation_source_segment_ids(event))
     elif event_type == "transcript_timing_update":
         segment_id = str(event.get("source_segment_id") or "")
         if not segment_id:
@@ -182,6 +187,61 @@ def _record_event_contract(state: dict[str, Any], event: dict[str, Any]) -> list
         if status not in {"aligned", "failed"}:
             issues.append(f"transcript_timing_update has invalid timing_status: {status}")
     return issues
+
+
+def _translation_source_segment_ids(event: dict[str, Any]) -> list[str]:
+    raw_ids = event.get("source_segment_ids")
+    if isinstance(raw_ids, list):
+        ids = [str(item or "") for item in raw_ids]
+        ids = [item for item in ids if item]
+        if ids:
+            return ids
+    segment_id = str(event.get("source_segment_id") or "")
+    return [segment_id] if segment_id else []
+
+
+def _translation_coverage_issues(
+    state: dict[str, Any],
+    event: dict[str, Any],
+    *,
+    event_type: str,
+) -> list[str]:
+    raw_ids = event.get("source_segment_ids")
+    raw_indices = event.get("source_segment_indices")
+    if not isinstance(raw_ids, list) or not isinstance(raw_indices, list):
+        return []
+
+    segment_ids = [str(item or "") for item in raw_ids]
+    segment_indices = [_optional_int(item) for item in raw_indices]
+    if len(segment_ids) != len(segment_indices):
+        return [f"{event_type} source_segment_ids/source_segment_indices length mismatch"]
+
+    source_indices_by_id: dict[str, int] = {}
+    for segment in state.get("source_stable_segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        segment_id = str(segment.get("id") or "")
+        segment_index = _optional_int(segment.get("index"))
+        if segment_id and segment_index is not None:
+            source_indices_by_id[segment_id] = segment_index
+
+    issues: list[str] = []
+    for position, (segment_id, segment_index) in enumerate(zip(segment_ids, segment_indices, strict=True)):
+        source_index = source_indices_by_id.get(segment_id)
+        if source_index is None or segment_index is None or segment_index == source_index:
+            continue
+        issues.append(
+            f"{event_type} source_segment_indices[{position}] {segment_index} "
+            f"does not match source segment {segment_id} index {source_index}"
+        )
+    return issues
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _final_event_contract_issues(

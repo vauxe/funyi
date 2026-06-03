@@ -15,6 +15,16 @@ interface SubtitleLineInit {
   translationMessage?: string | null;
 }
 
+interface StableTranslationUnit {
+  sourceSegmentIds: readonly string[];
+  sourceSegmentIndices: readonly number[];
+  anchorSegmentId: string;
+  anchorSegmentIndex: number | null;
+  translation: string | null;
+  translationStatus: string | null;
+  translationMessage: string | null;
+}
+
 export interface SubtitleWindow {
   current: SubtitleLine | null;
 }
@@ -38,6 +48,8 @@ export class SubtitleDocument {
   private revision: number;
   private showLatestStableAsCurrent: boolean;
   private stableLineList: SubtitleLine[];
+  private stableTranslationUnits: StableTranslationUnit[];
+  private pendingStableUnitIds: string[];
   private translationEnabledValue: boolean;
 
   constructor({ translationEnabled = true }: { translationEnabled?: boolean } = {}) {
@@ -45,11 +57,13 @@ export class SubtitleDocument {
     this.revision = 0;
     this.showLatestStableAsCurrent = false;
     this.stableLineList = [];
+    this.stableTranslationUnits = [];
+    this.pendingStableUnitIds = [];
     this.currentLine = null;
   }
 
   get stableLines(): readonly SubtitleLine[] {
-    return this.stableLineList;
+    return this.stableDisplayLines();
   }
 
   get translationEnabled(): boolean {
@@ -88,7 +102,7 @@ export class SubtitleDocument {
   window(): SubtitleWindow {
     const includeTranslation = this.translationEnabledValue;
     const currentLine =
-      this.currentLine || (this.showLatestStableAsCurrent ? this.stableLineList.at(-1) || null : null);
+      this.currentDisplayLine() || (this.showLatestStableAsCurrent ? this.stableDisplayLines().at(-1) || null : null);
     return {
       current: renderLine(currentLine, includeTranslation),
     };
@@ -110,11 +124,15 @@ export class SubtitleDocument {
     const revision = toInt(event.revision, this.revision);
     const previousCurrent = this.currentLine;
     const resetCurrentPreview = stableAppends.length > 0;
+    const partial = optionalRecord(event.partial, "partial");
     for (const segment of stableAppends) {
-      this.stableLineList.push(preserveStableTranslation(lineFromSegment(segment, revision), previousCurrent));
+      const line = preserveStableTranslation(lineFromSegment(segment, revision), previousCurrent);
+      this.stableLineList.push(line);
+      if (partial && line.id) {
+        this.pendingStableUnitIds.push(line.id);
+      }
     }
 
-    const partial = optionalRecord(event.partial, "partial");
     const nextCurrent = partial ? lineFromSegment(partial, revision) : null;
     if (nextCurrent) {
       this.currentLine = resetCurrentPreview ? nextCurrent : preserveCurrentTranslation(nextCurrent, previousCurrent);
@@ -122,8 +140,10 @@ export class SubtitleDocument {
     } else if (stableAppends.length > 0) {
       this.currentLine = null;
       this.showLatestStableAsCurrent = true;
+      this.pendingStableUnitIds = [];
     } else if (!this.showLatestStableAsCurrent) {
       this.currentLine = null;
+      this.pendingStableUnitIds = [];
     }
     this.revision = revision;
   }
@@ -152,6 +172,7 @@ export class SubtitleDocument {
     if (event.segments === undefined) {
       this.currentLine = null;
       this.showLatestStableAsCurrent = false;
+      this.pendingStableUnitIds = [];
       this.revision = toInt(event.revision, this.revision);
       return;
     }
@@ -168,18 +189,21 @@ export class SubtitleDocument {
       lines.push(line);
     }
     this.stableLineList = lines;
+    this.stableTranslationUnits = this.stableTranslationUnits.filter(
+      (unit) => translationUnitLineIndices(unit, this.stableLineList).length > 0,
+    );
+    this.pendingStableUnitIds = [];
     this.currentLine = null;
     this.showLatestStableAsCurrent = false;
     this.revision = revision;
   }
 
   private applyStableTranslation(event: RealtimeEvent): void {
-    const index = this.stableIndex(event);
     const text = String(event.text || "").trim();
-    if (index === null || !text) {
+    if (!text) {
       return;
     }
-    this.patchStableLine(index, {
+    this.applyStableTranslationUnit(event, {
       translation: text,
       translationStatus: null,
       translationMessage: null,
@@ -198,14 +222,25 @@ export class SubtitleDocument {
   }
 
   private applyTranslationStatus(event: RealtimeEvent): void {
-    const index = this.stableIndex(event);
-    if (index === null) {
-      return;
-    }
-    this.patchStableLine(index, {
+    this.applyStableTranslationUnit(event, {
       translationStatus: String(event.code || ""),
       translationMessage: String(event.message || ""),
     });
+  }
+
+  private applyStableTranslationUnit(event: RealtimeEvent, patch: SubtitleLineInit): void {
+    const unit = translationUnitFromEvent(event);
+    if (!unit || translationUnitLineIndices(unit, this.stableLineList).length === 0) {
+      return;
+    }
+    const previousUnit =
+      this.stableTranslationUnits.find((previous) => translationUnitsOverlap(previous, unit)) || null;
+    const nextUnit = patchTranslationUnit(unit, patch, previousUnit);
+    this.stableTranslationUnits = [
+      ...this.stableTranslationUnits.filter((previous) => !translationUnitsOverlap(previous, unit)),
+      nextUnit,
+    ];
+    this.pendingStableUnitIds = this.pendingStableUnitIds.filter((id) => !unit.sourceSegmentIds.includes(id));
   }
 
   private stableIndex(event: RealtimeEvent): number | null {
@@ -231,6 +266,87 @@ export class SubtitleDocument {
     if (line) {
       this.stableLineList[index] = patchLine(line, patch);
     }
+  }
+
+  private currentDisplayLine(): SubtitleLine | null {
+    if (!this.currentLine) {
+      return null;
+    }
+    if (!this.translationEnabledValue || !this.currentLine.translation) {
+      return this.currentLine;
+    }
+    const pendingLines = this.pendingStableLines();
+    if (pendingLines.length === 0) {
+      return this.currentLine;
+    }
+    const unitLine = combinedSourceLine([...pendingLines, this.currentLine], {
+      id: this.currentLine.id,
+      index: this.currentLine.index,
+      translation: this.currentLine.translation,
+      translationStatus: this.currentLine.translationStatus,
+      translationMessage: this.currentLine.translationMessage,
+    });
+    return patchLine(unitLine, { sourceRevision: this.currentLine.sourceRevision });
+  }
+
+  private stableDisplayLines(): readonly SubtitleLine[] {
+    if (!this.translationEnabledValue) {
+      return this.stableLineList;
+    }
+    const displayLines: SubtitleLine[] = [];
+    const pendingIds = new Set(this.currentLine?.translation ? this.pendingStableUnitIds : []);
+    const unitLinesByFirstIndex = new Map<number, SubtitleLine>();
+    const coveredUnitTailIndices = new Set<number>();
+    for (const unit of this.stableTranslationUnits) {
+      const indices = translationUnitLineIndices(unit, this.stableLineList);
+      const firstIndex = indices[0];
+      if (firstIndex === undefined) {
+        continue;
+      }
+      unitLinesByFirstIndex.set(firstIndex, this.lineForTranslationUnit(unit, indices));
+      for (const index of indices.slice(1)) {
+        coveredUnitTailIndices.add(index);
+      }
+    }
+
+    for (let index = 0; index < this.stableLineList.length; index += 1) {
+      const line = this.stableLineList[index];
+      if (!line) {
+        continue;
+      }
+      if (line.id && pendingIds.has(line.id)) {
+        continue;
+      }
+      const unitLine = unitLinesByFirstIndex.get(index);
+      if (unitLine) {
+        displayLines.push(unitLine);
+        continue;
+      }
+      if (coveredUnitTailIndices.has(index)) {
+        continue;
+      }
+      displayLines.push(line);
+    }
+    return displayLines;
+  }
+
+  private lineForTranslationUnit(unit: StableTranslationUnit, indices: readonly number[]): SubtitleLine {
+    const sourceLines = indices
+      .map((index) => this.stableLineList[index])
+      .filter((line): line is SubtitleLine => Boolean(line));
+    return combinedSourceLine(sourceLines, {
+      id: unit.anchorSegmentId || sourceLines.at(-1)?.id || null,
+      index: unit.anchorSegmentIndex ?? sourceLines.at(-1)?.index ?? null,
+      translation: unit.translation,
+      translationStatus: unit.translationStatus,
+      translationMessage: unit.translationMessage,
+    });
+  }
+
+  private pendingStableLines(): SubtitleLine[] {
+    return this.pendingStableUnitIds
+      .map((id) => this.stableLineList.find((line) => line.id === id))
+      .filter((line): line is SubtitleLine => Boolean(line));
   }
 }
 
@@ -270,6 +386,110 @@ function preserveStableTranslation(next: SubtitleLine, previous: SubtitleLine | 
     return next;
   }
   return patchLine(next, translationPatch(previous));
+}
+
+function translationUnitFromEvent(event: RealtimeEvent): StableTranslationUnit | null {
+  const anchorSegmentId = String(event.source_segment_id || "");
+  const anchorSegmentIndex = optionalInt(event.source_segment_index);
+  const sourceSegmentIds = stringArray(event.source_segment_ids);
+  const sourceSegmentIndices = intArray(event.source_segment_indices);
+  if (sourceSegmentIds.length === 0 && anchorSegmentId) {
+    sourceSegmentIds.push(anchorSegmentId);
+  }
+  if (sourceSegmentIndices.length === 0 && anchorSegmentIndex !== null) {
+    sourceSegmentIndices.push(anchorSegmentIndex);
+  }
+  if (sourceSegmentIds.length === 0 && sourceSegmentIndices.length === 0) {
+    return null;
+  }
+  return {
+    sourceSegmentIds,
+    sourceSegmentIndices,
+    anchorSegmentId,
+    anchorSegmentIndex,
+    translation: null,
+    translationStatus: null,
+    translationMessage: null,
+  };
+}
+
+function patchTranslationUnit(
+  unit: StableTranslationUnit,
+  patch: SubtitleLineInit,
+  previous: StableTranslationUnit | null,
+): StableTranslationUnit {
+  return {
+    ...unit,
+    translation: hasPatch(patch, "translation") ? (patch.translation ?? null) : (previous?.translation ?? null),
+    translationStatus: hasPatch(patch, "translationStatus")
+      ? (patch.translationStatus ?? null)
+      : (previous?.translationStatus ?? null),
+    translationMessage: hasPatch(patch, "translationMessage")
+      ? (patch.translationMessage ?? null)
+      : (previous?.translationMessage ?? null),
+  };
+}
+
+function hasPatch<Key extends keyof SubtitleLineInit>(patch: SubtitleLineInit, key: Key): boolean {
+  return Object.hasOwn(patch, key);
+}
+
+function translationUnitsOverlap(left: StableTranslationUnit, right: StableTranslationUnit): boolean {
+  const rightIds = new Set(right.sourceSegmentIds);
+  if (left.sourceSegmentIds.some((id) => rightIds.has(id))) {
+    return true;
+  }
+  const rightIndices = new Set(right.sourceSegmentIndices);
+  return left.sourceSegmentIndices.some((index) => rightIndices.has(index));
+}
+
+function translationUnitLineIndices(unit: StableTranslationUnit, stableLines: readonly SubtitleLine[]): number[] {
+  const indices = new Set<number>();
+  if (unit.sourceSegmentIds.length === 0) {
+    for (const segmentIndex of unit.sourceSegmentIndices) {
+      const index = stableLines.findIndex((line) => line.index === segmentIndex);
+      if (index >= 0) {
+        indices.add(index);
+      }
+    }
+    return [...indices].sort((left, right) => left - right);
+  }
+
+  for (let coverageIndex = 0; coverageIndex < unit.sourceSegmentIds.length; coverageIndex += 1) {
+    const segmentId = unit.sourceSegmentIds[coverageIndex];
+    const index = stableLines.findIndex((line) => line.id === segmentId);
+    if (index >= 0) {
+      indices.add(index);
+      continue;
+    }
+
+    const segmentIndex = unit.sourceSegmentIndices[coverageIndex];
+    if (segmentIndex !== undefined) {
+      const fallbackIndex = stableLines.findIndex((line) => line.index === segmentIndex);
+      if (fallbackIndex >= 0) {
+        indices.add(fallbackIndex);
+      }
+    }
+  }
+  return [...indices].sort((left, right) => left - right);
+}
+
+function combinedSourceLine(sourceLines: readonly SubtitleLine[], patch: SubtitleLineInit = {}): SubtitleLine {
+  const first = sourceLines[0] || null;
+  const last = sourceLines.at(-1) || null;
+  return createSubtitleLine({
+    id: patch.id ?? last?.id ?? null,
+    index: patch.index ?? last?.index ?? null,
+    startMs: first?.startMs ?? null,
+    endMs: last?.endMs ?? first?.endMs ?? null,
+    text: joinSourceTexts(sourceLines.map((line) => line.text)),
+    language: first?.language || "",
+    sourceRevision: maxNullableInt(sourceLines.map((line) => line.sourceRevision)),
+    timingStatus: combinedTimingStatus(sourceLines),
+    translation: patch.translation ?? null,
+    translationStatus: patch.translationStatus ?? null,
+    translationMessage: patch.translationMessage ?? null,
+  });
 }
 
 function createSubtitleLine({
@@ -312,6 +532,46 @@ function translationPatch(line: SubtitleLine): SubtitleLineInit {
   };
 }
 
+function joinSourceTexts(texts: readonly string[]): string {
+  let joined = "";
+  for (const rawText of texts) {
+    const text = String(rawText || "").trim();
+    if (!text) {
+      continue;
+    }
+    if (!joined) {
+      joined = text;
+      continue;
+    }
+    if (needsAsciiWordSeparator(joined.at(-1) || "", text[0] || "")) {
+      joined += " ";
+    }
+    joined += text;
+  }
+  return joined.trim();
+}
+
+function needsAsciiWordSeparator(left: string, right: string): boolean {
+  return Boolean(left && right && isAsciiAlphaNum(left) && isAsciiAlphaNum(right));
+}
+
+function isAsciiAlphaNum(value: string): boolean {
+  return /^[0-9A-Za-z]$/u.test(value);
+}
+
+function combinedTimingStatus(lines: readonly SubtitleLine[]): string | null {
+  const statuses = lines.map((line) => line.timingStatus).filter((status): status is string => Boolean(status));
+  if (statuses.includes("failed")) {
+    return "failed";
+  }
+  return statuses.length === lines.length && statuses.every((status) => status === "aligned") ? "aligned" : null;
+}
+
+function maxNullableInt(values: readonly (number | null)[]): number | null {
+  const integers = values.filter((value): value is number => isInteger(value));
+  return integers.length > 0 ? Math.max(...integers) : null;
+}
+
 function isSamePartialLine(left: SubtitleLine, right: SubtitleLine): boolean {
   if (left.id && right.id) {
     return left.id === right.id;
@@ -346,4 +606,18 @@ function toInt(value: unknown, fallback: number): number {
 function stringOrNull(value: unknown): string | null {
   const text = String(value || "");
   return text ? text : null;
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map((item) => String(item || "").trim()).filter((item) => item.length > 0);
+}
+
+function intArray(value: unknown): number[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map((item) => optionalInt(item)).filter((item): item is number => item !== null && item > 0);
 }

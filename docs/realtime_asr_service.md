@@ -236,8 +236,12 @@ should not rewrite transcript history in response to them.
 
 ### `translation_preview`
 
-Best-effort translation for the current `partial`. It is temporary and should be
-displayed only when `source_revision` matches the current partial revision.
+Best-effort translation for the current live translation unit. It is temporary
+and should be displayed only when `source_revision` matches the current partial
+revision. When previous `stable_appends` are still part of the open translation
+unit, the source text translated by the backend is `pending stable source text +
+partial.text`; clients that display source and preview translation together
+should render the same composed source text.
 
 ```json
 {
@@ -250,23 +254,50 @@ displayed only when `source_revision` matches the current partial revision.
 
 ### `translation_stable`
 
-Durable translation for one stable source segment.
+Durable translation for a stable source translation unit. The unit may cover
+one or more adjacent stable source segments while a replaceable `partial` tail
+is still active. `source_segment_id` / `source_segment_index` remain the
+anchor segment for clients that do not consume coverage lists; when present,
+`source_segment_ids` / `source_segment_indices` describe every covered source
+segment.
 
 ```json
 {
   "type": "translation_stable",
   "source_revision": 12,
-  "source_segment_id": "seg_000001",
-  "source_segment_index": 1,
+  "source_segment_id": "seg_000002",
+  "source_segment_index": 2,
+  "source_segment_ids": ["seg_000001", "seg_000002"],
+  "source_segment_indices": [1, 2],
   "target_language": "English",
   "text": "..."
 }
 ```
 
+Client replay rules:
+
+- Prefer `source_segment_ids` / `source_segment_indices` when present. Treat the
+  covered stable source segments as one translation unit.
+- When both coverage lists are present, they are emitted in the same stable
+  history order, have the same length, and each id/index pair refers to the
+  same source segment. Clients should resolve by id first and use the paired
+  index only as fallback if the id cannot be found.
+- `source_segment_id` / `source_segment_index` are the anchor for older clients
+  and for fallback lookup. They do not describe the full covered source text
+  when coverage lists are present.
+- A client that renders source history, copies transcripts, or exports subtitles
+  should display the concatenated covered source text with this single
+  translation. Do not attach the full translation only to the anchor fragment
+  while leaving earlier covered fragments as separate untranslated lines.
+- Covered source segments are adjacent in stable history. The display timestamp
+  range should use the first covered segment start and the last covered segment
+  end when both are available.
+
 ### `translation_status`
 
-Stable translation status for one source segment. Emitted when stable
-translation fails.
+Stable translation status for one stable source translation unit. Emitted when
+stable translation fails. It uses the same anchor and optional coverage fields
+as `translation_stable`.
 
 ```json
 {
@@ -274,8 +305,10 @@ translation fails.
   "scope": "stable",
   "code": "failed",
   "source_revision": 12,
-  "source_segment_id": "seg_000001",
-  "source_segment_index": 1,
+  "source_segment_id": "seg_000002",
+  "source_segment_index": 2,
+  "source_segment_ids": ["seg_000001", "seg_000002"],
+  "source_segment_indices": [1, 2],
   "target_language": "English",
   "message": "translation failed"
 }

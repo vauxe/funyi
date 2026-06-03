@@ -17,9 +17,9 @@ and does not modify `Qwen3ASRModel`, `RealtimeConnectionSession`,
 
 v1 has two paths:
 
-- stable: `stable_appends -> stable queue -> TranslationModelActor ->
+- stable: `stable_appends -> stable unit queue -> TranslationModelActor ->
   translation_stable`;
-- preview: `partial -> latest-only debounce -> TranslationModelActor ->
+- preview: `pending stable unit + partial -> latest-only debounce -> TranslationModelActor ->
   translation_preview`.
 
 Stable translations are durable. Preview translations are temporary, replaceable,
@@ -76,23 +76,32 @@ For every `transcript_update`, the service loop is:
 
 ```text
 update translation scheduler state
-if partial exists: update_preview(revision, partial)
+stage each stable_appends item into a stable translation unit
+if non-empty partial text exists: update_preview(revision, partial)
 else: cancel_preview(revision)
-enqueue each stable_appends item
 queue source event
 ```
 
 Stable, while a target language is active:
 
-- stable history is reliable: every source stable segment gets exactly one
-  `translation_stable` before `transcript_final`, unless the translator fails;
+- stable history is reliable: every source stable segment is covered by exactly
+  one `translation_stable` before `transcript_final`, unless the translator
+  fails;
+- adjacent source stable segments may be grouped into one stable translation
+  unit while a replaceable `partial` tail is still active; the event anchors to
+  the final covered source segment and carries `source_segment_ids` /
+  `source_segment_indices` for full coverage;
+- stable units close when the current `partial` tail clears, or during
+  `finish`; punctuation is not treated as proof that a translation unit is
+  complete;
 - stable generation runs through one model actor; when
   `--translation-stable-batch-size` is greater than `1`, adjacent queued stable
   jobs with the same source language and target language may share one
   `translate_batch` call;
 - stable jobs are not dropped for backlog pressure and are not timed out by the
   service;
-- translator failures emit `translation_status` for the affected segment.
+- translator failures emit `translation_status` for the affected stable
+  translation unit.
 
 Preview:
 
@@ -110,7 +119,14 @@ Client replay:
 - `SubtitleDocument` replays server events into one local document;
 - `stable_appends` append immutable history;
 - `partial` replaces the current draft line;
-- `translation_stable` annotates a stable line by source segment id/index;
+- while stable source text is pending inside the current translation unit,
+  `translation_preview` should be displayed against the composed source text
+  `pending stable source text + partial.text`;
+- `translation_stable` / stable `translation_status` should prefer
+  `source_segment_ids` / `source_segment_indices` over the anchor fields and
+  fold the covered stable source segments into one displayed translation unit;
+- the anchor `source_segment_id` / `source_segment_index` is a compatibility
+  lookup, not the full source coverage when lists are present;
 - `translation_preview` annotates the current draft only when `source_revision`
   matches;
 - the compact subtitle window renders `stable_lines[-1]` above `current` below
@@ -149,7 +165,7 @@ send finish-created transcript_update events
 enter translation finish mode
 cancel pending or logically running preview work
 wait for any already running stable translation to publish once
-translate finish-created stable_appends before queued stable jobs
+translate finish-created stable units before queued stable jobs
 send translation_stable or translation_status for those stable jobs
 send transcript_final
 close WebSocket

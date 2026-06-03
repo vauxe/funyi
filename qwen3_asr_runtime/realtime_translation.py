@@ -36,13 +36,111 @@ class RealtimeTranslationConfig:
 
 
 @dataclass(frozen=True)
-class _StableJob:
+class _StableSourceSegment:
     source_revision: int
     source_segment_id: str
     source_segment_index: int
     source_text: str
     source_language: str
     target_language: str
+
+
+@dataclass(frozen=True)
+class _StableJob:
+    source_revision: int
+    source_segment_ids: tuple[str, ...]
+    source_segment_indices: tuple[int, ...]
+    source_text: str
+    source_language: str
+    target_language: str
+
+    @property
+    def anchor_segment_id(self) -> str:
+        return self.source_segment_ids[-1] if self.source_segment_ids else ""
+
+    @property
+    def anchor_segment_index(self) -> int:
+        return self.source_segment_indices[-1] if self.source_segment_indices else 0
+
+
+class _StableUnitBuilder:
+    def __init__(self) -> None:
+        self._pending: list[_StableSourceSegment] = []
+
+    def clear(self) -> None:
+        self._pending.clear()
+
+    def stage(self, segment: _StableSourceSegment, *, hold_open: bool) -> list[_StableJob]:
+        jobs: list[_StableJob] = []
+        if self._pending and not self._can_append(segment):
+            job = self._pop_pending_job()
+            if job is not None:
+                jobs.append(job)
+
+        self._pending.append(segment)
+        if not hold_open:
+            job = self._pop_pending_job()
+            if job is not None:
+                jobs.append(job)
+        return jobs
+
+    def flush(self) -> list[_StableJob]:
+        job = self._pop_pending_job()
+        return [] if job is None else [job]
+
+    def preview_prefix(self, *, source_language: str, target_language: str) -> str:
+        if not self._pending:
+            return ""
+        first = self._pending[0]
+        target = str(target_language or "").strip()
+        language = str(source_language or "").strip()
+        if target and first.target_language != target:
+            return ""
+        if language and first.source_language and first.source_language != language:
+            return ""
+        return self._pending_text()
+
+    def take_pending_segments(self) -> list[_StableSourceSegment]:
+        segments = list(self._pending)
+        self._pending.clear()
+        return segments
+
+    def jobs_from_segments(self, segments: list[_StableSourceSegment]) -> list[_StableJob]:
+        builder = _StableUnitBuilder()
+        jobs: list[_StableJob] = []
+        for segment in segments:
+            jobs.extend(builder.stage(segment, hold_open=True))
+        jobs.extend(builder.flush())
+        return jobs
+
+    def _can_append(self, segment: _StableSourceSegment) -> bool:
+        if not self._pending:
+            return True
+        first = self._pending[0]
+        return segment.source_language == first.source_language and segment.target_language == first.target_language
+
+    def _pending_text(self) -> str:
+        return _join_source_texts([segment.source_text for segment in self._pending])
+
+    def _pop_pending_job(self) -> _StableJob | None:
+        job = self._job_from_segments(self._pending)
+        self._pending.clear()
+        return job
+
+    def _job_from_segments(self, segments: list[_StableSourceSegment]) -> _StableJob | None:
+        if not segments:
+            return None
+        source_text = _join_source_texts([segment.source_text for segment in segments])
+        if not source_text:
+            return None
+        return _StableJob(
+            source_revision=max(int(segment.source_revision) for segment in segments),
+            source_segment_ids=tuple(segment.source_segment_id for segment in segments),
+            source_segment_indices=tuple(int(segment.source_segment_index) for segment in segments),
+            source_text=source_text,
+            source_language=segments[0].source_language,
+            target_language=segments[0].target_language,
+        )
 
 
 @dataclass(frozen=True)
@@ -255,6 +353,7 @@ class RealtimeTranslationRuntime:
         self._target_language: str | None = str(config.target_language).strip()
 
         self._stable_queue: Deque[_StableJob] = deque()
+        self._stable_units = _StableUnitBuilder()
         self._preview_slot: _PreviewJob | None = None
         self._preview_generation = 0
         self._running_job_kind: str | None = None
@@ -297,6 +396,7 @@ class RealtimeTranslationRuntime:
         async with self._lock:
             self._closed = True
             self._stable_queue.clear()
+            self._stable_units.clear()
             self._preview_slot = None
             self._wake.set()
         await self._stop_worker(cancel_running_preview=True)
@@ -308,6 +408,7 @@ class RealtimeTranslationRuntime:
             self._preview_generation += 1
             self._preview_slot = None
             self._stable_queue.clear()
+            self._stable_units.clear()
             self._wake.set()
 
     async def accept_source_event(self, event: dict[str, Any]) -> None:
@@ -321,16 +422,24 @@ class RealtimeTranslationRuntime:
 
         revision = int(event.get("revision") or 0)
         partial = event.get("partial")
-        if self.config.preview_enabled:
-            if isinstance(partial, dict) and str(partial.get("text") or "").strip():
-                await self._update_preview(revision, partial, target_language=target_language)
-            else:
-                await self._cancel_preview()
-
+        partial_has_text = isinstance(partial, dict) and bool(str(partial.get("text") or "").strip())
         if self.config.stable_enabled:
             for segment in event.get("stable_appends") or []:
                 if isinstance(segment, dict):
-                    await self._enqueue_stable(revision, segment, target_language=target_language)
+                    await self._enqueue_stable(
+                        revision,
+                        segment,
+                        target_language=target_language,
+                        hold_open=partial_has_text,
+                    )
+            if not partial_has_text:
+                await self._flush_stable_unit()
+
+        if self.config.preview_enabled:
+            if partial_has_text and isinstance(partial, dict):
+                await self._update_preview(revision, partial, target_language=target_language)
+            else:
+                await self._cancel_preview()
 
     async def cancel_preview(self) -> None:
         await self._cancel_preview()
@@ -342,36 +451,60 @@ class RealtimeTranslationRuntime:
             self._preview_slot = None
             queued_jobs = list(self._stable_queue)
             self._stable_queue.clear()
+            pending_segments = self._stable_units.take_pending_segments()
             self._wake.set()
         await self._stop_worker(cancel_running_preview=True)
 
         events: list[dict[str, Any]] = []
 
         target_language = self.target_language
-        finish_jobs: list[_StableJob] = []
+        finish_segments: list[_StableSourceSegment] = list(pending_segments)
         for event in transcript_updates:
             revision = int(event.get("revision") or 0)
             for segment in event.get("stable_appends") or []:
                 if isinstance(segment, dict):
-                    job = self._make_stable_job(revision, segment, target_language=target_language)
-                    if job is not None:
-                        finish_jobs.append(job)
+                    source_segment = self._make_stable_source_segment(
+                        revision,
+                        segment,
+                        target_language=target_language,
+                    )
+                    if source_segment is not None:
+                        finish_segments.append(source_segment)
+        finish_jobs = self._stable_units.jobs_from_segments(finish_segments)
 
         pending_jobs = finish_jobs + queued_jobs
         for jobs in self._stable_batches(pending_jobs):
             events.extend(await self._run_stable_jobs(jobs, publish=False))
         return events
 
-    async def _enqueue_stable(self, revision: int, segment: dict[str, Any], *, target_language: str) -> None:
-        job = self._make_stable_job(revision, segment, target_language=target_language)
-        if job is None:
+    async def _enqueue_stable(
+        self,
+        revision: int,
+        segment: dict[str, Any],
+        *,
+        target_language: str,
+        hold_open: bool,
+    ) -> None:
+        source_segment = self._make_stable_source_segment(revision, segment, target_language=target_language)
+        if source_segment is None:
             return
 
         async with self._lock:
             if self._finish_mode or self._closed:
                 return
-            self._stable_queue.append(job)
-            self._wake.set()
+            jobs = self._stable_units.stage(source_segment, hold_open=hold_open)
+            if jobs:
+                self._stable_queue.extend(jobs)
+                self._wake.set()
+
+    async def _flush_stable_unit(self) -> None:
+        async with self._lock:
+            if self._finish_mode or self._closed:
+                return
+            jobs = self._stable_units.flush()
+            if jobs:
+                self._stable_queue.extend(jobs)
+                self._wake.set()
 
     async def _update_preview(
         self,
@@ -387,12 +520,23 @@ class RealtimeTranslationRuntime:
         async with self._lock:
             if self._finish_mode or self._closed:
                 return
+            source_language = str(partial_segment.get("language") or self.config.source_language or "")
+            prefix = self._stable_units.preview_prefix(
+                source_language=source_language,
+                target_language=target_language,
+            )
+            if prefix:
+                source_text = (
+                    source_text
+                    if source_text.startswith(prefix)
+                    else _join_source_texts([prefix, source_text])
+                )
             self._preview_generation += 1
             self._preview_slot = _PreviewJob(
                 generation=self._preview_generation,
                 source_revision=int(revision),
                 source_text=source_text,
-                source_language=str(partial_segment.get("language") or self.config.source_language or ""),
+                source_language=source_language,
                 target_language=target_language,
             )
             self._wake.set()
@@ -511,8 +655,10 @@ class RealtimeTranslationRuntime:
             event = {
                 "type": "translation_stable",
                 "source_revision": int(job.source_revision),
-                "source_segment_id": job.source_segment_id,
-                "source_segment_index": int(job.source_segment_index),
+                "source_segment_id": job.anchor_segment_id,
+                "source_segment_index": int(job.anchor_segment_index),
+                "source_segment_ids": list(job.source_segment_ids),
+                "source_segment_indices": list(job.source_segment_indices),
                 "target_language": job.target_language,
                 "text": translated,
             }
@@ -617,18 +763,18 @@ class RealtimeTranslationRuntime:
             if self._running_job_kind == kind:
                 self._running_job_kind = None
 
-    def _make_stable_job(
+    def _make_stable_source_segment(
         self,
         revision: int,
         segment: dict[str, Any],
         *,
         target_language: str | None,
-    ) -> _StableJob | None:
+    ) -> _StableSourceSegment | None:
         source_text = str(segment.get("text") or "").strip()
         target = str(target_language or "").strip()
         if not source_text or not target:
             return None
-        return _StableJob(
+        return _StableSourceSegment(
             source_revision=int(revision),
             source_segment_id=str(segment.get("id") or ""),
             source_segment_index=int(segment.get("index") or 0),
@@ -643,14 +789,35 @@ class RealtimeTranslationRuntime:
             "scope": "stable",
             "code": str(code),
             "source_revision": int(job.source_revision),
-            "source_segment_id": job.source_segment_id,
-            "source_segment_index": int(job.source_segment_index),
+            "source_segment_id": job.anchor_segment_id,
+            "source_segment_index": int(job.anchor_segment_index),
+            "source_segment_ids": list(job.source_segment_ids),
+            "source_segment_indices": list(job.source_segment_indices),
             "target_language": job.target_language,
             "message": str(message),
         }
 
     def _preview_timeout_sec(self) -> float:
         return max(0.001, int(self.config.preview_timeout_ms) / 1000.0)
+
+
+def _join_source_texts(texts: list[str]) -> str:
+    joined = ""
+    for raw_text in texts:
+        text = str(raw_text or "").strip()
+        if not text:
+            continue
+        if not joined:
+            joined = text
+            continue
+        if _needs_ascii_word_separator(joined[-1], text[0]):
+            joined += " "
+        joined += text
+    return joined.strip()
+
+
+def _needs_ascii_word_separator(left: str, right: str) -> bool:
+    return bool(left and right and left.isascii() and right.isascii() and left.isalnum() and right.isalnum())
 
 
 def _consume_future(future: Any) -> None:

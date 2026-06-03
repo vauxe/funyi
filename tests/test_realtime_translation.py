@@ -11,6 +11,8 @@ from qwen3_asr_runtime.realtime_translation import (
     RealtimeTranslationConfig,
     RealtimeTranslationRuntime,
     TranslationModelActor,
+    _StableSourceSegment,
+    _StableUnitBuilder,
 )
 
 
@@ -95,6 +97,23 @@ def stable_segment(index: int, text: str) -> dict[str, object]:
         "text": text,
         "language": "Chinese",
     }
+
+
+def stable_source_segment(
+    index: int,
+    text: str,
+    *,
+    source_language: str = "Chinese",
+    target_language: str = "English",
+) -> _StableSourceSegment:
+    return _StableSourceSegment(
+        source_revision=index,
+        source_segment_id=f"seg_{index:06d}",
+        source_segment_index=index,
+        source_text=text,
+        source_language=source_language,
+        target_language=target_language,
+    )
 
 
 def transcript_update(
@@ -193,6 +212,85 @@ async def track_translation_runtime(translation_actor):
 
     for runtime in reversed(runtimes):
         await runtime.close()
+
+
+class TestStableUnitBuilder:
+    def test_holds_open_mid_sentence_unit_for_preview(self) -> None:
+        builder = _StableUnitBuilder()
+
+        jobs = builder.stage(stable_source_segment(1, "今天我们来讲"), hold_open=True)
+
+        assert jobs == []
+        assert builder.preview_prefix(source_language="Chinese", target_language="English") == "今天我们来讲"
+
+    def test_keeps_punctuation_open_while_partial_tail_exists(self) -> None:
+        builder = _StableUnitBuilder()
+        assert builder.stage(stable_source_segment(1, "他说"), hold_open=True) == []
+
+        jobs = builder.stage(stable_source_segment(2, "：“你好。”"), hold_open=True)
+
+        assert jobs == []
+        assert builder.preview_prefix(source_language="Chinese", target_language="English") == "他说：“你好。”"
+
+    def test_flushes_pending_unit_when_partial_tail_clears(self) -> None:
+        builder = _StableUnitBuilder()
+        assert builder.stage(stable_source_segment(1, "他说"), hold_open=True) == []
+
+        jobs = builder.stage(stable_source_segment(2, "：“你好。”"), hold_open=False)
+
+        assert len(jobs) == 1
+        assert jobs[0].source_text == "他说：“你好。”"
+        assert jobs[0].source_segment_ids == ("seg_000001", "seg_000002")
+        assert jobs[0].anchor_segment_id == "seg_000002"
+        assert builder.preview_prefix(source_language="Chinese", target_language="English") == ""
+
+    def test_flushes_immediately_without_partial_tail(self) -> None:
+        builder = _StableUnitBuilder()
+
+        jobs = builder.stage(stable_source_segment(1, "今天我们来讲"), hold_open=False)
+
+        assert len(jobs) == 1
+        assert jobs[0].source_text == "今天我们来讲"
+        assert jobs[0].source_segment_ids == ("seg_000001",)
+        assert builder.preview_prefix(source_language="Chinese", target_language="English") == ""
+
+    def test_splits_pending_unit_on_language_change(self) -> None:
+        builder = _StableUnitBuilder()
+        assert builder.stage(stable_source_segment(1, "今天我们来讲"), hold_open=True) == []
+
+        jobs = builder.stage(
+            stable_source_segment(2, "続きを", source_language="Japanese"),
+            hold_open=True,
+        )
+
+        assert len(jobs) == 1
+        assert jobs[0].source_text == "今天我们来讲"
+        assert jobs[0].source_segment_ids == ("seg_000001",)
+        assert builder.preview_prefix(source_language="Japanese", target_language="English") == "続きを"
+
+    def test_finish_drains_pending_unit_with_finish_tail(self) -> None:
+        builder = _StableUnitBuilder()
+        assert builder.stage(stable_source_segment(1, "今天我们来讲"), hold_open=True) == []
+
+        pending = builder.take_pending_segments()
+        jobs = builder.jobs_from_segments(pending + [stable_source_segment(2, "一下这个问题。")])
+
+        assert len(jobs) == 1
+        assert jobs[0].source_text == "今天我们来讲一下这个问题。"
+        assert jobs[0].source_segment_ids == ("seg_000001", "seg_000002")
+
+    def test_joins_ascii_source_words_with_space(self) -> None:
+        builder = _StableUnitBuilder()
+
+        jobs = builder.jobs_from_segments(
+            [
+                stable_source_segment(1, "hello", source_language="English", target_language="Chinese"),
+                stable_source_segment(2, "world.", source_language="English", target_language="Chinese"),
+            ]
+        )
+
+        assert len(jobs) == 1
+        assert jobs[0].source_text == "hello world."
 
 
 class TestRealtimeTranslationRuntime:
@@ -302,6 +400,93 @@ class TestRealtimeTranslationRuntime:
         assert translator.batch_calls == [['two', 'three']]
         assert translator.calls == ['one', 'two', 'three']
         assert [event['source_segment_id'] for event in events] == ['seg_000001', 'seg_000002', 'seg_000003']
+
+    async def test_stable_translation_groups_mid_sentence_source_segments(
+        self,
+        make_translation_runtime,
+    ) -> None:
+        translator = FakeTranslator()
+        runtime, queue = await make_translation_runtime(
+            translator,
+            preview_enabled=False,
+        )
+        await runtime.start()
+
+        await runtime.accept_source_event(
+            transcript_update(
+                1,
+                stable_appends=[stable_segment(1, "今天我们来讲")],
+                partial={"text": "一下这个", "language": "Chinese", "start_ms": 1000, "end_ms": 2000},
+            )
+        )
+        await assert_no_event(queue, timeout=0.02)
+
+        await runtime.accept_source_event(
+            transcript_update(2, stable_appends=[stable_segment(2, "一下这个问题。")])
+        )
+
+        event = await get_event(queue)
+        assert event['type'] == 'translation_stable'
+        assert event['source_segment_id'] == 'seg_000002'
+        assert event['source_segment_ids'] == ['seg_000001', 'seg_000002']
+        assert event['source_segment_indices'] == [1, 2]
+        assert event['text'] == 'English:今天我们来讲一下这个问题。'
+        assert translator.calls == ['今天我们来讲一下这个问题。']
+
+    async def test_preview_translation_includes_pending_stable_prefix(
+        self,
+        make_translation_runtime,
+    ) -> None:
+        translator = FakeTranslator()
+        runtime, queue = await make_translation_runtime(
+            translator,
+            stable_enabled=True,
+            preview_enabled=True,
+            preview_debounce_ms=0,
+        )
+        await runtime.start()
+
+        await runtime.accept_source_event(
+            transcript_update(
+                1,
+                stable_appends=[stable_segment(1, "今天我们来讲")],
+                partial={"text": "一下这个", "language": "Chinese", "start_ms": 1000, "end_ms": 2000},
+            )
+        )
+
+        event = await get_event(queue)
+        assert event['type'] == 'translation_preview'
+        assert event['source_revision'] == 1
+        assert event['text'] == 'English:今天我们来讲一下这个'
+        assert translator.calls == ['今天我们来讲一下这个']
+
+    async def test_partial_clear_flushes_pending_stable_translation(
+        self,
+        make_translation_runtime,
+    ) -> None:
+        translator = FakeTranslator()
+        runtime, queue = await make_translation_runtime(
+            translator,
+            preview_enabled=False,
+        )
+        await runtime.start()
+
+        await runtime.accept_source_event(
+            transcript_update(
+                1,
+                stable_appends=[stable_segment(1, "他说：“你好。”")],
+                partial={"text": "然后", "language": "Chinese", "start_ms": 1000, "end_ms": 2000},
+            )
+        )
+        await assert_no_event(queue, timeout=0.02)
+
+        await runtime.accept_source_event(transcript_update(2, partial=None))
+
+        event = await get_event(queue)
+        assert event['type'] == 'translation_stable'
+        assert event['source_segment_id'] == 'seg_000001'
+        assert event['text'] == 'English:他说：“你好。”'
+        assert translator.calls == ['他说：“你好。”']
 
     async def test_target_switch_clears_pending_stable_queue(self, make_translation_runtime) -> None:
         translator = FakeTranslator()
@@ -503,11 +688,12 @@ class TestRealtimeTranslationRuntime:
         assert events[0]['source_revision'] == 3
         assert [event['source_segment_id'] for event in events[1:]] == ['seg_000001', 'seg_000002']
 
-    async def test_preview_from_same_update_is_visible_before_stable_translation(
+    async def test_preview_from_same_update_holds_open_stable_unit_until_finish(
         self,
         make_translation_runtime,
     ) -> None:
-        runtime, queue = await make_translation_runtime(FakeTranslator(), preview_debounce_ms=0)
+        translator = FakeTranslator()
+        runtime, queue = await make_translation_runtime(translator, preview_debounce_ms=0)
         await runtime.start()
 
         await runtime.accept_source_event(
@@ -518,11 +704,17 @@ class TestRealtimeTranslationRuntime:
             )
         )
 
-        events = [await get_event(queue), await get_event(queue)]
-        assert events[0]['type'] == 'translation_preview'
-        assert events[0]['source_revision'] == 1
-        assert events[1]['type'] == 'translation_stable'
-        assert events[1]['source_segment_id'] == 'seg_000001'
+        event = await get_event(queue)
+        assert event['type'] == 'translation_preview'
+        assert event['source_revision'] == 1
+        assert event['text'] == 'English:stable draft'
+        await assert_no_event(queue, timeout=0.02)
+
+        events = await runtime.finish([])
+        assert [item['type'] for item in events] == ['translation_stable']
+        assert events[0]['source_segment_id'] == 'seg_000001'
+        assert events[0]['text'] == 'English:stable'
+        assert translator.calls == ['stable draft', 'stable']
 
     async def test_finish_translates_finish_segments_before_old_stable_backlog(self, make_translation_runtime) -> None:
         runtime, _queue = await make_translation_runtime(FakeTranslator(), preview_enabled=False)

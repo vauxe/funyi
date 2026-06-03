@@ -135,6 +135,194 @@ test("translation annotates matching lines and stale preview is ignored", () => 
   assert.equal(window.current?.translation, "current line");
 });
 
+test("grouped stable translation folds covered source segments into one display line", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 2,
+    stable_appends: [
+      stableSegment(1, "今天我们来讲", { startMs: 0, endMs: 1000 }),
+      stableSegment(2, "一下这个问题", { startMs: 1000, endMs: 1800 }),
+    ],
+    partial: null,
+  });
+
+  document.applyEvent({
+    type: "translation_stable",
+    source_segment_id: "seg_000002",
+    source_segment_index: 2,
+    source_segment_ids: ["seg_000001", "seg_000002"],
+    source_segment_indices: [1, 2],
+    text: "Today we discuss this issue",
+  });
+
+  assert.equal(document.stableLines.length, 1);
+  assert.equal(document.stableLines[0]?.id, "seg_000002");
+  assert.equal(document.stableLines[0]?.index, 2);
+  assert.equal(document.stableLines[0]?.startMs, 0);
+  assert.equal(document.stableLines[0]?.endMs, 1800);
+  assert.equal(document.stableLines[0]?.text, "今天我们来讲一下这个问题");
+  assert.equal(document.stableLines[0]?.translation, "Today we discuss this issue");
+
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 2,
+    stable_base: 2,
+    stable_count: 3,
+    stable_appends: [stableSegment(3, "下一句", { startMs: 1800, endMs: 2400 })],
+    partial: null,
+  });
+
+  assert.deepEqual(
+    document.stableLines.map((line) => line.text),
+    ["今天我们来讲一下这个问题", "下一句"],
+  );
+});
+
+test("preview display composes pending stable prefix with current partial after translation arrives", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 1,
+    stable_appends: [stableSegment(1, "今天我们来讲", { startMs: 0, endMs: 1000 })],
+    partial: partialSegment("一下这个", { startMs: 1000, endMs: 1800 }),
+  });
+
+  assert.equal(document.window().current?.text, "一下这个");
+  assert.deepEqual(
+    document.stableLines.map((line) => line.text),
+    ["今天我们来讲"],
+  );
+
+  document.applyEvent({ type: "translation_preview", source_revision: 1, text: "Today we discuss this" });
+
+  assert.equal(document.window().current?.text, "今天我们来讲一下这个");
+  assert.equal(document.window().current?.translation, "Today we discuss this");
+  assert.deepEqual(
+    document.stableLines.map((line) => line.text),
+    [],
+  );
+});
+
+test("source-only display ignores translation preview composition", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 1,
+    stable_appends: [stableSegment(1, "今天我们来讲", { startMs: 0, endMs: 1000 })],
+    partial: partialSegment("一下这个", { startMs: 1000, endMs: 1800 }),
+  });
+  document.applyEvent({ type: "translation_preview", source_revision: 1, text: "Today we discuss this" });
+
+  document.setTranslationEnabled(false);
+
+  assert.equal(document.window().current?.text, "一下这个");
+  assert.equal(document.window().current?.translation, null);
+  assert.deepEqual(
+    document.stableLines.map((line) => line.text),
+    ["今天我们来讲"],
+  );
+});
+
+test("source-only history ignores grouped stable translation folding", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 2,
+    stable_appends: [
+      stableSegment(1, "今天我们来讲", { startMs: 0, endMs: 1000 }),
+      stableSegment(2, "一下这个问题", { startMs: 1000, endMs: 1800 }),
+    ],
+    partial: null,
+  });
+  document.applyEvent({
+    type: "translation_stable",
+    source_segment_id: "seg_000002",
+    source_segment_index: 2,
+    source_segment_ids: ["seg_000001", "seg_000002"],
+    source_segment_indices: [1, 2],
+    text: "Today we discuss this issue",
+  });
+
+  document.setTranslationEnabled(false);
+
+  assert.deepEqual(
+    document.stableLines.map((line) => line.text),
+    ["今天我们来讲", "一下这个问题"],
+  );
+});
+
+test("stable translation status preserves an existing translation", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 1,
+    stable_appends: [stableSegment(1, "hello", { startMs: 0, endMs: 1000 })],
+    partial: null,
+  });
+  document.applyEvent({
+    type: "translation_stable",
+    source_segment_id: "seg_000001",
+    source_segment_index: 1,
+    text: "bonjour",
+  });
+
+  document.applyEvent({
+    type: "translation_status",
+    scope: "stable",
+    code: "failed",
+    message: "translation failed",
+    source_segment_id: "seg_000001",
+    source_segment_index: 1,
+  });
+
+  assert.equal(document.stableLines[0]?.translation, "bonjour");
+  assert.equal(document.stableLines[0]?.translationStatus, "failed");
+  assert.equal(document.stableLines[0]?.translationMessage, "translation failed");
+});
+
+test("grouped stable translation status folds covered source segments", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 2,
+    stable_appends: [
+      stableSegment(1, "今天我们来讲", { startMs: 0, endMs: 1000 }),
+      stableSegment(2, "一下这个问题", { startMs: 1000, endMs: 1800 }),
+    ],
+    partial: null,
+  });
+
+  document.applyEvent({
+    type: "translation_status",
+    scope: "stable",
+    code: "failed",
+    message: "translation failed",
+    source_segment_id: "seg_000002",
+    source_segment_index: 2,
+    source_segment_ids: ["seg_000001", "seg_000002"],
+    source_segment_indices: [1, 2],
+  });
+
+  assert.equal(document.stableLines.length, 1);
+  assert.equal(document.stableLines[0]?.text, "今天我们来讲一下这个问题");
+  assert.equal(document.stableLines[0]?.translation, null);
+  assert.equal(document.stableLines[0]?.translationStatus, "failed");
+  assert.equal(document.stableLines[0]?.translationMessage, "translation failed");
+});
+
 test("translation falls back to source_segment_index when the id does not match", () => {
   const document = new SubtitleDocument();
   document.applyEvent({

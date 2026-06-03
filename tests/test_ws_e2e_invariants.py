@@ -74,6 +74,92 @@ class TestWebSocketE2EInvariant:
 
         assert issues == ['missing translation_stable for source segments: seg_000002']
 
+    def test_grouped_stable_translation_can_cover_multiple_source_segments(self) -> None:
+        state: dict[str, object] = {}
+        _record_event_contract(
+            state,
+            {
+                "type": "transcript_update",
+                "revision": 1,
+                "stable_appends": [{"id": "seg_000001", "index": 1, "text": "one"}],
+                "partial": None,
+            },
+        )
+        _record_event_contract(
+            state,
+            {
+                "type": "transcript_update",
+                "revision": 2,
+                "stable_appends": [{"id": "seg_000002", "index": 2, "text": "two"}],
+                "partial": None,
+            },
+        )
+        assert (
+            _record_event_contract(
+                state,
+                {
+                    "type": "translation_stable",
+                    "source_segment_id": "seg_000002",
+                    "source_segment_index": 2,
+                    "source_segment_ids": ["seg_000001", "seg_000002"],
+                    "source_segment_indices": [1, 2],
+                    "text": "English:one two",
+                },
+            )
+            == []
+        )
+
+        issues = _final_event_contract_issues(
+            state,
+            {
+                "type": "transcript_final",
+                "segments": [
+                    {"id": "seg_000001", "index": 1, "text": "one"},
+                    {"id": "seg_000002", "index": 2, "text": "two"},
+                ],
+            },
+            expect_translation=True,
+        )
+
+        assert issues == []
+
+    def test_grouped_stable_translation_rejects_mismatched_coverage_indices(self) -> None:
+        state: dict[str, object] = {}
+        _record_event_contract(
+            state,
+            {
+                "type": "transcript_update",
+                "revision": 1,
+                "stable_appends": [{"id": "seg_000001", "index": 1, "text": "one"}],
+                "partial": None,
+            },
+        )
+        _record_event_contract(
+            state,
+            {
+                "type": "transcript_update",
+                "revision": 2,
+                "stable_appends": [{"id": "seg_000002", "index": 2, "text": "two"}],
+                "partial": None,
+            },
+        )
+
+        issues = _record_event_contract(
+            state,
+            {
+                "type": "translation_stable",
+                "source_segment_id": "seg_000002",
+                "source_segment_index": 2,
+                "source_segment_ids": ["seg_000001", "seg_000002"],
+                "source_segment_indices": [1, 99],
+                "text": "English:one two",
+            },
+        )
+
+        assert issues == [
+            "translation_stable source_segment_indices[1] 99 does not match source segment seg_000002 index 2"
+        ]
+
     def test_final_marker_without_segments_uses_replayed_stable_history(self) -> None:
         state: dict[str, object] = {}
         _record_event_contract(
