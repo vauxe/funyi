@@ -147,7 +147,75 @@ async def test_offline_transcription_route_rejects_unreadable_audio_with_json_er
     assert "Unsupported or unreadable audio file" in response["json"]["error"]["message"]
 
 
+@pytest.mark.asyncio
+async def test_offline_transcription_route_allows_loopback_cors_preflight() -> None:
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        app = build_app(model=object(), asr_executor=executor)
+        response = await asgi_options(
+            app,
+            "/api/transcriptions",
+            headers=[
+                (b"origin", b"http://localhost:5173"),
+                (b"access-control-request-method", b"POST"),
+                (b"access-control-request-headers", b"content-type"),
+            ],
+        )
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    assert response["status"] == 200
+    assert response["headers"]["access-control-allow-origin"] == "http://localhost:5173"
+    assert "POST" in response["headers"]["access-control-allow-methods"]
+    assert "content-type" in response["headers"]["access-control-allow-headers"].lower()
+
+
+@pytest.mark.asyncio
+async def test_offline_transcription_route_rejects_non_loopback_cors_preflight() -> None:
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        app = build_app(model=object(), asr_executor=executor)
+        response = await asgi_options(
+            app,
+            "/api/transcriptions",
+            headers=[
+                (b"origin", b"http://127.0.0.1.evil.example:5173"),
+                (b"access-control-request-method", b"POST"),
+                (b"access-control-request-headers", b"content-type"),
+            ],
+        )
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    assert response["status"] == 400
+    assert "access-control-allow-origin" not in response["headers"]
+
+
 async def asgi_post(app: object, path: str, *, query: str, body: bytes) -> dict[str, object]:
+    response = await asgi_request(
+        app,
+        path,
+        method="POST",
+        query=query.encode("ascii"),
+        body=body,
+        headers=[(b"content-type", b"application/octet-stream")],
+    )
+    return {"status": response["status"], "json": json.loads(bytes(response["body"]).decode("utf-8"))}
+
+
+async def asgi_options(app: object, path: str, *, headers: list[tuple[bytes, bytes]]) -> dict[str, object]:
+    return await asgi_request(app, path, method="OPTIONS", headers=headers)
+
+
+async def asgi_request(
+    app: object,
+    path: str,
+    *,
+    method: str,
+    query: bytes = b"",
+    body: bytes = b"",
+    headers: list[tuple[bytes, bytes]] | None = None,
+) -> dict[str, object]:
     sent: list[dict[str, object]] = []
     received = False
 
@@ -166,12 +234,12 @@ async def asgi_post(app: object, path: str, *, query: str, body: bytes) -> dict[
             "type": "http",
             "asgi": {"version": "3.0"},
             "http_version": "1.1",
-            "method": "POST",
+            "method": method,
             "scheme": "http",
             "path": path,
             "raw_path": path.encode("ascii"),
-            "query_string": query.encode("ascii"),
-            "headers": [(b"content-type", b"application/octet-stream")],
+            "query_string": query,
+            "headers": headers or [],
             "client": ("127.0.0.1", 12345),
             "server": ("127.0.0.1", 8000),
         },
@@ -180,7 +248,13 @@ async def asgi_post(app: object, path: str, *, query: str, body: bytes) -> dict[
     )
 
     status = next(message for message in sent if message["type"] == "http.response.start")["status"]
+    response_headers = {
+        key.decode("latin1").lower(): value.decode("latin1")
+        for message in sent
+        if message["type"] == "http.response.start"
+        for key, value in message.get("headers", [])
+    }
     response_body = b"".join(
         bytes(message.get("body", b"")) for message in sent if message["type"] == "http.response.body"
     )
-    return {"status": status, "json": json.loads(response_body.decode("utf-8"))}
+    return {"status": status, "headers": response_headers, "body": response_body}

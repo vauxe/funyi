@@ -74,6 +74,14 @@ _SERVICE_TIMESTAMP_PREWARM_LANGUAGE = "Chinese"
 _SERVICE_TIMESTAMP_PREWARM_TEXT = "你好。"
 _SERVICE_TIMESTAMP_PREWARM_DURATION_SEC = 1.0
 _DEFAULT_DEBUG_AUDIO_DIR = "local_data/realtime_debug_audio"
+_SERVICE_CORS_ORIGIN_REGEX = (
+    r"^(?:"
+    r"https?://localhost(?::\d+)?"
+    r"|https?://127(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?::\d+)?"
+    r"|https?://tauri\.localhost(?::\d+)?"
+    r"|tauri://localhost"
+    r")$"
+)
 _START_COMMAND_FIELDS = frozenset(
     {
         "type",
@@ -277,6 +285,7 @@ def build_app(
 ) -> Any:
     try:
         from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+        from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import JSONResponse
     except ImportError as exc:
         raise RuntimeError("Install service dependencies with: uv sync --python 3.12") from exc
@@ -300,6 +309,12 @@ def build_app(
         lifespan = model_actor_lifespan
 
     app = FastAPI(title="Qwen3-ASR Runtime Realtime ASR Service", lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=_SERVICE_CORS_ORIGIN_REGEX,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["*"],
+    )
     active_lock = asyncio.Lock()
     active_connection = {"open": False}
 
