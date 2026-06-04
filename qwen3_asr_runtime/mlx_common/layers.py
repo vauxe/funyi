@@ -1,8 +1,9 @@
 # coding=utf-8
-"""Shared MLX building blocks mirroring modeling_qwen3_asr.py.
+"""Shared MLX building blocks used by every MLX model layer (ASR, aligner, HY-MT).
 
-RMSNorm keeps the reference's float32 variance accumulation. Attention itself
-uses ``mx.fast.scaled_dot_product_attention`` inline in the text/audio modules.
+RMSNorm keeps the reference's float32 variance accumulation via the fused
+mx.fast.rms_norm kernel; numerically equivalent to a hand-rolled variant but
+much faster because there are many RMSNorm calls per token.
 """
 from __future__ import annotations
 
@@ -11,14 +12,6 @@ import mlx.nn as nn
 
 
 class RMSNorm(nn.Module):
-    """Qwen3 RMSNorm via the fused mx.fast.rms_norm kernel (float32 accumulation).
-
-    Numerically equivalent to the reference (verified token-identical); ~1.23x
-    faster decode than a hand-rolled variant because there are ~113 RMSNorm calls
-    per token (input/post norms + q/k norms across 28 layers + final norm), so the
-    fused kernel saves a large number of launches.
-    """
-
     def __init__(self, dims: int, eps: float = 1e-6):
         super().__init__()
         self.weight = mx.ones((dims,))

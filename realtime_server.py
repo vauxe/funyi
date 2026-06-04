@@ -1088,12 +1088,19 @@ def _parse_args() -> argparse.Namespace:
         default=_DEFAULT_DEBUG_AUDIO_DIR,
         help="Directory used by --save-debug-audio.",
     )
+    parser.add_argument(
+        "--backend",
+        default="auto",
+        choices=["auto", "transformers", "mlx"],
+        help="ASR backend. 'auto' picks mlx on Apple Silicon (Metal) and transformers (CUDA) "
+        "elsewhere. 'mlx' forces the Apple Silicon backend; CUDA-only flags are ignored.",
+    )
     parser.add_argument("--device-map", default=None, help="Transformers device_map. Default: cuda:0.")
     parser.add_argument(
         "--dtype",
         default=None,
         choices=["auto", "float16", "bfloat16", "float32"],
-        help="Torch dtype for the transformers backend. Default: bfloat16.",
+        help="Compute dtype. Default: bfloat16.",
     )
     parser.add_argument("--cuda-graph", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--flashinfer", action=argparse.BooleanOptionalAction, default=None)
@@ -1125,6 +1132,13 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--timestamp-attn-implementation", default=None)
     parser.add_argument(
+        "--timestamp-backend",
+        default="auto",
+        choices=["auto", "torch", "mlx"],
+        help="Forced-aligner backend. 'auto' follows the ASR backend (mlx on Apple Silicon). "
+        "'mlx' runs the aligner on Metal; CUDA-only flags (device_map, attn_implementation, fused) are ignored.",
+    )
+    parser.add_argument(
         "--timestamp-fused",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -1151,6 +1165,13 @@ def _parse_args() -> argparse.Namespace:
         help="Pin the HF model to an immutable commit/revision; only valid for a HF id, not a local path.",
     )
     parser.add_argument("--translation-device", default="cuda:0")
+    parser.add_argument(
+        "--translation-backend",
+        default="auto",
+        choices=["auto", "torch", "mlx"],
+        help="Translation backend. 'auto' follows the ASR backend (mlx on Apple Silicon). "
+        "'mlx' runs HY-MT on Metal; CUDA-only flags (device, w8a16, fused_rmsnorm, decode_backend) are ignored.",
+    )
     parser.add_argument("--translation-dtype", default=None, choices=["auto", "float16", "bfloat16", "float32"])
     parser.add_argument("--translation-preview", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--translation-preview-debounce-ms", type=int, default=_SERVICE_TRANSLATION_PREVIEW_DEBOUNCE_MS)
@@ -1201,7 +1222,60 @@ def _uvicorn_log_level(service_log_level: int) -> str:
     return logging.getLevelName(service_log_level).lower()
 
 
+def _prefer_mlx() -> bool:
+    """True on Apple Silicon with MLX installed (the macOS Metal path)."""
+    import platform
+
+    if platform.system() != "Darwin" or platform.machine() != "arm64":
+        return False
+    try:
+        import mlx.core  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
+def _resolve_service_backends(args: argparse.Namespace) -> None:
+    """Resolve ``auto`` backend choices to concrete values for ASR + translation + aligner.
+
+    ``auto`` -> mlx on Apple Silicon (Metal), else the framework default
+    (transformers for ASR, torch for translation/aligner). Concrete ``mlx`` /
+    ``transformers`` / ``torch`` choices are honored as-is. Mutates ``args`` so all
+    downstream builders read a concrete backend.
+    """
+    prefer = _prefer_mlx()
+
+    def resolve_asr(choice: str) -> str:
+        choice = str(choice or "auto").lower()
+        if choice == "auto":
+            return "mlx" if prefer else "transformers"
+        if choice in {"mlx", "transformers"}:
+            return choice
+        return "transformers"
+
+    def resolve_aux(choice: str) -> str:
+        choice = str(choice or "auto").lower()
+        if choice in {"mlx", "torch"}:
+            return choice
+        if choice == "auto":
+            return "mlx" if args.backend == "mlx" else "torch"
+        return "torch"
+
+    args.backend = resolve_asr(args.backend)
+    args.translation_backend = resolve_aux(getattr(args, "translation_backend", "auto"))
+    args.timestamp_backend = resolve_aux(getattr(args, "timestamp_backend", "auto"))
+
+
 def _build_model_load(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
+    if args.backend == "mlx":
+        # MLX (Apple Silicon): no device_map/cuda_graph/flashinfer/fused/W8A16 -- the
+        # backend silently drops them. Pass only the compute dtype.
+        dtype_name = args.dtype or "bfloat16"
+        kwargs: dict[str, Any] = {}
+        if dtype_name != "auto":
+            kwargs["dtype"] = dtype_name
+        return "mlx", kwargs
+
     import torch
 
     device_map = args.device_map or "cuda:0"
@@ -1251,6 +1325,18 @@ def _build_translation(args: argparse.Namespace) -> tuple[Any | None, Translatio
         max_new_tokens=int(args.translation_max_new_tokens),
         do_sample=bool(args.translation_sample),
     )
+    if args.translation_backend == "mlx":
+        # MLX (Apple Silicon): ground-up Hunyuan forward; CUDA-only flags ignored.
+        from qwen3_asr_runtime.mlx_translation import MLXHYMTTranslator
+
+        translator = MLXHYMTTranslator(
+            model_path,
+            dtype=dtype,
+            local_files_only=bool(args.translation_local_files_only),
+            model_revision=args.translation_model_revision,
+            generation_config=generation_config,
+        )
+        return translator, config
     translator = HYMTTranslator(
         model_path,
         device=str(args.translation_device),
@@ -1267,10 +1353,29 @@ def _build_translation(args: argparse.Namespace) -> tuple[Any | None, Translatio
     return translator, config
 
 
-def _build_timestamp_actor(args: argparse.Namespace) -> tuple[TimestampModelActor | None, RealtimeTimestampConfig | None]:
+def _build_aligner(args: argparse.Namespace) -> tuple[Any | None, RealtimeTimestampConfig | None]:
+    """Construct the forced aligner (not the actor). The caller wraps it in a
+    TimestampModelActor bound to the executor the model was loaded on -- the MLX
+    backend ties a model to its loading thread."""
     model_path = str(args.timestamp_model or "").strip()
     if not model_path:
         return None, None
+
+    if args.timestamp_backend == "mlx":
+        # MLX (Apple Silicon): ground-up aligner forward; CUDA-only flags ignored.
+        from qwen3_asr_runtime.mlx_forced_aligner import MLXForcedAlignerBackend
+
+        dtype_name = args.timestamp_dtype if args.timestamp_dtype not in {None, "auto"} else "bfloat16"
+        aligner = MLXForcedAlignerBackend.from_pretrained(
+            model_path,
+            dtype=dtype_name,
+            local_files_only=bool(args.timestamp_local_files_only),
+        )
+        config = RealtimeTimestampConfig(
+            pad_ms=int(args.timestamp_pad_ms),
+            finish_timeout_ms=int(args.timestamp_finish_timeout_ms),
+        )
+        return aligner, config
 
     import torch
     from qwen3_asr_runtime.forced_aligner import Qwen3ForcedAlignerBackend
@@ -1307,7 +1412,7 @@ def _build_timestamp_actor(args: argparse.Namespace) -> tuple[TimestampModelActo
         pad_ms=int(args.timestamp_pad_ms),
         finish_timeout_ms=int(args.timestamp_finish_timeout_ms),
     )
-    return TimestampModelActor(aligner), config
+    return aligner, config
 
 
 def _prewarm_translation_runtime(
@@ -1403,12 +1508,45 @@ def _prepare_cuda_graph_runtime(model: Any, args: argparse.Namespace) -> None:
         return
 
 
+def _prewarm_mlx_asr(model: Any) -> None:
+    """Compile the MLX ASR Metal kernels with a short silent transcribe.
+
+    The cuda-graph prewarm does not apply to MLX; without this the first real audio
+    chunk would pay the one-time Metal kernel compilation (seconds).
+    """
+    started = time.perf_counter()
+    _LOGGER.info("Prewarming MLX ASR (compiling Metal kernels)")
+    silence = np.zeros(int(1.0 * SAMPLE_RATE), dtype=np.float32)
+    model.transcribe((silence, SAMPLE_RATE))
+    _LOGGER.info("Prewarmed MLX ASR wall_ms=%d", int(round((time.perf_counter() - started) * 1000)))
+
+
 def _translation_capture_lock(args: argparse.Namespace, *, translation_enabled: bool) -> Any | None:
     if not translation_enabled:
         return None
     if _cuda_graph_enabled(args) and not args.cuda_graph_prewarm:
         return CUDA_GRAPH_CAPTURE_LOCK
     return None
+
+
+def _load_on_thread(
+    build: Any,
+    *,
+    use_executor: bool,
+    thread_name: str,
+    executor: ThreadPoolExecutor | None = None,
+) -> tuple[Any, ThreadPoolExecutor | None]:
+    """Build a model, on a single-worker executor when ``use_executor``.
+
+    MLX ties a model to the thread that loaded it, and the service runs each model's
+    forwards on its own worker; so an MLX model must be built on the executor that will
+    run it. Returns ``(result, executor_or_None)`` -- the executor the model was loaded
+    on (reuse it for forwards), or ``None`` for an inline (main-thread) build.
+    """
+    if not use_executor:
+        return build(), None
+    ex = executor or ThreadPoolExecutor(max_workers=1, thread_name_prefix=thread_name)
+    return ex.submit(build).result(), ex
 
 
 def main() -> None:
@@ -1418,6 +1556,11 @@ def main() -> None:
     log_level = _configure_logging(args.log_level)
     if not str(args.timestamp_model or "").strip():
         raise RuntimeError("--timestamp-model is required; realtime ASR commits require ASR and forced aligner together.")
+    _resolve_service_backends(args)
+    if args.backend == "mlx":
+        # MLX has no cuda graph; force the flag off so the cuda-graph prewarm and the
+        # translation capture lock are skipped (the prewarm would otherwise raise).
+        args.cuda_graph = False
     backend, load_kwargs = _build_model_load(args)
 
     _LOGGER.info(
@@ -1427,29 +1570,51 @@ def main() -> None:
         load_kwargs.get("device_map"),
         args.log_level,
     )
-    model = Qwen3ASRModel.from_pretrained(
-        args.model,
-        backend=backend,
-        **load_kwargs,
-    )
     translation_actor: TranslationModelActor | None = None
     translation_service_config: TranslationServiceConfig | None = None
     timestamp_actor: TimestampModelActor | None = None
     timestamp_config: RealtimeTimestampConfig | None = None
+    translation_executor: ThreadPoolExecutor | None = None
+    timestamp_executor: ThreadPoolExecutor | None = None
     # Single-worker ASR executor: realtime ASR forwards run here, off the asyncio
     # event loop, so a ~55ms decode step no longer blocks event delivery, audio
     # ingest, or the aligner/translation runtimes. The CUDA-graph prewarm runs on
-    # this same thread so graph capture and replay share one thread/stream.
+    # this same thread so graph capture and replay share one thread/stream. MLX ties
+    # a model to its loading thread, so each MLX model is BOTH loaded and run on its
+    # own single-worker executor.
     asr_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="qwen3-asr")
     try:
+        model, _ = _load_on_thread(
+            lambda: Qwen3ASRModel.from_pretrained(args.model, backend=backend, **load_kwargs),
+            use_executor=(backend == "mlx"), executor=asr_executor, thread_name="qwen3-asr",
+        )
         asr_executor.submit(_prepare_cuda_graph_runtime, model, args).result()
-        translator, translation_service_config = _build_translation(args)
+        if backend == "mlx":
+            asr_executor.submit(_prewarm_mlx_asr, model).result()
+
+        (translator, translation_service_config), translation_executor = _load_on_thread(
+            lambda: _build_translation(args),
+            use_executor=(args.translation_backend == "mlx"), thread_name="hymt-translation",
+        )
         if translator is not None:
             translation_actor = TranslationModelActor(
                 translator,
                 capture_lock=_translation_capture_lock(args, translation_enabled=True),
+                executor=translation_executor,
             )
-        timestamp_actor, timestamp_config = _build_timestamp_actor(args)
+        elif translation_executor is not None:
+            translation_executor.shutdown(wait=False)
+            translation_executor = None
+
+        (aligner, timestamp_config), timestamp_executor = _load_on_thread(
+            lambda: _build_aligner(args),
+            use_executor=(args.timestamp_backend == "mlx"), thread_name="qwen3-timestamp",
+        )
+        if aligner is not None:
+            timestamp_actor = TimestampModelActor(aligner, executor=timestamp_executor)
+        elif timestamp_executor is not None:
+            timestamp_executor.shutdown(wait=False)
+            timestamp_executor = None
         if translation_actor is not None and translation_service_config is not None:
             _prewarm_translation_runtime(translation_actor, translation_service_config)
         if timestamp_actor is not None:
@@ -1459,6 +1624,9 @@ def main() -> None:
             translation_actor.close(wait=True)
         if timestamp_actor is not None:
             timestamp_actor.close(wait=True)
+        for ex in (translation_executor, timestamp_executor):
+            if ex is not None:
+                ex.shutdown(wait=False, cancel_futures=True)
         asr_executor.shutdown(wait=False, cancel_futures=True)
         raise
     app = build_app(
@@ -1486,6 +1654,9 @@ def main() -> None:
             log_level=_uvicorn_log_level(log_level),
         )
     finally:
+        for ex in (translation_executor, timestamp_executor):
+            if ex is not None:
+                ex.shutdown(wait=False, cancel_futures=True)
         asr_executor.shutdown(wait=True, cancel_futures=False)
 
 

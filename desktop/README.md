@@ -4,7 +4,7 @@ Lightweight Tauri client for the local realtime ASR service.
 
 The UI owns the `/ws/asr` WebSocket. The native layer only captures audio —
 system output or microphone input — and emits `pcm_s16le` frames at 16 kHz. This
-keeps ASR, translation, and CUDA runtime behavior in the Python service.
+keeps ASR, translation, and model runtime behavior in the Python service.
 
 The default window is a compact, always-on-top caption strip near the bottom of
 the display. Detailed connection settings stay inline, and stable subtitle
@@ -35,9 +35,15 @@ FUNYI_ALLOW_DOWNLOADS=1 ./scripts/start_backend.sh
 
 After the models are cached, use `./scripts/start_backend.sh`.
 
-The backend should run in Linux or WSL with CUDA. On Windows, run this desktop
-client from a Windows checkout and connect it to the WSL backend URL, usually
+The backend can run on the same Apple Silicon macOS machine with MLX/Metal, or
+on Linux/WSL with CUDA. On Windows, run this desktop client from a Windows
+checkout and connect it to the WSL backend URL, usually
 `ws://127.0.0.1:8000/ws/asr`.
+
+On macOS, model switching happens by restarting the backend with different
+environment variables. The desktop client still connects to the same URL after
+the backend restarts. See `../docs/macos_mlx.md` for the supported MLX model
+list and switching commands.
 
 Then run the desktop client:
 

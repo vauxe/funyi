@@ -299,84 +299,14 @@ class Qwen3ForceAlignTextProcessor:
         return timestamp_output
 
 
-class Qwen3ForcedAlignerBackend:
-    def __init__(
-        self,
-        model: Qwen3ASRForConditionalGeneration,
-        processor: Qwen3ASRProcessor,
-        aligner_processor: Optional[Qwen3ForceAlignTextProcessor] = None,
-    ) -> None:
-        self.model = model
-        self.processor = processor
-        self.aligner_processor = aligner_processor or Qwen3ForceAlignTextProcessor()
+class ForcedAlignerCommon:
+    """Backend-agnostic forced-aligner logic shared by the torch and MLX backends.
 
-        self.device = getattr(model, "device", None)
-        if self.device is None:
-            try:
-                self.device = next(model.parameters()).device
-            except StopIteration:
-                self.device = torch.device("cpu")
+    Subclasses provide ``aligner_processor`` and ``_align_normalized(audios, *,
+    text, language)``; everything here is pure orchestration (windowing, sentence
+    assembly) and never touches a tensor framework directly.
+    """
 
-        self.timestamp_token_id = int(model.config.timestamp_token_id)
-        self.timestamp_segment_time = float(model.config.timestamp_segment_time)
-
-    @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path: str, **kwargs: Any) -> "Qwen3ForcedAlignerBackend":
-        register_qwen3_asr_auto_classes()
-        fused_rmsnorm = bool(kwargs.pop("fused_rmsnorm", False))
-        if "fused_linears" in kwargs:
-            raise RuntimeError(
-                "fused_linears was removed from the forced aligner. The aligner is one "
-                "prefill forward per segment (prefill-bound), so linear fusion is "
-                "launch-overhead-only: it helps ~4% on short realtime segments, is "
-                "net-neutral-to-negative on long windows, and was the larger argmax-drift "
-                "source. The whole ~1.4x align-forward win is fused_rmsnorm alone; pass "
-                "fused_rmsnorm=True only. (W8A16 needs fused linears, but the aligner never "
-                "uses W8A16, so it has no such dependency.)"
-            )
-        model = AutoModel.from_pretrained(pretrained_model_name_or_path, **kwargs)
-        if not isinstance(model, Qwen3ASRForConditionalGeneration):
-            raise TypeError(
-                f"AutoModel returned {type(model)}, expected Qwen3ASRForConditionalGeneration."
-            )
-
-        # The aligner is one prefill forward per stable segment. fused_rmsnorm
-        # collapses ~5 memory-bound RMSNorm kernels into one F.rms_norm and carries
-        # ~all of the ~1.4x align-forward win (interleaved A/B: ~1.39x on short
-        # realtime segments). Not bit-identical: bf16 argmax flips shift <=~1% of
-        # timestamps by <=0.16s (1-2 segment-time units), no word-count change.
-        # Linear fusion is deliberately NOT applied here (see the removal guard above).
-        if fused_rmsnorm:
-            from .fused_rmsnorm import patch_model_rmsnorms
-
-            if patch_model_rmsnorms(model) == 0:
-                raise RuntimeError("fused_rmsnorm=True but no RMSNorm modules found")
-
-        processor_kwargs = {
-            key: kwargs[key]
-            for key in ("cache_dir", "local_files_only", "revision", "token", "trust_remote_code")
-            if key in kwargs
-        }
-        processor = AutoProcessor.from_pretrained(
-            pretrained_model_name_or_path,
-            fix_mistral_regex=True,
-            **processor_kwargs,
-        )
-        return cls(model=model, processor=processor, aligner_processor=Qwen3ForceAlignTextProcessor())
-
-    def _to_structured_items(self, timestamp_output: List[Dict[str, Any]]) -> ForcedAlignResult:
-        items: List[ForcedAlignItem] = []
-        for it in timestamp_output:
-            items.append(
-                ForcedAlignItem(
-                    text=str(it.get("text", "")),
-                    start_time=float(it.get("start_time", 0)),
-                    end_time=float(it.get("end_time", 0)),
-                )
-            )
-        return ForcedAlignResult(items=items)
-
-    @torch.inference_mode()
     def align(
         self,
         audio: Union[AudioLike, List[AudioLike]],
@@ -384,58 +314,6 @@ class Qwen3ForcedAlignerBackend:
         language: Union[str, List[str]],
     ) -> List[ForcedAlignResult]:
         return self._align_normalized(normalize_audios(audio), text=text, language=language)
-
-    @torch.inference_mode()
-    def _align_normalized(
-        self,
-        audios: List[np.ndarray],
-        *,
-        text: Union[str, List[str]],
-        language: Union[str, List[str]],
-    ) -> List[ForcedAlignResult]:
-        texts = ensure_list(text)
-        languages = ensure_list(language)
-
-        if len(languages) == 1 and len(audios) > 1:
-            languages = languages * len(audios)
-
-        if not (len(audios) == len(texts) == len(languages)):
-            raise ValueError(
-                f"Batch size mismatch: audio={len(audios)}, text={len(texts)}, language={len(languages)}"
-            )
-
-        word_lists = []
-        aligner_input_texts = []
-        for t, lang in zip(texts, languages):
-            word_list, aligner_input_text = self.aligner_processor.encode_timestamp(t, lang)
-            word_lists.append(word_list)
-            aligner_input_texts.append(aligner_input_text)
-
-        inputs = self.processor(
-            text=aligner_input_texts,
-            audio=audios,
-            return_tensors="pt",
-            padding=True,
-        )
-        self._drop_single_full_attention_mask(inputs)
-        self._drop_single_full_feature_mask(inputs)
-        inputs = self._move_inputs_like_official(inputs)
-
-        input_ids = inputs["input_ids"]
-        timestamp_mask = input_ids == self.timestamp_token_id
-        logits = self.model.thinker(**inputs).logits
-
-        results: List[ForcedAlignResult] = []
-        for row, word_list in enumerate(word_lists):
-            masked_output_id = logits[row, timestamp_mask[row], :].argmax(dim=-1)
-            timestamp_ms = (masked_output_id * self.timestamp_segment_time).to("cpu").numpy()
-            timestamp_output = self.aligner_processor.parse_timestamp(word_list, timestamp_ms)
-            for it in timestamp_output:
-                it["start_time"] = round(it["start_time"] / 1000.0, 3)
-                it["end_time"] = round(it["end_time"] / 1000.0, 3)
-            results.append(self._to_structured_items(timestamp_output))
-
-        return results
 
     def align_sentence(
         self,
@@ -450,6 +328,18 @@ class Qwen3ForcedAlignerBackend:
             text=text,
             start_time=result.items[0].start_time,
             end_time=result.items[-1].end_time,
+        )
+
+    def _to_structured_items(self, timestamp_output: List[Dict[str, Any]]) -> ForcedAlignResult:
+        return ForcedAlignResult(
+            items=[
+                ForcedAlignItem(
+                    text=str(it.get("text", "")),
+                    start_time=float(it.get("start_time", 0)),
+                    end_time=float(it.get("end_time", 0)),
+                )
+                for it in timestamp_output
+            ]
         )
 
     def align_transcript_segments(
@@ -514,6 +404,148 @@ class Qwen3ForcedAlignerBackend:
                 cursor += token_count
         return outputs
 
+    @staticmethod
+    def _iter_transcript_windows(
+        segments: Sequence[ForcedAlignTextSegment],
+        *,
+        window_sec: float,
+    ) -> Iterable[List[tuple[int, ForcedAlignTextSegment]]]:
+        ordered = sorted(enumerate(segments), key=lambda item: (item[1].start_time, item[1].end_time))
+        group: List[tuple[int, ForcedAlignTextSegment]] = []
+        group_start = 0.0
+        for item in ordered:
+            segment = item[1]
+            if not group:
+                group = [item]
+                group_start = segment.start_time
+                continue
+            if segment.end_time - group_start > window_sec:
+                yield group
+                group = [item]
+                group_start = segment.start_time
+            else:
+                group.append(item)
+        if group:
+            yield group
+
+
+class Qwen3ForcedAlignerBackend(ForcedAlignerCommon):
+    def __init__(
+        self,
+        model: Qwen3ASRForConditionalGeneration,
+        processor: Qwen3ASRProcessor,
+        aligner_processor: Optional[Qwen3ForceAlignTextProcessor] = None,
+    ) -> None:
+        self.model = model
+        self.processor = processor
+        self.aligner_processor = aligner_processor or Qwen3ForceAlignTextProcessor()
+
+        self.device = getattr(model, "device", None)
+        if self.device is None:
+            try:
+                self.device = next(model.parameters()).device
+            except StopIteration:
+                self.device = torch.device("cpu")
+
+        self.timestamp_token_id = int(model.config.timestamp_token_id)
+        self.timestamp_segment_time = float(model.config.timestamp_segment_time)
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path: str, **kwargs: Any) -> "Qwen3ForcedAlignerBackend":
+        register_qwen3_asr_auto_classes()
+        fused_rmsnorm = bool(kwargs.pop("fused_rmsnorm", False))
+        if "fused_linears" in kwargs:
+            raise RuntimeError(
+                "fused_linears was removed from the forced aligner. The aligner is one "
+                "prefill forward per segment (prefill-bound), so linear fusion is "
+                "launch-overhead-only: it helps ~4% on short realtime segments, is "
+                "net-neutral-to-negative on long windows, and was the larger argmax-drift "
+                "source. The whole ~1.4x align-forward win is fused_rmsnorm alone; pass "
+                "fused_rmsnorm=True only. (W8A16 needs fused linears, but the aligner never "
+                "uses W8A16, so it has no such dependency.)"
+            )
+        model = AutoModel.from_pretrained(pretrained_model_name_or_path, **kwargs)
+        if not isinstance(model, Qwen3ASRForConditionalGeneration):
+            raise TypeError(
+                f"AutoModel returned {type(model)}, expected Qwen3ASRForConditionalGeneration."
+            )
+
+        # The aligner is one prefill forward per stable segment. fused_rmsnorm
+        # collapses ~5 memory-bound RMSNorm kernels into one F.rms_norm and carries
+        # ~all of the ~1.4x align-forward win (interleaved A/B: ~1.39x on short
+        # realtime segments). Not bit-identical: bf16 argmax flips shift <=~1% of
+        # timestamps by <=0.16s (1-2 segment-time units), no word-count change.
+        # Linear fusion is deliberately NOT applied here (see the removal guard above).
+        if fused_rmsnorm:
+            from .fused_rmsnorm import patch_model_rmsnorms
+
+            if patch_model_rmsnorms(model) == 0:
+                raise RuntimeError("fused_rmsnorm=True but no RMSNorm modules found")
+
+        processor_kwargs = {
+            key: kwargs[key]
+            for key in ("cache_dir", "local_files_only", "revision", "token", "trust_remote_code")
+            if key in kwargs
+        }
+        processor = AutoProcessor.from_pretrained(
+            pretrained_model_name_or_path,
+            fix_mistral_regex=True,
+            **processor_kwargs,
+        )
+        return cls(model=model, processor=processor, aligner_processor=Qwen3ForceAlignTextProcessor())
+
+    @torch.inference_mode()
+    def _align_normalized(
+        self,
+        audios: List[np.ndarray],
+        *,
+        text: Union[str, List[str]],
+        language: Union[str, List[str]],
+    ) -> List[ForcedAlignResult]:
+        texts = ensure_list(text)
+        languages = ensure_list(language)
+
+        if len(languages) == 1 and len(audios) > 1:
+            languages = languages * len(audios)
+
+        if not (len(audios) == len(texts) == len(languages)):
+            raise ValueError(
+                f"Batch size mismatch: audio={len(audios)}, text={len(texts)}, language={len(languages)}"
+            )
+
+        word_lists = []
+        aligner_input_texts = []
+        for t, lang in zip(texts, languages):
+            word_list, aligner_input_text = self.aligner_processor.encode_timestamp(t, lang)
+            word_lists.append(word_list)
+            aligner_input_texts.append(aligner_input_text)
+
+        inputs = self.processor(
+            text=aligner_input_texts,
+            audio=audios,
+            return_tensors="pt",
+            padding=True,
+        )
+        self._drop_single_full_attention_mask(inputs)
+        self._drop_single_full_feature_mask(inputs)
+        inputs = self._move_inputs_like_official(inputs)
+
+        input_ids = inputs["input_ids"]
+        timestamp_mask = input_ids == self.timestamp_token_id
+        logits = self.model.thinker(**inputs).logits
+
+        results: List[ForcedAlignResult] = []
+        for row, word_list in enumerate(word_lists):
+            masked_output_id = logits[row, timestamp_mask[row], :].argmax(dim=-1)
+            timestamp_ms = (masked_output_id * self.timestamp_segment_time).to("cpu").numpy()
+            timestamp_output = self.aligner_processor.parse_timestamp(word_list, timestamp_ms)
+            for it in timestamp_output:
+                it["start_time"] = round(it["start_time"] / 1000.0, 3)
+                it["end_time"] = round(it["end_time"] / 1000.0, 3)
+            results.append(self._to_structured_items(timestamp_output))
+
+        return results
+
     def get_supported_languages(self) -> Optional[List[str]]:
         fn = getattr(self.model, "get_support_languages", None)
         if not callable(fn):
@@ -561,30 +593,6 @@ class Qwen3ForcedAlignerBackend:
             inputs["audio_feature_lengths"] = feature_attention_mask.sum(dim=1)
             inputs["feature_attention_mask"] = None
 
-    @staticmethod
-    def _iter_transcript_windows(
-        segments: Sequence[ForcedAlignTextSegment],
-        *,
-        window_sec: float,
-    ) -> Iterable[List[tuple[int, ForcedAlignTextSegment]]]:
-        ordered = sorted(enumerate(segments), key=lambda item: (item[1].start_time, item[1].end_time))
-        group: List[tuple[int, ForcedAlignTextSegment]] = []
-        group_start = 0.0
-        for item in ordered:
-            segment = item[1]
-            if not group:
-                group = [item]
-                group_start = segment.start_time
-                continue
-            if segment.end_time - group_start > window_sec:
-                yield group
-                group = [item]
-                group_start = segment.start_time
-            else:
-                group.append(item)
-        if group:
-            yield group
-
 
 def normalize_forced_align_language(language: str) -> str:
     language = normalize_language_name(language)
@@ -608,6 +616,7 @@ __all__ = [
     "ForcedAlignResult",
     "ForcedAlignSentence",
     "ForcedAlignTextSegment",
+    "ForcedAlignerCommon",
     "Qwen3ForceAlignTextProcessor",
     "Qwen3ForcedAlignerBackend",
     "normalize_forced_align_language",

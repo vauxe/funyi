@@ -14,9 +14,8 @@ from typing import List
 import mlx.core as mx
 import mlx.nn as nn
 
+from ..mlx_common.cache import NEG_INF
 from .config import MLXAudioConfig
-
-NEG_INF = -1e9
 
 
 def feat_extract_output_length(input_length: int) -> int:
@@ -68,9 +67,9 @@ class AudioAttention(nn.Module):
         # vendored transformers eager/sdpa fallback passes NO mask to its layers (full
         # attention), so a CPU eager reference only matches single-block (short) audio;
         # tools/parity_mlx_vs_hf.py patches the reference to window for a true comparison.
-        scores = mx.matmul(q, mx.swapaxes(k, -1, -2)) * self.scaling + mask
-        weights = mx.softmax(scores.astype(mx.float32), axis=-1).astype(q.dtype)
-        out = mx.matmul(weights, v)
+        # The additive block mask is fed straight to the fused SDPA kernel (fp32
+        # accumulation internally) instead of a hand-rolled matmul+softmax+matmul.
+        out = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.scaling, mask=mask)
         out = out.transpose(0, 2, 1, 3).reshape(seq_len, -1)
         return self.out_proj(out)
 
@@ -173,7 +172,9 @@ class AudioEncoder(nn.Module):
         remainder = aftercnn_total % window_aftercnn
         if remainder != 0:
             block_lens.append(remainder)
-        mask = self._block_mask(block_lens, hidden_states.shape[0])
+        # Cast once to the compute dtype: mx.fast.scaled_dot_product_attention requires the
+        # additive mask to promote to the output dtype (bf16/fp16), and softmax is fp32 inside.
+        mask = self._block_mask(block_lens, hidden_states.shape[0]).astype(hidden_states.dtype)
 
         for layer in self.layers:
             hidden_states = layer(hidden_states, mask)

@@ -1,20 +1,21 @@
 # coding=utf-8
-"""Load safetensors into the MLX module tree with a fail-loud name map.
+"""Load safetensors into an MLX module tree with a fail-loud name map.
 
 Handles two checkpoint flavours:
-  * the official HF fp16/bf16 weights (`thinker.*` prefix, torch Conv2d layout
-    `(out,in,kH,kW)`, separate `lm_head.weight`);
-  * pre-quantized MLX checkpoints (e.g. mlx-community/*-4bit): no `thinker.`
-    prefix, conv already in MLX `(out,kH,kW,in)` layout, `model.*` linears +
-    embedding stored as packed uint32 + scales/biases, `lm_head` tied (absent).
+  * official HF fp16/bf16 weights (``thinker.*`` prefix, torch Conv2d layout
+    ``(out,in,kH,kW)``, separate ``lm_head.weight``);
+  * pre-quantized MLX checkpoints (e.g. mlx-community/*-4bit): no ``thinker.``
+    prefix, conv already in MLX ``(out,kH,kW,in)`` layout, ``model.*`` linears +
+    embedding stored as packed uint32 + scales/biases, ``lm_head`` tied (absent).
 
 The conv layout and prefix are auto-detected against the model's own parameter
-shapes, so the same loader serves both.
+shapes, so the same loader serves ASR, the forced aligner, and HY-MT.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -24,22 +25,33 @@ _HF_PREFIX = "thinker."
 _INT_DTYPES = {mx.uint8, mx.uint16, mx.uint32, mx.uint64, mx.int8, mx.int16, mx.int32, mx.int64}
 
 
-def _find_safetensors(model_dir: Path) -> Path:
+def _find_safetensors(model_dir: Path) -> list[Path]:
     single = model_dir / "model.safetensors"
     if single.exists():
-        return single
-    shards = sorted(model_dir.glob("*.safetensors"))
+        return [single]
+    index = model_dir / "model.safetensors.index.json"
+    if index.exists():
+        raw = json.loads(index.read_text(encoding="utf-8"))
+        weight_map = raw.get("weight_map") or {}
+        shards = [model_dir / name for name in sorted(set(str(name) for name in weight_map.values()))]
+    else:
+        shards = sorted(model_dir.glob("*.safetensors"))
     if not shards:
         raise FileNotFoundError(f"no .safetensors found in {model_dir}")
-    if len(shards) > 1:
-        raise NotImplementedError(
-            f"sharded checkpoint ({len(shards)} files) not yet supported; merge or extend weights.py"
-        )
-    return shards[0]
+    missing = [path.name for path in shards if not path.exists()]
+    if missing:
+        raise FileNotFoundError(f"checkpoint index references missing shard(s): {missing[:5]}")
+    return shards
 
 
 def load_weights_dict(model_dir: str) -> Dict[str, mx.array]:
-    return mx.load(str(_find_safetensors(Path(model_dir))))
+    weights: Dict[str, mx.array] = {}
+    for shard in _find_safetensors(Path(model_dir)):
+        for key, value in mx.load(str(shard)).items():
+            if key in weights:
+                raise KeyError(f"duplicate tensor {key!r} while loading {shard.name}")
+            weights[key] = value
+    return weights
 
 
 def quantize_predicate(weights: Dict[str, mx.array]):

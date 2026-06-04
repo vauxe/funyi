@@ -8,43 +8,30 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
+from ..mlx_common.dtypes import resolve_dtype
+from ..mlx_common.weights import load_weights_dict, map_and_load, quantize_predicate
 from .audio_encoder import AudioEncoder
 from .config import MLXQwen3ASRConfig
 from .text_decoder import TextModel
-from .weights import load_weights_dict, map_and_load, quantize_predicate
 
-_DTYPES = {
-    "bfloat16": mx.bfloat16,
-    "bf16": mx.bfloat16,
-    "float16": mx.float16,
-    "fp16": mx.float16,
-    "half": mx.float16,
-    "float32": mx.float32,
-    "fp32": mx.float32,
-    "float": mx.float32,
-}
-
-
-def resolve_dtype(name: str) -> mx.Dtype:
-    key = str(name).lower().replace("torch.", "").strip()
-    if key not in _DTYPES:
-        raise ValueError(f"unsupported dtype: {name}")
-    return _DTYPES[key]
+__all__ = ["MLXQwen3ASRForConditionalGeneration", "load_mlx_qwen3_asr", "resolve_dtype"]
 
 
 class MLXQwen3ASRForConditionalGeneration(nn.Module):
     def __init__(self, config: MLXQwen3ASRConfig, tie_lm_head: bool = False):
         super().__init__()
         self.config = config
-        self.tie_lm_head = tie_lm_head
+        self.tie_lm_head = False if config.is_forced_aligner else bool(tie_lm_head)
         self.compute_dtype = mx.float32
         self.audio_tower = AudioEncoder(config.audio)
         self.model = TextModel(config.text)
-        # When the checkpoint ties the LM head (no stored lm_head.weight), logits are
-        # computed from the input embedding via embed_tokens.as_linear (works for both
-        # nn.Embedding and the quantized QuantizedEmbedding).
-        if not tie_lm_head:
-            self.lm_head = nn.Linear(config.text.hidden_size, config.text.vocab_size, bias=False)
+        # Forced-aligner head: a classify_num-way timestamp classifier (always its own
+        # weight, never tied). Otherwise the standard vocab LM head, which is tied when
+        # the checkpoint stores no lm_head.weight (logits via embed_tokens.as_linear,
+        # works for both nn.Embedding and the quantized QuantizedEmbedding).
+        out_features = config.classify_num if config.is_forced_aligner else config.text.vocab_size
+        if config.is_forced_aligner or not tie_lm_head:
+            self.lm_head = nn.Linear(config.text.hidden_size, int(out_features), bias=False)
 
     def _logits(self, hidden: mx.array) -> mx.array:
         if self.tie_lm_head:
@@ -96,24 +83,39 @@ class MLXQwen3ASRForConditionalGeneration(nn.Module):
             embeds = self._merge_audio(input_ids, embeds, audio_features)
 
         hidden = self.model(embeds, caches)  # prefill; rope offsets come from the cache
-        y = mx.argmax(self._logits(hidden[:, -1, :]), axis=-1)  # (1,) kept on-device
-        mx.async_eval(y)
 
-        # Async-eval decode loop (mlx-lm style): feed the previous token as an mx.array so
-        # step n+1's graph is built before step n is read back, overlapping GPU work with the
-        # Python loop and hiding per-token sync latency. Greedy result is unchanged.
+        # Synchronous greedy loop: read each token back with .item() before stepping.
+        # We deliberately avoid mx.async_eval -- the realtime service drives the backend
+        # from a dedicated worker thread, and async_eval as the first op on a fresh thread
+        # has no initialized GPU stream. The async pipeline was ~7% and decode is
+        # compute-bound, so the synchronous loop is the robust choice (greedy output identical).
         generated: List[int] = []
         for _ in range(int(max_new_tokens)):
-            step_embeds = self.model.embed_tokens(y.reshape(1, 1))
-            hidden = self.model(step_embeds, caches)
-            y_next = mx.argmax(self._logits(hidden[:, -1, :]), axis=-1)
-            mx.async_eval(y_next)
-            tok = int(y.item())
+            tok = int(mx.argmax(self._logits(hidden[:, -1, :]), axis=-1).item())
             if tok in eos:
                 break
             generated.append(tok)
-            y = y_next
+            step_embeds = self.model.embed_tokens(mx.array([[tok]], dtype=input_ids.dtype))
+            hidden = self.model(step_embeds, caches)
         return generated
+
+    def align_logits(
+        self,
+        input_ids: mx.array,
+        input_features: mx.array,
+        feature_lengths: Sequence[int],
+    ) -> mx.array:
+        """Forced-aligner forward: one causal prefill, full-sequence logits (1, L, classify_num).
+
+        No decode loop and no KV cache -- alignment reads the logits at the
+        <timestamp> positions of a single forward (mirrors the torch aligner's
+        ``self.model.thinker(**inputs).logits``).
+        """
+        embeds = self.model.embed_tokens(input_ids)
+        audio_features = self.get_audio_features(input_features, feature_lengths)
+        embeds = self._merge_audio(input_ids, embeds, audio_features)
+        hidden = self.model(embeds, None)
+        return self._logits(hidden)
 
 
 def load_mlx_qwen3_asr(

@@ -571,7 +571,11 @@ class RealtimeASRSession:
 
     def _low_latency_streaming_kwargs(self) -> dict[str, Any]:
         kwargs = dict(_LOW_LATENCY_STREAMING_KWARGS)
-        if hasattr(self.model, "low_latency_preset_kwargs"):
+        # The MLX backend has no cuda_graph/flashinfer/spec_decode and is prefill-bound,
+        # so it uses its own streaming preset (shorter window, larger chunk, no spec decode).
+        if getattr(self.model, "backend", None) == "mlx" and hasattr(self.model, "mlx_streaming_preset_kwargs"):
+            kwargs.update(self.model.mlx_streaming_preset_kwargs())
+        elif hasattr(self.model, "low_latency_preset_kwargs"):
             kwargs.update(self.model.low_latency_preset_kwargs())
         return kwargs
 

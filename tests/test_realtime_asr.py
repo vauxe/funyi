@@ -40,6 +40,7 @@ from realtime_server import (
     _receive_start,
     _publish_session_events,
     _receive_or_sender_failed,
+    _resolve_service_backends,
     _send_queued_events,
     _session_translation_config,
     _should_log_realtime_event,
@@ -222,6 +223,28 @@ def assert_transcript_update_invariants(events: list[dict[str, object]]) -> None
         assert "partial" in event
         partial = event.get("partial")
         assert partial is None or isinstance(partial, dict)
+
+
+def test_resolve_service_backends_auto_uses_mlx_on_apple_silicon() -> None:
+    args = SimpleNamespace(backend="auto", translation_backend="auto", timestamp_backend="auto")
+
+    with patch("realtime_server._prefer_mlx", return_value=True):
+        _resolve_service_backends(args)
+
+    assert args.backend == "mlx"
+    assert args.translation_backend == "mlx"
+    assert args.timestamp_backend == "mlx"
+
+
+def test_resolve_service_backends_auto_follows_explicit_transformers_backend() -> None:
+    args = SimpleNamespace(backend="transformers", translation_backend="auto", timestamp_backend="auto")
+
+    with patch("realtime_server._prefer_mlx", return_value=True):
+        _resolve_service_backends(args)
+
+    assert args.backend == "transformers"
+    assert args.translation_backend == "torch"
+    assert args.timestamp_backend == "torch"
 
 
 class TestTranscriptStore:

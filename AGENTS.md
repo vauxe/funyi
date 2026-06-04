@@ -28,6 +28,8 @@ validated single-user profile by default.
   not by funyi gating itself. The golden and eval set live in `local_goldens/` /
   `local_data/` and are git-ignored.
 - Streaming default remains full-audio re-feed unless `max_window_sec` is set.
+- MLX backends are opt-in Apple Silicon paths. Gate them by the same goldens as
+  CUDA (CER / timestamp drift / chrF2), never by byte parity.
 
 ## Current Baseline
 
@@ -63,8 +65,13 @@ validated single-user profile by default.
 
 - `qwen3_asr_runtime/model.py`: public offline/streaming wrapper
 - `qwen3_asr_runtime/backends/transformers.py`: backend and opt-in flags
-- `qwen3_asr_runtime/backends/mlx.py`: macOS/Apple Silicon backend (`backend="mlx"`)
-- `qwen3_asr_runtime/mlx_qwen3_asr/`: ground-up MLX model layer (offline+streaming)
+- `qwen3_asr_runtime/backends/mlx.py`: macOS/Apple Silicon ASR backend (`backend="mlx"`)
+- `qwen3_asr_runtime/mlx_common/`: shared model-agnostic MLX primitives
+- `qwen3_asr_runtime/mlx_qwen3_asr/`: ground-up MLX ASR model layer; also serves the
+  forced aligner timestamp head
+- `qwen3_asr_runtime/mlx_hunyuan/`: ground-up MLX Hunyuan decoder for HY-MT translation
+- `qwen3_asr_runtime/mlx_translation.py`: MLX HY-MT translator (`--translation-backend mlx`)
+- `qwen3_asr_runtime/mlx_forced_aligner.py`: MLX forced-aligner backend (`--timestamp-backend mlx`)
 - `qwen3_asr_runtime/hf_qwen3_asr/`: local HF model/config/processor
 - `qwen3_asr_runtime/decode_runtime.py`: CUDA graph decode loop
 - `qwen3_asr_runtime/spec_decode.py`: streaming speculative verification
@@ -83,7 +90,9 @@ validated single-user profile by default.
   `tools/fetch_opus_eval.py`: HY-MT quality gate (chrF2 vs golden), the
   stock-model golden generator, and the opus-100 eval-set fetcher
 - `tools/ws_e2e_leak_check.py`: service E2E and resource check
-- `tools/parity_mlx_vs_hf.py`: MLX-vs-official-code parity + CER gate (macOS)
+- `tools/parity_mlx_vs_hf.py`: MLX ASR parity + CER gate vs official code (macOS)
+- `tools/parity_mlx_translation.py`, `tools/parity_mlx_aligner.py`: MLX translation
+  and aligner quality gates (macOS; goldens are git-ignored)
 
 Desktop client (`make desktop-check` gates it):
 

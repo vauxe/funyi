@@ -46,7 +46,7 @@ class MLXASRBackend(ASRRuntimeBackend):
 
     def __init__(self, model: Any, processor: Any, config: Any, dtype_name: str):
         import mlx.core as mx  # local import: MLX is only present on Apple Silicon
-        from ..mlx_qwen3_asr.model import resolve_dtype
+        from ..mlx_common.dtypes import resolve_dtype
 
         self._mx = mx
         self.model = model
@@ -63,17 +63,20 @@ class MLXASRBackend(ASRRuntimeBackend):
         AutoConfig.register("qwen3_asr", Qwen3ASRConfig, exist_ok=True)
         AutoProcessor.register(Qwen3ASRConfig, Qwen3ASRProcessor, exist_ok=True)
 
+        from ..mlx_common.hub import resolve_model_dir
+
         dtype_name = _dtype_name(kwargs.pop("dtype", None))
+        local_files_only = bool(kwargs.pop("local_files_only", False))
         for key in list(kwargs):
             if key in _DROPPED_KWARGS:
                 kwargs.pop(key)
-        # Any remaining kwargs (e.g. local_files_only) are tolerated but unused here.
+        # Any remaining kwargs are tolerated but unused here.
 
-        model, config = load_mlx_qwen3_asr(pretrained_model_name_or_path, dtype=dtype_name)
-        processor = AutoProcessor.from_pretrained(
-            pretrained_model_name_or_path,
-            fix_mistral_regex=True,
-        )
+        # Resolve an HF id to its local snapshot dir (the MLX loader needs config.json +
+        # safetensors on disk); a local path is returned unchanged.
+        model_dir = resolve_model_dir(pretrained_model_name_or_path, local_files_only=local_files_only)
+        model, config = load_mlx_qwen3_asr(model_dir, dtype=dtype_name)
+        processor = AutoProcessor.from_pretrained(model_dir, fix_mistral_regex=True)
         return cls(model=model, processor=processor, config=config, dtype_name=dtype_name)
 
     def eval(self) -> None:

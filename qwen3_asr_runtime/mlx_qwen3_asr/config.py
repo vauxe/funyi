@@ -80,6 +80,16 @@ class MLXQwen3ASRConfig:
     audio_token_id: int
     eos_token_ids: List[int] = field(default_factory=lambda: [151645, 151643])
     quantization: Optional[dict] = None  # {"group_size", "bits"} for pre-quantized checkpoints
+    # Forced-aligner variant (thinker model_type "qwen3_forced_aligner"): the head is a
+    # classify_num-way timestamp classifier instead of the vocab LM head, and timestamps
+    # are decoded as argmax-index * timestamp_segment_time (ms). None for plain ASR.
+    classify_num: Optional[int] = None
+    timestamp_token_id: Optional[int] = None
+    timestamp_segment_time: Optional[float] = None
+
+    @property
+    def is_forced_aligner(self) -> bool:
+        return self.classify_num is not None
 
     @classmethod
     def from_dict(cls, raw: dict, generation: Optional[dict] = None) -> "MLXQwen3ASRConfig":
@@ -96,12 +106,19 @@ class MLXQwen3ASRConfig:
             elif isinstance(g_eos, (list, tuple)) and g_eos:
                 eos = [int(x) for x in g_eos]
 
+        classify_num = thinker.get("classify_num", raw.get("classify_num"))
+        ts_token_id = raw.get("timestamp_token_id", thinker.get("timestamp_token_id"))
+        ts_segment_time = raw.get("timestamp_segment_time", thinker.get("timestamp_segment_time"))
+
         return cls(
             text=text,
             audio=audio,
             audio_token_id=int(audio_token_id),
             eos_token_ids=eos,
             quantization=raw.get("quantization"),
+            classify_num=int(classify_num) if classify_num is not None else None,
+            timestamp_token_id=int(ts_token_id) if ts_token_id is not None else None,
+            timestamp_segment_time=float(ts_segment_time) if ts_segment_time is not None else None,
         )
 
     @classmethod

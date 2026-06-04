@@ -15,9 +15,9 @@ https://github.com/user-attachments/assets/cda710b8-5a05-4bd0-9e9f-5d2c9bc1de68
 
 - Python 3.10 or newer; Python 3.12 is recommended.
 - `uv` for Python dependencies.
-- Linux or WSL with an NVIDIA CUDA GPU for the realtime backend.
-- macOS / Apple Silicon can run the ASR model (offline + streaming) on Metal via
-  the MLX backend (`backend="mlx"`). The full realtime service still targets CUDA.
+- For the realtime backend: Linux or WSL with an NVIDIA CUDA GPU, or macOS on
+  Apple Silicon with MLX/Metal. The backend default is `auto`, so macOS Apple
+  Silicon selects the MLX ASR, forced-aligner, and translation paths.
 - Access to download the ASR, forced-aligner, and translation models, or local
   model directories.
 - For the desktop client: Node.js with Corepack-enabled `pnpm`, Rust/Cargo, and
@@ -32,7 +32,8 @@ The desktop client currently runs on Windows and macOS.
 
 ### 1. Start The Backend
 
-Run these commands from the repository root in Linux or WSL.
+Run these commands from the repository root. On Linux/WSL the service uses the
+CUDA path; on macOS Apple Silicon it uses the MLX/Metal path.
 
 Install Python dependencies:
 
@@ -118,6 +119,12 @@ Realtime ASR requires the forced aligner. Translation is available when the
 backend starts with a translation model and the client requests a target
 language.
 
+## macOS MLX Models
+
+On Apple Silicon macOS, `auto` selects MLX for ASR, timestamps, and translation.
+Model ids are selected when the backend starts, not from the desktop UI. See
+`docs/macos_mlx.md` for the supported model list and switching commands.
+
 ## Privacy
 
 Audio sent to `ws://127.0.0.1:8000/ws/asr` is processed by the local Python
@@ -128,7 +135,7 @@ service.
 - If downloads fail, run
   `FUNYI_ALLOW_DOWNLOADS=1 ./scripts/start_backend.sh` once or pass local model
   paths.
-- If the backend fails to start, check CUDA availability and model paths.
+- If the backend fails to start, check CUDA or MLX availability and model paths.
 - If the desktop cannot connect, confirm the URL is `ws://127.0.0.1:8000/ws/asr`
   and `curl http://127.0.0.1:8000/healthz` returns `{"status":"ok"}`.
 - If `pnpm` is not found, run desktop commands as `corepack pnpm ...`.
@@ -139,6 +146,8 @@ service.
 ## Documentation
 
 - `desktop/README.md`: desktop client details and OS audio-capture notes.
+- `docs/macos_mlx.md`: Apple Silicon MLX supported models and switching
+  commands.
 - `docs/realtime_asr_service.md`: WebSocket protocol, timestamp behavior, and
   realtime service rules.
 - `docs/realtime_translation_design.md`: translation behavior and target-language

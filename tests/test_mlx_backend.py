@@ -16,6 +16,7 @@ mx = pytest.importorskip("mlx.core")
 
 from qwen3_asr_runtime.mlx_qwen3_asr.audio_encoder import AudioEncoder, feat_extract_output_length
 from qwen3_asr_runtime.mlx_qwen3_asr.config import MLXQwen3ASRConfig
+from qwen3_asr_runtime.mlx_common.weights import load_weights_dict
 
 MODEL = os.environ.get("FUNYI_MLX_TEST_MODEL")
 needs_model = pytest.mark.skipif(not MODEL, reason="set FUNYI_MLX_TEST_MODEL to a local 0.6B checkpoint")
@@ -74,6 +75,17 @@ def test_block_mask_coverage_and_pattern():
 def test_block_mask_rejects_wrong_coverage():
     with pytest.raises(AssertionError):
         AudioEncoder._block_mask([2, 2], 5)
+
+
+def test_load_weights_dict_merges_sharded_safetensors(tmp_path):
+    mx.save_safetensors(str(tmp_path / "model-00001-of-00002.safetensors"), {"b.weight": mx.array([2])})
+    mx.save_safetensors(str(tmp_path / "model-00002-of-00002.safetensors"), {"a.weight": mx.array([1])})
+
+    weights = load_weights_dict(str(tmp_path))
+
+    assert sorted(weights) == ["a.weight", "b.weight"]
+    assert int(weights["a.weight"][0].item()) == 1
+    assert int(weights["b.weight"][0].item()) == 2
 
 
 @needs_model
