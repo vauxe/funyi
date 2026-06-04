@@ -23,10 +23,29 @@ https://github.com/user-attachments/assets/cda710b8-5a05-4bd0-9e9f-5d2c9bc1de68
 - For the desktop client: Node.js with Corepack-enabled `pnpm`, Rust/Cargo, and
   Windows or macOS native build tools.
 
-Windows desktop builds also need Visual Studio Build Tools 2022 with the
-`Desktop development with C++` workload and a Windows 10/11 SDK.
+Native desktop builds also need:
+
+- Windows: Visual Studio Build Tools 2022 with the `Desktop development with
+  C++` workload and a Windows 10/11 SDK.
+- macOS: Xcode Command Line Tools (`xcode-select --install`).
 
 The desktop client currently runs on Windows and macOS.
+
+## Supported Models
+
+Models are selected when the backend starts. CUDA uses the local transformers
+backend; Apple Silicon uses MLX by default. The ids below are validated
+defaults/examples; local model directories with the same architecture and
+compatible config may also load, but should be gated locally before release use.
+
+| Role | Validated model ids |
+|---|---|
+| ASR | `Qwen/Qwen3-ASR-1.7B` (default), `Qwen/Qwen3-ASR-0.6B`, `mlx-community/Qwen3-ASR-1.7B-4bit`, `mlx-community/Qwen3-ASR-0.6B-4bit` |
+| Timestamps | `Qwen/Qwen3-ForcedAligner-0.6B` (required), `mlx-community/Qwen3-ForcedAligner-0.6B-4bit` |
+| Translation | `tencent/Hy-MT2-1.8B` (default), `mlx-community/Hy-MT2-1.8B-4bit`; disable with `FUNYI_TRANSLATION_MODEL=` |
+
+The `mlx-community/*-4bit` ids are Apple Silicon MLX paths. See
+`docs/macos_mlx.md` for switching commands.
 
 ## Quick Start
 
@@ -43,7 +62,7 @@ uv sync --python 3.12 --frozen
 
 Start the backend in one terminal. On a fresh checkout or empty model cache, use
 the download target once. The first start can take a while because it downloads
-and warms the models:
+and warms the ASR, timestamp, and translation models:
 
 ```bash
 FUNYI_ALLOW_DOWNLOADS=1 ./scripts/start_backend.sh
@@ -88,6 +107,11 @@ ws://127.0.0.1:8000/ws/asr
 Choose your audio source, optionally choose a speech language and translation
 target, then start captions.
 
+On macOS, system audio capture may require Screen & System Audio Recording
+permission. Microphone capture requires macOS 15+ and Microphone permission.
+For file transcription, choose `File` as the audio source and start; it uses the
+same backend and translation target.
+
 ## Windows Desktop
 
 Run the backend in Linux or WSL. Start the desktop client from a Windows
@@ -103,8 +127,6 @@ usually `ws://127.0.0.1:8000/ws/asr`.
 | `FUNYI_TRANSLATION_MODEL= ./scripts/start_backend.sh` | Start ASR plus the required forced aligner, without translation. |
 | `FUNYI_PORT=8001 ./scripts/start_backend.sh` | Start the backend on another port. |
 | `./scripts/start_backend.sh --no-vad` | Start without VAD speech gating; all received audio is passed to ASR. |
-| `corepack pnpm install` | Install desktop dependencies from `desktop/`. |
-| `corepack pnpm run dev` | Start the desktop client from `desktop/`. |
 
 To use local model directories instead of Hugging Face model ids:
 
@@ -119,39 +141,17 @@ Realtime ASR requires the forced aligner. Translation is available when the
 backend starts with a translation model and the client requests a target
 language.
 
-## macOS MLX Models
-
-On Apple Silicon macOS, `auto` selects MLX for ASR, timestamps, and translation.
-Model ids are selected when the backend starts, not from the desktop UI. See
-`docs/macos_mlx.md` for the supported model list and switching commands.
-
 ## Privacy
 
 Audio sent to `ws://127.0.0.1:8000/ws/asr` is processed by the local Python
 service.
 
-## Troubleshooting
-
-- If downloads fail, run
-  `FUNYI_ALLOW_DOWNLOADS=1 ./scripts/start_backend.sh` once or pass local model
-  paths.
-- If the backend fails to start, check CUDA or MLX availability and model paths.
-- If the desktop cannot connect, confirm the URL is `ws://127.0.0.1:8000/ws/asr`
-  and `curl http://127.0.0.1:8000/healthz` returns `{"status":"ok"}`.
-- If `pnpm` is not found, run desktop commands as `corepack pnpm ...`.
-- On Windows, run the desktop client from a Windows checkout when validating
-  WASAPI loopback. WSL is not the right place to validate Windows system-audio
-  capture.
-
 ## Documentation
 
-- `desktop/README.md`: desktop client details and OS audio-capture notes.
-- `docs/macos_mlx.md`: Apple Silicon MLX supported models and switching
-  commands.
-- `docs/realtime_asr_service.md`: WebSocket protocol, timestamp behavior, and
-  realtime service rules.
-- `docs/realtime_translation_design.md`: translation behavior and target-language
-  details.
+- `desktop/README.md`: desktop client and OS audio capture.
+- `docs/macos_mlx.md`: Apple Silicon MLX models and switching.
+- `docs/realtime_asr_service.md`: WebSocket and file transcription API.
+- `docs/validation_and_regression.md`: local gates and private-data rules.
 
 ## License
 

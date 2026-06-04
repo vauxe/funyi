@@ -32,8 +32,9 @@ layer but has a timestamp classifier head, so it is not an ASR model. HY-MT
 translation uses `qwen3_asr_runtime/mlx_hunyuan/`; it shares only the common MLX
 primitives.
 
-Other MLX conversions with the same config shape may load, but do not document
-or ship them as supported until they pass the local golden gates.
+Other MLX conversions with the same config shape are compatible candidates and
+may load through the same environment variables. Treat them as validated support
+only after they pass the local golden gates.
 
 ## Switching Models
 
