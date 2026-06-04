@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { SubtitleDocument } from "./subtitle-document.js";
+import { parseTranscriptDocumentSnapshot } from "./transcription-document.js";
 
 interface SegmentOptions {
   startMs?: number;
@@ -58,6 +59,44 @@ test("window scrolls when current partial becomes stable", () => {
   const window = document.window();
   assert.equal(document.stableLines.at(-1)?.text, "draft");
   assert.equal(window.current?.text, "next");
+});
+
+test("offline transcript snapshot replaces document history directly", () => {
+  const document = new SubtitleDocument({ translationEnabled: true });
+  const snapshot = parseTranscriptDocumentSnapshot({
+    schemaVersion: 1,
+    durationMs: 1800,
+    language: "Chinese",
+    text: "你好世界",
+    segments: [
+      {
+        id: "seg_000001",
+        index: 1,
+        startMs: 0,
+        endMs: 1000,
+        text: "你好",
+        language: "Chinese",
+        timingStatus: "aligned",
+        translation: "hello",
+      },
+      {
+        id: "seg_000002",
+        index: 2,
+        startMs: 1000,
+        endMs: 1800,
+        text: "世界",
+        language: "Chinese",
+        timingStatus: "estimated",
+      },
+    ],
+  });
+
+  document.replaceSnapshot(snapshot);
+
+  assert.equal(document.stableLines.length, 2);
+  assert.equal(document.window().current?.text, "世界");
+  assert.equal(document.stableLines[0]?.translation, "hello");
+  assert.equal(document.stableLines[1]?.timingStatus, "estimated");
 });
 
 test("keeps latest stable line visible until a new partial arrives", () => {

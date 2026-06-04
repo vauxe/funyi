@@ -13,7 +13,42 @@ in `@docs/realtime_translation_design.md`.
 The service exposes:
 
 - `GET /healthz` -> `{"status":"ok"}`
+- `POST /api/transcriptions` for one-shot local file transcription.
 - `WS /ws/asr` for one active local realtime session.
+
+Only one transcription session may be active at a time. A realtime WebSocket and
+an offline file transcription share the same single-user mutex; concurrent
+requests are rejected with `409` and `error.code: "busy"`.
+
+## Offline File Transcription
+
+`POST /api/transcriptions` accepts the media file as the raw request body and
+returns a complete transcript snapshot. The endpoint is intentionally not a job
+API: the request owns the work and completes when the transcript is ready.
+Uploads are written to a temporary file as they arrive; local audio files are
+decoded through project dependencies (`librosa` / `soundfile`) and transcribed
+in bounded chunks, with no fixed upload-size or duration limit. The returned
+JSON still contains the complete transcript, so extremely long files remain
+bounded by local disk, runtime, and response size in practice.
+
+Query parameters are `language` (optional Qwen3-ASR language; empty means auto),
+`context`, `targetLanguage` / `target_language` (optional HY-MT target, requiring
+`--translation-model`), `timestamps` (default `true`), and `filename` (used only
+to preserve a safe temporary suffix for audio decoding).
+
+Example:
+
+```bash
+curl -X POST \
+  "http://127.0.0.1:8000/api/transcriptions?language=Chinese&targetLanguage=English&filename=meeting.wav" \
+  --data-binary @meeting.wav
+```
+
+Successful responses use `schemaVersion: 1`, `durationMs`, `language`, `text`,
+and `segments[]` with `id`, `index`, `startMs`, `endMs`, `text`, `language`,
+optional `timingStatus`, and optional `translation`. `timingStatus` is
+`estimated` for chunk boundaries and `aligned` after forced alignment. Error
+responses use `{"error":{"code":"...","message":"..."}}`.
 
 The first WebSocket frame must be a JSON `start` command:
 

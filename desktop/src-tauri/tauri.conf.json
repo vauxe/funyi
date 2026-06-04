@@ -29,7 +29,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' tauri: asset:; connect-src ws://127.0.0.1:* ws://localhost:*; img-src 'self' asset: blob:; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self' tauri: asset:; connect-src ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:*; img-src 'self' asset: blob:; style-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {

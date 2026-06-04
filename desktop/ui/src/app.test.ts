@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { AsrClient } from "./asr-client.js";
-import { createFunyiApp } from "./app-controller.js";
+import { createFunyiApp, OFFLINE_FILE_SOURCE_ID } from "./app-controller.js";
 import { getAppElements } from "./app-dom.js";
 import type { AudioSource } from "./audio-source.js";
 import { ASR_LANGUAGE_OPTIONS, TRANSLATION_TARGET_LANGUAGE_OPTIONS } from "./languages.js";
@@ -92,14 +92,135 @@ test("empty translation target starts without translation request", async () => 
   assert.equal(elements["session-status"]!.textContent, "Connecting...");
 });
 
-test("audio source listing failures keep the UI in a disabled idle state", async () => {
+test("offline file source posts the selected file and renders the returned transcript", async () => {
+  const elements = installDocument();
+  const file = namedBlob("clip.wav", "audio/wav");
+  const seen: { init: RequestInit | null; url: string } = { init: null, url: "" };
+  const restore = stubFetch(async (url, init) => {
+    seen.url = String(url);
+    seen.init = init ?? null;
+    return jsonResponse({
+      schemaVersion: 1,
+      durationMs: 1200,
+      language: "Chinese",
+      text: "你好",
+      segments: [
+        {
+          id: "seg_000001",
+          index: 1,
+          startMs: 0,
+          endMs: 1200,
+          text: "你好",
+          language: "Chinese",
+          translation: "hello",
+        },
+      ],
+    });
+  });
+
+  try {
+    await bootApp();
+
+    elements["language"]!.value = "Chinese";
+    elements["translation-target-language"]!.value = "English";
+    elements["audio-source"]!.value = OFFLINE_FILE_SOURCE_ID;
+    elements["audio-source"]!.dispatch("change", {});
+    elements["offline-file"]!.files = [file];
+    elements["offline-file"]!.dispatch("change", {});
+
+    assert.equal(elements["session-status"]!.textContent, "File selected.");
+
+    elements["transport-button"]!.click();
+    await nextTick();
+
+    assert.equal(FakeWebSocket.instances.length, 0);
+    assert.equal(
+      seen.url,
+      "http://127.0.0.1:8000/api/transcriptions?language=Chinese&targetLanguage=English&filename=clip.wav",
+    );
+    assert.equal(seen.init?.method, "POST");
+    assert.equal(seen.init?.body, file);
+    assert.equal(elements["current-source"]!.textContent, "你好");
+    assert.equal(elements["current-translation"]!.textContent, "hello");
+    assert.equal(elements["session-status"]!.textContent, "File transcript ready.");
+  } finally {
+    restore();
+  }
+});
+
+test("offline file source asks for a fresh file after one transcription", async () => {
+  const elements = installDocument();
+  const file = namedBlob("clip.wav", "audio/wav");
+  let requests = 0;
+  const restore = stubFetch(async () => {
+    requests += 1;
+    return jsonResponse({
+      schemaVersion: 1,
+      durationMs: 1200,
+      language: "Chinese",
+      text: "你好",
+      segments: [{ id: "seg_000001", index: 1, startMs: 0, endMs: 1200, text: "你好", language: "Chinese" }],
+    });
+  });
+
+  try {
+    await bootApp();
+
+    elements["audio-source"]!.value = OFFLINE_FILE_SOURCE_ID;
+    elements["audio-source"]!.dispatch("change", {});
+    elements["offline-file"]!.files = [file];
+    elements["offline-file"]!.dispatch("change", {});
+    elements["transport-button"]!.click();
+    await nextTick();
+
+    elements["transport-button"]!.click();
+    await nextTick();
+
+    assert.equal(requests, 1);
+    assert.equal(elements["offline-file"]!.clicks, 2);
+    assert.equal(elements["session-status"]!.textContent, "Choose an audio file.");
+  } finally {
+    restore();
+  }
+});
+
+test("offline service errors are shown as errors in the app status", async () => {
+  const elements = installDocument();
+  const restore = stubFetch(async () =>
+    jsonResponse({ error: { code: "busy", message: "Another transcription session is active." } }, false, 409),
+  );
+
+  try {
+    await bootApp();
+
+    elements["audio-source"]!.value = OFFLINE_FILE_SOURCE_ID;
+    elements["audio-source"]!.dispatch("change", {});
+    elements["offline-file"]!.files = [namedBlob("clip.wav", "audio/wav")];
+    elements["offline-file"]!.dispatch("change", {});
+    elements["transport-button"]!.click();
+    await nextTick();
+
+    assert.equal(elements["session-status"]!.textContent, "Previous session closing");
+    assert.equal(elements["session-status"]!.dataset.tone, "error");
+  } finally {
+    restore();
+  }
+});
+
+test("audio source listing failures still allow offline file transcription", async () => {
   const elements = installDocument();
 
   await bootApp({ listSourcesError: new Error("audio source probe failed") });
 
-  assert.equal(elements["transport-button"]!.disabled, true);
+  assert.equal(elements["transport-button"]!.disabled, false);
   assert.equal(elements["stop-button"]!.disabled, true);
+  assert.equal(elements["audio-source"]!.value, OFFLINE_FILE_SOURCE_ID);
   assert.equal(elements["session-status"]!.textContent, "audio source probe failed");
+
+  elements["offline-file"]!.files = [namedBlob("clip.wav", "audio/wav")];
+  elements["offline-file"]!.dispatch("change", {});
+
+  assert.equal(elements["session-status"]!.textContent, "File selected.");
 });
 
 test("invalid selected audio source is rejected before opening a websocket", async () => {
@@ -281,6 +402,27 @@ test("audio source changes hot-switch capture without reopening the websocket", 
   assert.equal(elements["session-status"]!.textContent, "");
 });
 
+test("file source cannot replace live capture while captions are running", async () => {
+  const elements = installDocument();
+  const { audio } = await bootApp();
+
+  elements["transport-button"]!.click();
+  const socket = FakeWebSocket.instances[0];
+  assert.ok(socket);
+  socket.open();
+  socket.message({ type: "ready", sample_rate: 16000 });
+  await nextTick();
+
+  elements["audio-source"]!.value = OFFLINE_FILE_SOURCE_ID;
+  elements["audio-source"]!.dispatch("change", {});
+  await nextTick();
+
+  assert.equal(elements["audio-source"]!.value, "system_default");
+  assert.deepEqual(audio.startCalls, ["system_default"]);
+  assert.equal(FakeWebSocket.instances.length, 1);
+  assert.equal(elements["session-status"]!.textContent, "File transcription unavailable while captions are running.");
+});
+
 test("invalid audio source changes are rejected while running", async () => {
   const elements = installDocument();
 
@@ -389,6 +531,8 @@ test("persists control changes for the next launch", async () => {
   elements["translation-target-language"]!.dispatch("change", {});
   elements["audio-source"]!.value = "system_default";
   elements["audio-source"]!.dispatch("change", {});
+  elements["audio-source"]!.value = OFFLINE_FILE_SOURCE_ID;
+  elements["audio-source"]!.dispatch("change", {});
 
   assert.deepEqual(preferences.load(), {
     serverUrl: "ws://127.0.0.1:9100/ws/asr",
@@ -397,6 +541,7 @@ test("persists control changes for the next launch", async () => {
     audioSourceId: "system_default",
     captionOpacity: null,
   });
+  assert.equal(elements["offline-file"]!.clicks, 1);
 });
 
 test("ignores stored options that no longer exist", async () => {
@@ -407,6 +552,16 @@ test("ignores stored options that no longer exist", async () => {
   await bootApp({ preferences });
 
   assert.equal(elements["language"]!.value, "");
+  assert.equal(elements["audio-source"]!.value, "system_default");
+});
+
+test("ignores stored file source when restoring the audio source", async () => {
+  const elements = installDocument();
+  const preferences = new PreferencesStore(new MemoryKeyValueStore());
+  preferences.save({ audioSourceId: OFFLINE_FILE_SOURCE_ID });
+
+  await bootApp({ preferences });
+
   assert.equal(elements["audio-source"]!.value, "system_default");
 });
 
@@ -426,6 +581,36 @@ function emitAudioFrame(audio: ReturnType<typeof createFakeAudioAdapter>, dataBa
   const frameHandler = audio.frameHandler;
   assert.ok(frameHandler);
   frameHandler({ sampleRate: 16000, format: "pcm_s16le", dataBase64 });
+}
+
+function namedBlob(name: string, type: string): Blob {
+  const blob = new Blob(["audio"], { type });
+  Object.defineProperty(blob, "name", { configurable: true, value: name });
+  return blob;
+}
+
+function jsonResponse(payload: unknown, ok = true, status = 200): Response {
+  return {
+    json: async () => payload,
+    ok,
+    status,
+  } as Response;
+}
+
+function stubFetch(implementation: typeof fetch): () => void {
+  const previous = globalThis.fetch;
+  Object.defineProperty(globalThis, "fetch", {
+    configurable: true,
+    value: implementation,
+    writable: true,
+  });
+  return () => {
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      value: previous,
+      writable: true,
+    });
+  };
 }
 
 interface AppHarness {

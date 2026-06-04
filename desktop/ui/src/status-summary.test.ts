@@ -32,12 +32,58 @@ test("summarizes connection lifecycle without redundant running text", () => {
   });
 });
 
+test("shows explicit non-websocket progress while connecting", () => {
+  assert.deepEqual(
+    summarizeStatus(
+      {
+        ...EMPTY_STATUS,
+        connectionStatus: "Transcribing file...",
+      },
+      "connecting",
+    ),
+    { text: "Transcribing file...", tone: "active" },
+  );
+});
+
+test("shows idle file notices without error styling", () => {
+  assert.deepEqual(
+    summarizeStatus(
+      {
+        ...EMPTY_STATUS,
+        connectionStatus: "File selected.",
+      },
+      "idle",
+    ),
+    { text: "File selected.", tone: "active" },
+  );
+  assert.deepEqual(
+    summarizeStatus(
+      {
+        ...EMPTY_STATUS,
+        connectionStatus: "File transcript ready.",
+      },
+      "idle",
+    ),
+    { text: "File transcript ready.", tone: "active" },
+  );
+});
+
 test("maps technical errors to compact user-facing status text", () => {
   assert.deepEqual(
     summarizeStatus(
       {
         ...EMPTY_STATUS,
         connectionStatus: "Another realtime session is active.",
+      },
+      "idle",
+    ),
+    { text: "Previous session closing", tone: "error" },
+  );
+  assert.deepEqual(
+    summarizeStatus(
+      {
+        ...EMPTY_STATUS,
+        connectionStatus: "Another transcription session is active.",
       },
       "idle",
     ),

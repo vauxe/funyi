@@ -10,6 +10,7 @@ import json
 import logging
 from pathlib import Path
 import re
+import tempfile
 import time
 from typing import Any
 from uuid import uuid4
@@ -18,6 +19,7 @@ import wave
 import numpy as np
 
 from qwen3_asr_runtime.cuda_serialization import CUDA_GRAPH_CAPTURE_LOCK
+from qwen3_asr_runtime.offline_transcription import OfflineTranscriptionOptions, transcribe_file
 from qwen3_asr_runtime.realtime_session import RealtimeASRConfig, RealtimeConnectionSession
 from qwen3_asr_runtime.realtime_timestamps import (
     AudioTimelineBuffer,
@@ -274,7 +276,8 @@ def build_app(
     no_vad: bool = False,
 ) -> Any:
     try:
-        from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+        from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+        from fastapi.responses import JSONResponse
     except ImportError as exc:
         raise RuntimeError("Install service dependencies with: uv sync --python 3.12") from exc
 
@@ -303,6 +306,68 @@ def build_app(
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    def error_response(code: str, message: str, status_code: int) -> Any:
+        return JSONResponse({"error": {"code": code, "message": message}}, status_code=status_code)
+
+    @app.post("/api/transcriptions")
+    async def create_transcription(
+        request: Request,
+        language: str | None = None,
+        context: str = "",
+        targetLanguage: str | None = None,
+        target_language: str | None = None,
+        timestamps: bool = True,
+        filename: str = "",
+    ) -> Any:
+        reject_request = False
+        async with active_lock:
+            if active_connection["open"]:
+                reject_request = True
+            else:
+                active_connection["open"] = True
+        if reject_request:
+            return error_response("busy", "Another transcription session is active.", 409)
+
+        try:
+            try:
+                normalized_language = _normalize_optional_asr_language(language)
+                target = _normalize_optional_translation_target(targetLanguage or target_language)
+            except ValueError as exc:
+                return error_response("invalid_request", str(exc), 400)
+            if target and translation_actor is None:
+                return error_response(
+                    "translation_unavailable",
+                    "Translation was requested but the backend was not started with a translation model.",
+                    400,
+                )
+            with tempfile.TemporaryDirectory(prefix="funyi-offline-") as tmpdir:
+                audio_path = Path(tmpdir) / _offline_upload_filename(filename)
+                try:
+                    await _write_offline_upload(request, audio_path)
+                    options = OfflineTranscriptionOptions(
+                        language=normalized_language,
+                        context=str(context or ""),
+                        target_language=target,
+                        timestamps=bool(timestamps),
+                    )
+                    document = await transcribe_file(
+                        model,
+                        str(audio_path),
+                        options=options,
+                        timestamp_actor=timestamp_actor,
+                        translation_actor=translation_actor,
+                        translation_max_new_tokens=(
+                            translation_service_config.max_new_tokens if translation_service_config is not None else None
+                        ),
+                        asr_executor=asr_executor,
+                    )
+                except ValueError as exc:
+                    return error_response("invalid_request", str(exc), 400)
+            return document.to_payload()
+        finally:
+            async with active_lock:
+                active_connection["open"] = False
 
     @app.websocket("/ws/asr")
     async def websocket_asr(websocket: WebSocket) -> None:
@@ -556,6 +621,42 @@ def build_app(
                 active_connection["open"] = False
 
     return app
+
+
+async def _write_offline_upload(request: Any, path: Path) -> None:
+    total = 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as handle:
+        async for chunk in request.stream():
+            if not chunk:
+                continue
+            total += len(chunk)
+            handle.write(chunk)
+    if total == 0:
+        raise ValueError("offline upload body is empty")
+
+
+def _offline_upload_filename(filename: str) -> str:
+    suffix = Path(str(filename or "")).suffix.lower()
+    if not re.fullmatch(r"\.[a-z0-9][a-z0-9._-]{0,15}", suffix):
+        suffix = ".audio"
+    return f"source{suffix}"
+
+
+def _normalize_optional_asr_language(language: str | None) -> str | None:
+    value = str(language or "").strip()
+    if not value:
+        return None
+    normalized = normalize_language_name(value)
+    validate_language(normalized)
+    return normalized
+
+
+def _normalize_optional_translation_target(target: str | None) -> str | None:
+    value = str(target or "").strip()
+    if not value:
+        return None
+    return _normalize_translation_target_language(value)
 
 
 def decode_pcm_s16le(payload: bytes) -> np.ndarray:

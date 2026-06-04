@@ -19,7 +19,7 @@ interface UserFacingErrorRule {
 
 const USER_FACING_ERROR_RULES: UserFacingErrorRule[] = [
   {
-    matches: (value) => /Another realtime session is active/i.test(value),
+    matches: (value) => /Another (?:realtime|transcription) session is active/i.test(value),
     message: "Previous session closing",
   },
   {
@@ -49,19 +49,23 @@ const USER_FACING_ERROR_RULES: UserFacingErrorRule[] = [
 ];
 
 export function summarizeStatus(statusValues: StatusValues, sessionState: SessionState): StatusSummary {
-  const error = currentUserVisibleError(statusValues, sessionState);
+  const error = currentUserVisibleError(statusValues);
   if (sessionState !== "running") {
     if (error) {
       return { text: userFacingError(error), tone: "error" };
     }
+    const progress = currentUserVisibleProgress(statusValues);
     if (sessionState === "connecting") {
-      return { text: "Connecting...", tone: "active" };
+      return { text: progress || "Connecting...", tone: "active" };
     }
     if (sessionState === "paused") {
       return { text: "Paused", tone: "active" };
     }
     if (sessionState === "finishing") {
       return { text: "Finishing...", tone: "active" };
+    }
+    if (progress && progress !== FINAL_TRANSCRIPT_CANCELLED_MESSAGE) {
+      return { text: progress, tone: "active" };
     }
     return { text: "", tone: "idle" };
   }
@@ -85,9 +89,9 @@ function withAudioStats(summary: StatusSummary, audioStats: AudioStatsState): St
   return { ...summary, level: audioStats.level, volume: audioStats.volume };
 }
 
-function currentUserVisibleError(statusValues: StatusValues, sessionState: SessionState): string {
+function currentUserVisibleError(statusValues: StatusValues): string {
   const captureStatus = statusValues.captureStatus;
-  if (statusTextHasError(captureStatus)) {
+  if (isUserVisibleError(captureStatus)) {
     return captureStatus;
   }
 
@@ -95,10 +99,18 @@ function currentUserVisibleError(statusValues: StatusValues, sessionState: Sessi
   if (!connectionStatus || isLowLevelConnectionStatus(connectionStatus)) {
     return "";
   }
-  if (statusTextHasError(connectionStatus)) {
+  if (isUserVisibleError(connectionStatus)) {
     return connectionStatus;
   }
-  return sessionState === "idle" && connectionStatus !== FINAL_TRANSCRIPT_CANCELLED_MESSAGE ? connectionStatus : "";
+  return "";
+}
+
+function currentUserVisibleProgress(statusValues: StatusValues): string {
+  const connectionStatus = statusValues.connectionStatus;
+  if (connectionStatus && !isLowLevelConnectionStatus(connectionStatus) && !isUserVisibleError(connectionStatus)) {
+    return connectionStatus;
+  }
+  return "";
 }
 
 function isLowLevelConnectionStatus(value: string): boolean {
@@ -107,6 +119,10 @@ function isLowLevelConnectionStatus(value: string): boolean {
 
 function userFacingError(value: string): string {
   return USER_FACING_ERROR_RULES.find((rule) => rule.matches(value))?.message ?? value;
+}
+
+function isUserVisibleError(value: string): boolean {
+  return statusTextHasError(value) || USER_FACING_ERROR_RULES.some((rule) => rule.matches(value));
 }
 
 function silentCaptureSummary(kind: AudioSourceKind): string {

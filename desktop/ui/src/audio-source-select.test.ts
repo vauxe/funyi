@@ -1,8 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { AudioSourceSelect } from "./audio-source-select.js";
-import type { AudioSource } from "./audio-source.js";
+import { AudioSourceSelect, type SelectableAudioSource } from "./audio-source-select.js";
 import { clearBrowserGlobals } from "./test-browser-globals.fixture.js";
 import { asDomElement, FakeDocument, FakeElement, installFakeDocument } from "./test-dom.fixture.js";
 
@@ -90,7 +89,17 @@ test("uses kind-specific source labels when native names are blank", () => {
   );
 });
 
-function source(overrides: Partial<AudioSource>): AudioSource {
+test("renders the offline file pseudo-source without changing native source kinds", () => {
+  const select = new FakeElement("select");
+  const sourceSelect = new AudioSourceSelect(asDomElement<HTMLSelectElement>(select));
+
+  sourceSelect.render([source({ id: "file", kind: "file", name: "File" })]);
+
+  assert.equal(select.children[0]?.textContent, "File · File");
+  assert.equal(sourceSelect.selectedKind, "file");
+});
+
+function source(overrides: Partial<SelectableAudioSource>): SelectableAudioSource {
   return {
     detail: "available",
     id: "source",

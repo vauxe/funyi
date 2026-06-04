@@ -82,12 +82,7 @@ function buildWithUrl(url: string): ReturnType<typeof buildSessionStartOptions> 
 }
 
 test("accepts ws loopback server urls", () => {
-  for (const url of [
-    "ws://127.0.0.1:8000/ws/asr",
-    "ws://localhost:8000/ws/asr",
-    "ws://127.0.0.5:9000/ws",
-    "ws://[::1]:8000/ws/asr",
-  ]) {
+  for (const url of ["ws://127.0.0.1:8000/ws/asr", "ws://localhost:8000/ws/asr", "ws://127.0.0.5:9000/ws"]) {
     const result = buildWithUrl(url);
     assert.equal(result.ok, true, url);
     if (result.ok) {
@@ -104,6 +99,7 @@ for (const url of [
   "ws://127.evil.com:8000/ws/asr",
   "ws://0.0.0.0:8000/ws/asr",
   "ws://127.0.0.300:8000/ws/asr",
+  "ws://[::1]:8000/ws/asr",
   "ws://[::2]:8000/ws/asr",
   "ws://user:pass@127.0.0.1:8000/ws/asr",
   "not a url",

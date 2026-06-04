@@ -1,5 +1,6 @@
 import type { RealtimeEvent } from "./realtime-events.js";
 import { isInteger, optionalRecord, recordArray } from "./runtime-guards.js";
+import type { TranscriptDocumentSnapshot, TranscriptSegmentSnapshot } from "./transcription-document.js";
 
 interface SubtitleLineInit {
   id?: string | null;
@@ -72,6 +73,17 @@ export class SubtitleDocument {
 
   setTranslationEnabled(enabled: boolean): void {
     this.translationEnabledValue = enabled;
+  }
+
+  replaceSnapshot(snapshot: TranscriptDocumentSnapshot): void {
+    this.revision += 1;
+    this.currentLine = null;
+    this.showLatestStableAsCurrent = snapshot.segments.length > 0;
+    this.pendingStableUnitIds = [];
+    this.stableTranslationUnits = [];
+    this.stableLineList = snapshot.segments.map((segment, offset) =>
+      lineFromSnapshotSegment(segment, this.revision, offset + 1),
+    );
   }
 
   applyEvent(event: RealtimeEvent): void {
@@ -360,6 +372,24 @@ function lineFromSegment(segment: Record<string, unknown>, revision: number): Su
     language: String(segment.language || ""),
     sourceRevision: revision,
     timingStatus: stringOrNull(segment.timing_status),
+  });
+}
+
+function lineFromSnapshotSegment(
+  segment: TranscriptSegmentSnapshot,
+  revision: number,
+  fallbackIndex: number,
+): SubtitleLine {
+  return createSubtitleLine({
+    id: segment.id,
+    index: segment.index ?? fallbackIndex,
+    startMs: segment.startMs,
+    endMs: segment.endMs,
+    text: segment.text,
+    language: segment.language,
+    sourceRevision: revision,
+    timingStatus: segment.timingStatus,
+    translation: segment.translation,
   });
 }
 

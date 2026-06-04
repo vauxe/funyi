@@ -6,8 +6,10 @@ export class FakeElement {
   checked = false;
   children: FakeElement[] = [];
   className = "";
+  clicks = 0;
   dataset: Record<string, string> = {};
   disabled = false;
+  files: Blob[] | null = null;
   listeners = new Map<string, Listener[]>();
   pointerCapture: number | null = null;
   parentElement: FakeElement | null = null;
@@ -77,6 +79,7 @@ export class FakeElement {
   }
 
   click(): void {
+    this.clicks += 1;
     this.dispatch("click", {});
   }
 

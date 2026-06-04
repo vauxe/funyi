@@ -1,6 +1,6 @@
 import type { AudioAdapter } from "./audio-adapter.js";
 import type { AppElements } from "./app-dom.js";
-import { AudioSourceSelect } from "./audio-source-select.js";
+import { AudioSourceSelect, type SelectableAudioSource } from "./audio-source-select.js";
 import type { AudioSource } from "./audio-source.js";
 import { objectUrlFromStored, prepareBackgroundImage } from "./background-image.js";
 import { CaptionView } from "./caption-view.js";
@@ -21,6 +21,17 @@ import { SettingsController } from "./settings-controller.js";
 import { StatusController } from "./status-controller.js";
 import { SubtitleDocument } from "./subtitle-document.js";
 import { copyToClipboard, formatTranscript } from "./transcript-export.js";
+import { transcribeFile } from "./transcription-client.js";
+
+export const OFFLINE_FILE_SOURCE_ID = "__funyi_offline_file__";
+
+const OFFLINE_FILE_SOURCE: SelectableAudioSource = {
+  detail: "Transcribe a local audio file.",
+  id: OFFLINE_FILE_SOURCE_ID,
+  isAvailable: true,
+  kind: "file",
+  name: "File",
+};
 
 export interface FunyiAppOptions {
   audio: AudioAdapter;
@@ -41,6 +52,11 @@ export class FunyiApp {
   private readonly sessionControlsView: SessionControlsView;
   private readonly settingsController: SettingsController;
   private readonly statusController: StatusController;
+  private currentLiveAudioSourceId: string | null = null;
+  private offlineAbort: AbortController | null = null;
+  private offlineFileSelectionVersion = 0;
+  private offlineTranscription: Promise<void> | null = null;
+  private usedOfflineFileSelectionVersion = -1;
   private subtitleDocument = new SubtitleDocument();
 
   constructor(private readonly options: FunyiAppOptions) {
@@ -147,6 +163,7 @@ export class FunyiApp {
       this.preferences.save({ serverUrl: dom.serverUrl.value.trim() || null }),
     );
     dom.audioSource.addEventListener("change", () => void this.applyAudioSourceChange());
+    dom.offlineFile.addEventListener("change", () => this.applyOfflineFileChange());
     dom.language.addEventListener("change", () => {
       // ASR language does not change what is displayed, so no re-render here.
       this.preferences.save({ asrLanguage: this.languageControls.asrLanguage });
@@ -175,7 +192,7 @@ export class FunyiApp {
 
   private applyStoredAudioSource(): void {
     const storedId = this.preferences.load().audioSourceId;
-    if (storedId && this.audioSourceSelect.hasAvailableSource) {
+    if (storedId && storedId !== OFFLINE_FILE_SOURCE_ID && this.audioSourceSelect.hasAvailableSource) {
       setSelectValueIfPresent(this.options.dom.audioSource, storedId, { requireEnabled: true });
     }
   }
@@ -196,11 +213,16 @@ export class FunyiApp {
   }
 
   private async stopSession(): Promise<void> {
+    if (this.offlineAbort !== null) {
+      await this.cancelOfflineTranscription();
+      return;
+    }
     await this.liveSession.stop();
   }
 
   private async closeOverlay(): Promise<void> {
     try {
+      await this.cancelOfflineTranscription();
       await this.liveSession.stop({ sendFinish: false });
       await this.overlayController.close();
     } catch (error) {
@@ -213,13 +235,13 @@ export class FunyiApp {
     try {
       sources = await this.options.audio.listSources();
     } catch (error) {
-      this.audioSourceSelect.render([]);
+      this.audioSourceSelect.render([OFFLINE_FILE_SOURCE]);
       this.statusController.setStatus("captureStatus", errorMessage(error));
-      this.liveSession.setAudioAvailable(false);
+      this.liveSession.setAudioAvailable(true);
       return;
     }
 
-    this.audioSourceSelect.render(sources);
+    this.audioSourceSelect.render([...sources, OFFLINE_FILE_SOURCE]);
     if (!this.audioSourceSelect.hasAvailableSource) {
       this.statusController.setStatus(
         "captureStatus",
@@ -238,10 +260,15 @@ export class FunyiApp {
     if (!this.liveSession.canStart()) {
       return;
     }
+    const selectedKind = this.audioSourceSelect.selectedKind;
+    if (selectedKind === "file") {
+      await this.startFileTranscription();
+      return;
+    }
     const startOptions = buildSessionStartOptions({
       url: dom.serverUrl.value,
       audioSourceId: dom.audioSource.value,
-      audioSourceKind: this.audioSourceSelect.selectedKind,
+      audioSourceKind: selectedKind,
       asrLanguage: this.languageControls.asrLanguage,
       targetLanguage: this.languageControls.targetLanguage,
     });
@@ -250,34 +277,141 @@ export class FunyiApp {
       return;
     }
     this.resetSessionState();
-    await this.liveSession.start(startOptions.options);
+    if (await this.liveSession.start(startOptions.options)) {
+      this.currentLiveAudioSourceId = startOptions.options.audioSourceId;
+    }
   }
 
   private async applyAudioSourceChange(): Promise<void> {
     const { dom } = this.options;
     const audioSourceId = dom.audioSource.value || null;
-    this.preferences.save({ audioSourceId });
+    const audioSourceKind = this.audioSourceSelect.selectedKind;
 
     const state = this.liveSession.getState();
     if (state !== "running" && state !== "paused") {
+      if (audioSourceKind === "file") {
+        this.openOfflineFilePicker();
+        return;
+      }
+      if (audioSourceKind !== null) {
+        this.preferences.save({ audioSourceId });
+      }
       return;
     }
 
-    const audioSourceKind = this.audioSourceSelect.selectedKind;
+    if (audioSourceKind === "file") {
+      this.restoreCurrentLiveAudioSource();
+      this.statusController.setStatus("captureStatus", "File transcription unavailable while captions are running.");
+      return;
+    }
     if (!audioSourceId || !audioSourceKind) {
       this.statusController.setStatus("captureStatus", INVALID_AUDIO_SOURCE_MESSAGE);
       return;
     }
 
     await this.liveSession.switchAudioSource({ audioSourceId, audioSourceKind });
+    this.currentLiveAudioSourceId = audioSourceId;
+    this.preferences.save({ audioSourceId });
   }
 
   private resetSessionState(): void {
     this.subtitleDocument = new SubtitleDocument({ translationEnabled: this.languageControls.translationEnabled });
     this.captionView.reset();
     this.statusController.setStatus("captureStatus", "");
+    this.statusController.setStatus("connectionStatus", "");
     this.liveSession.resetStats();
     this.render();
+  }
+
+  private applyOfflineFileChange(): void {
+    if (this.audioSourceSelect.selectedKind !== "file") {
+      return;
+    }
+    const fileSelected = Boolean(this.selectedOfflineFile());
+    if (fileSelected) {
+      this.offlineFileSelectionVersion += 1;
+      this.statusController.setStatus("captureStatus", "");
+    }
+    this.statusController.setStatus("connectionStatus", fileSelected ? "File selected." : "");
+  }
+
+  private async startFileTranscription(): Promise<void> {
+    if (this.offlineTranscription !== null) {
+      return;
+    }
+    const file = this.selectedOfflineFile();
+    if (!file || this.usedOfflineFileSelectionVersion === this.offlineFileSelectionVersion) {
+      this.openOfflineFilePicker();
+      this.statusController.setStatus("connectionStatus", "Choose an audio file.");
+      return;
+    }
+
+    const abort = new AbortController();
+    this.usedOfflineFileSelectionVersion = this.offlineFileSelectionVersion;
+    this.offlineAbort = abort;
+    this.resetSessionState();
+    this.setControlsState("connecting", { canStart: false });
+    this.statusController.setStatus("connectionStatus", "Transcribing file...");
+
+    const transcription = this.runFileTranscription(file, abort);
+    this.offlineTranscription = transcription;
+    await transcription;
+  }
+
+  private async runFileTranscription(file: Blob, abort: AbortController): Promise<void> {
+    try {
+      const snapshot = await transcribeFile({
+        file,
+        language: this.languageControls.asrLanguage,
+        realtimeUrl: this.options.dom.serverUrl.value,
+        signal: abort.signal,
+        targetLanguage: this.languageControls.targetLanguage,
+      });
+      if (this.offlineAbort !== abort) {
+        return;
+      }
+      this.subtitleDocument.replaceSnapshot(snapshot);
+      this.render();
+      this.statusController.setStatus("connectionStatus", "File transcript ready.");
+    } catch (error) {
+      if (this.offlineAbort !== abort) {
+        return;
+      }
+      this.statusController.setStatus(
+        "connectionStatus",
+        abort.signal.aborted ? "File transcription cancelled." : errorMessage(error),
+      );
+    } finally {
+      if (this.offlineAbort === abort) {
+        this.offlineAbort = null;
+        this.offlineTranscription = null;
+        this.setControlsState("idle", { canStart: this.audioSourceSelect.hasAvailableSource });
+      }
+    }
+  }
+
+  private async cancelOfflineTranscription(): Promise<void> {
+    const transcription = this.offlineTranscription;
+    if (this.offlineAbort !== null) {
+      this.offlineAbort.abort();
+    }
+    await transcription;
+  }
+
+  private selectedOfflineFile(): Blob | null {
+    const files = this.options.dom.offlineFile.files;
+    return files && files.length > 0 ? files[0] || null : null;
+  }
+
+  private openOfflineFilePicker(): void {
+    this.options.dom.offlineFile.value = "";
+    this.options.dom.offlineFile.click();
+  }
+
+  private restoreCurrentLiveAudioSource(): void {
+    if (this.currentLiveAudioSourceId) {
+      setSelectValueIfPresent(this.options.dom.audioSource, this.currentLiveAudioSourceId, { requireEnabled: true });
+    }
   }
 
   private applyTranslationTarget(): void {

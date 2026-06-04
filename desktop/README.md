@@ -1,10 +1,12 @@
 # Funyi Desktop
 
-Lightweight Tauri client for the local realtime ASR service.
+Lightweight Tauri client for the local ASR service.
 
-The UI owns the `/ws/asr` WebSocket. The native layer only captures audio —
-system output or microphone input — and emits `pcm_s16le` frames at 16 kHz. This
-keeps ASR, translation, and model runtime behavior in the Python service.
+The UI owns the `/ws/asr` WebSocket for live captions and the
+`/api/transcriptions` HTTP endpoint for local file transcription. The native
+layer only captures live audio — system output or microphone input — and emits
+`pcm_s16le` frames at 16 kHz. This keeps ASR, translation, and CUDA runtime
+behavior in the Python service.
 
 The default window is a compact, always-on-top caption strip near the bottom of
 the display. Detailed connection settings stay inline, and stable subtitle
@@ -56,9 +58,10 @@ corepack pnpm run dev
 If your shell does not expose a `pnpm` command, keep using `corepack pnpm ...`
 rather than assuming a separate global `pnpm` install exists.
 
-The client only connects to `ws://` loopback addresses such as
-`ws://127.0.0.1:8000/ws/asr`. Remote hosts, `wss://`, and credentialed URLs are
-rejected.
+The client only accepts `ws://` loopback service URLs such as
+`ws://127.0.0.1:8000/ws/asr`. File transcription derives the matching
+`http://` loopback API URL from that value. Remote hosts, `wss://`, credentialed
+URLs, and non-loopback HTTP are rejected.
 
 Native Windows Tauri builds also require Visual Studio Build Tools 2022 with
 the `Desktop development with C++` workload and a Windows 10/11 SDK. `cargo`

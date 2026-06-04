@@ -17,6 +17,7 @@ export const APP_ELEMENT_SELECTORS = {
   historyList: "#history-list",
   language: "#language",
   minimizeButton: "#minimize-button",
+  offlineFile: "#offline-file",
   serverUrl: "#server-url",
   sessionStatus: "#session-status",
   settingsButton: "#settings-button",
@@ -35,6 +36,7 @@ export interface AppElements {
   serverUrl: HTMLInputElement;
   language: HTMLSelectElement;
   translationTargetLanguage: HTMLSelectElement;
+  offlineFile: HTMLInputElement;
   audioSource: HTMLSelectElement;
   transportButton: HTMLButtonElement;
   stopButton: HTMLButtonElement;
@@ -65,6 +67,7 @@ export function getAppElements(): AppElements {
     serverUrl: requireElement<HTMLInputElement>(APP_ELEMENT_SELECTORS.serverUrl),
     language: requireElement<HTMLSelectElement>(APP_ELEMENT_SELECTORS.language),
     translationTargetLanguage: requireElement<HTMLSelectElement>(APP_ELEMENT_SELECTORS.translationTargetLanguage),
+    offlineFile: requireElement<HTMLInputElement>(APP_ELEMENT_SELECTORS.offlineFile),
     audioSource: requireElement<HTMLSelectElement>(APP_ELEMENT_SELECTORS.audioSource),
     transportButton: requireElement<HTMLButtonElement>(APP_ELEMENT_SELECTORS.transportButton),
     stopButton: requireElement<HTMLButtonElement>(APP_ELEMENT_SELECTORS.stopButton),

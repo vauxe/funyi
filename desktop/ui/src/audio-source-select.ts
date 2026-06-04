@@ -2,8 +2,13 @@ import { audioSourceDefaultName, audioSourceShortLabel, type AudioSourceKind } f
 import type { AudioSource } from "./audio-source.js";
 import { replaceSelectOptions, type SelectOptionSpec } from "./select-options.js";
 
+export type SelectableAudioSourceKind = AudioSourceKind | "file";
+export interface SelectableAudioSource extends Omit<AudioSource, "kind"> {
+  kind: SelectableAudioSourceKind;
+}
+
 export class AudioSourceSelect {
-  private sourceKinds = new Map<string, AudioSourceKind>();
+  private sourceKinds = new Map<string, SelectableAudioSourceKind>();
   private fallbackUnavailableDetail = "";
 
   constructor(private readonly select: HTMLSelectElement) {}
@@ -16,11 +21,11 @@ export class AudioSourceSelect {
     return this.fallbackUnavailableDetail;
   }
 
-  get selectedKind(): AudioSourceKind | null {
+  get selectedKind(): SelectableAudioSourceKind | null {
     return this.sourceKinds.get(this.select.value) ?? null;
   }
 
-  render(sources: AudioSource[]): void {
+  render(sources: SelectableAudioSource[]): void {
     this.sourceKinds = new Map(
       sources.filter((source) => source.isAvailable).map((source) => [source.id, source.kind]),
     );
@@ -33,7 +38,7 @@ export class AudioSourceSelect {
   }
 }
 
-function audioSourceOption(source: AudioSource): SelectOptionSpec {
+function audioSourceOption(source: SelectableAudioSource): SelectOptionSpec {
   return {
     disabled: !source.isAvailable,
     label: source.isAvailable ? audioSourceLabel(source) : `${audioSourceLabel(source)} unavailable`,
@@ -42,7 +47,10 @@ function audioSourceOption(source: AudioSource): SelectOptionSpec {
   };
 }
 
-function audioSourceLabel(source: Pick<AudioSource, "kind" | "name">): string {
+function audioSourceLabel(source: Pick<SelectableAudioSource, "kind" | "name">): string {
+  if (source.kind === "file") {
+    return `File · ${source.name.trim() || "Audio file"}`;
+  }
   const name = source.name.trim() || audioSourceDefaultName(source.kind);
   return `${audioSourceShortLabel(source.kind)} · ${name}`;
 }
