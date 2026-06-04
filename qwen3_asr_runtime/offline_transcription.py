@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from concurrent.futures import Executor
 from dataclasses import dataclass, replace
 from functools import partial
@@ -29,12 +29,23 @@ _DEFAULT_OFFLINE_CHUNK_SEC = 60.0
 _DEFAULT_TIMESTAMP_TIMEOUT_SEC = 30.0
 
 
+class OfflineTranscriptionInputError(ValueError):
+    """Raised for client-supplied audio that cannot be decoded."""
+
+
 @dataclass(frozen=True)
 class OfflineTranscriptionOptions:
     language: str | None = None
     context: str = ""
     target_language: str | None = None
     timestamps: bool = True
+
+
+@dataclass(frozen=True)
+class OfflineTranscriptionStreamEvent:
+    kind: str
+    segment: TranscriptSegment | None = None
+    document: TranscriptDocument | None = None
 
 
 async def transcribe_file(
@@ -110,6 +121,73 @@ async def transcribe_file(
     )
 
 
+async def stream_transcribe_file(
+    model: Any,
+    audio_source: Any,
+    *,
+    options: OfflineTranscriptionOptions | None = None,
+    timestamp_actor: Any | None = None,
+    asr_executor: Executor | None = None,
+    chunk_sec: float = _DEFAULT_OFFLINE_CHUNK_SEC,
+    timestamp_timeout_sec: float = _DEFAULT_TIMESTAMP_TIMEOUT_SEC,
+) -> AsyncIterator[OfflineTranscriptionStreamEvent]:
+    opts = options or OfflineTranscriptionOptions()
+    if opts.target_language:
+        raise ValueError(
+            "stream_transcribe_file does not support translation; use a service-layer translation side track."
+        )
+
+    segments: list[TranscriptSegment] = []
+    languages: list[str] = []
+    total_samples = 0
+    for chunk, offset_sec, chunk_samples in _iter_audio_chunks(audio_source, chunk_sec=float(chunk_sec)):
+        start_ms = int(round(float(offset_sec) * 1000))
+        end_ms = start_ms + int(round(1000 * int(chunk_samples) / SAMPLE_RATE))
+        total_samples = max(total_samples, int(round(offset_sec * SAMPLE_RATE)) + int(chunk_samples))
+
+        result = await _transcribe_chunk(
+            model,
+            chunk,
+            context=opts.context,
+            language=opts.language,
+            asr_executor=asr_executor,
+        )
+        text = str(getattr(result, "text", "") or "").strip()
+        if not text:
+            continue
+        language = str(getattr(result, "language", "") or opts.language or "")
+        if language:
+            languages.append(language)
+        segment = TranscriptSegment(
+            id=f"seg_{len(segments) + 1:06d}",
+            index=len(segments) + 1,
+            start_ms=start_ms,
+            end_ms=max(start_ms, end_ms),
+            text=text,
+            language=language,
+            timing_status="estimated",
+        )
+        if opts.timestamps and timestamp_actor is not None:
+            segment = await _align_segment(
+                segment,
+                audio=chunk,
+                base_ms=start_ms,
+                timestamp_actor=timestamp_actor,
+                timeout_sec=float(timestamp_timeout_sec),
+            )
+        segments.append(segment)
+        yield OfflineTranscriptionStreamEvent(kind="segment", segment=segment)
+
+    yield OfflineTranscriptionStreamEvent(
+        kind="complete",
+        document=TranscriptDocument(
+            duration_ms=int(round(1000 * total_samples / SAMPLE_RATE)),
+            language=merge_languages(languages),
+            segments=segments,
+        ),
+    )
+
+
 def _iter_audio_chunks(audio_source: Any, *, chunk_sec: float) -> Iterator[tuple[np.ndarray, float, int]]:
     path = _local_file_path(audio_source)
     if path is not None:
@@ -155,7 +233,7 @@ def _iter_file_audio_chunks(path: Path, *, chunk_sec: float) -> Iterator[tuple[n
             yield _pad_short_chunk(audio), offset_samples / float(SAMPLE_RATE), original_samples
             offset_samples += original_samples
     except (audioread.exceptions.DecodeError, OSError, RuntimeError, sf.SoundFileError, ValueError) as exc:
-        raise ValueError(f"Unsupported or unreadable audio file: {path.name}") from exc
+        raise OfflineTranscriptionInputError(f"Unsupported or unreadable audio file: {path.name}") from exc
 
 
 def _pad_short_chunk(chunk: np.ndarray) -> np.ndarray:
@@ -247,4 +325,10 @@ def _forced_align_language(language: str) -> str | None:
         return None
 
 
-__all__ = ["OfflineTranscriptionOptions", "transcribe_file"]
+__all__ = [
+    "OfflineTranscriptionInputError",
+    "OfflineTranscriptionOptions",
+    "OfflineTranscriptionStreamEvent",
+    "stream_transcribe_file",
+    "transcribe_file",
+]

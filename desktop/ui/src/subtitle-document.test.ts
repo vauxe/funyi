@@ -643,6 +643,49 @@ test("final snapshot with omitted segments keeps stable history (unbounded sessi
   assert.equal(document.window().current, null);
 });
 
+test("replaceSnapshot preserves stable translation status for matching segments", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 1,
+    stable_appends: [stableSegment(1, "one", { startMs: 0, endMs: 1000 })],
+    partial: null,
+  });
+  document.applyEvent({
+    type: "translation_status",
+    scope: "stable",
+    code: "timeout",
+    message: "translation failed",
+    source_segment_id: "seg_000001",
+    source_segment_index: 1,
+  });
+
+  document.replaceSnapshot({
+    durationMs: 1000,
+    language: "Chinese",
+    schemaVersion: 1,
+    segments: [
+      {
+        id: "seg_000001",
+        index: 1,
+        startMs: 0,
+        endMs: 1000,
+        text: "one",
+        language: "Chinese",
+        timingStatus: null,
+        translation: null,
+      },
+    ],
+    text: "one",
+  });
+
+  assert.equal(document.stableLines[0]?.translationStatus, "timeout");
+  assert.equal(document.stableLines[0]?.translationMessage, "translation failed");
+  assert.equal(document.window().current?.translationMessage, "translation failed");
+});
+
 test("final snapshot with an explicit empty segments array still clears history", () => {
   const document = new SubtitleDocument();
   document.applyEvent({

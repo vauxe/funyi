@@ -76,13 +76,16 @@ export class SubtitleDocument {
   }
 
   replaceSnapshot(snapshot: TranscriptDocumentSnapshot): void {
+    const previousTranslationUnits = this.stableTranslationUnits;
     this.revision += 1;
     this.currentLine = null;
     this.showLatestStableAsCurrent = snapshot.segments.length > 0;
     this.pendingStableUnitIds = [];
-    this.stableTranslationUnits = [];
     this.stableLineList = snapshot.segments.map((segment, offset) =>
       lineFromSnapshotSegment(segment, this.revision, offset + 1),
+    );
+    this.stableTranslationUnits = previousTranslationUnits.filter(
+      (unit) => translationUnitLineIndices(unit, this.stableLineList).length > 0,
     );
   }
 

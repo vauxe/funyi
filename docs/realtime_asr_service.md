@@ -14,6 +14,7 @@ The service exposes:
 
 - `GET /healthz` -> `{"status":"ok"}`
 - `POST /api/transcriptions` for one-shot local file transcription.
+- `POST /api/transcriptions/stream` for incremental local file transcription.
 - `WS /ws/asr` for one active local realtime session.
 
 Only one transcription session may be active at a time. A realtime WebSocket and
@@ -23,13 +24,16 @@ requests are rejected with `409` and `error.code: "busy"`.
 ## Offline File Transcription
 
 `POST /api/transcriptions` accepts the media file as the raw request body and
-returns a complete transcript snapshot. The endpoint is intentionally not a job
-API: the request owns the work and completes when the transcript is ready.
-Uploads are written to a temporary file as they arrive; local audio files are
-decoded through project dependencies (`librosa` / `soundfile`) and transcribed
-in bounded chunks, with no fixed upload-size or duration limit. The returned
-JSON still contains the complete transcript, so extremely long files remain
-bounded by local disk, runtime, and response size in practice.
+returns a complete transcript snapshot. `POST /api/transcriptions/stream`
+accepts the same request and returns newline-delimited JSON (`application/x-ndjson`)
+so clients can render each completed chunk before the full document is ready.
+Both endpoints are intentionally not job APIs: the request owns the work and
+completes when transcription is finished. Uploads are written to a temporary
+file as they arrive; local audio files are decoded through project dependencies
+(`librosa` / `soundfile`) and transcribed in bounded chunks, with no fixed
+upload-size or duration limit. The final JSON still contains the complete
+transcript, so extremely long files remain bounded by local disk, runtime, and
+response size in practice.
 
 Query parameters are `language` (optional Qwen3-ASR language; empty means auto),
 `context`, `targetLanguage` / `target_language` (optional HY-MT target, requiring
@@ -49,6 +53,21 @@ and `segments[]` with `id`, `index`, `startMs`, `endMs`, `text`, `language`,
 optional `timingStatus`, and optional `translation`. `timingStatus` is
 `estimated` for chunk boundaries and `aligned` after forced alignment. Error
 responses use `{"error":{"code":"...","message":"..."}}`.
+
+The streaming endpoint emits realtime-compatible events: `transcript_update`
+for each source segment, optional `translation_stable` when `targetLanguage` is
+set, and a terminal `transcript_final` event. Source `transcript_update` events
+are emitted after ASR/timestamp work and do not wait for HY-MT translation.
+Translation events are a service-layer side track and include `source_revision`.
+The side-track backlog is bounded; once it is full, later ASR chunks wait for
+translation to drain instead of accumulating unbounded work. File-stream stable
+translation is bounded by `--translation-stable-timeout-ms`; timeout emits
+`translation_status` and the final document still completes. The final event
+includes `revision`, `final_revision`, `stable_count`, and a
+`document` field containing the same snapshot shape returned by
+`/api/transcriptions`. Upload and validation errors still use normal HTTP error
+responses before streaming starts; decode or model errors after streaming starts
+are emitted as `type: "error"` events.
 
 The first WebSocket frame must be a JSON `start` command:
 
@@ -349,7 +368,8 @@ as `translation_stable`.
 }
 ```
 
-`code` is `failed`.
+`code` is `failed` or `timeout`. `timeout` is emitted when file-stream stable
+translation exceeds `--translation-stable-timeout-ms`.
 
 ### `transcript_final`
 
@@ -363,29 +383,45 @@ must not appear only in this event.
   "type": "transcript_final",
   "revision": 8,
   "final_revision": 8,
-  "stable_count": 3
+  "stable_count": 1,
+  "segments": [
+    {"id": "seg_000001", "index": 1, "start_ms": 0, "end_ms": 1200, "text": "你好", "language": "Chinese"}
+  ],
+  "document": {
+    "schemaVersion": 1,
+    "durationMs": 1200,
+    "language": "Chinese",
+    "text": "你好",
+    "segments": [
+      {"id": "seg_000001", "index": 1, "startMs": 0, "endMs": 1200, "text": "你好", "language": "Chinese"}
+    ]
+  }
 }
 ```
 
-Bounded/offline-compatible sessions may include `segments`, using the same
-stable-segment shape as `transcript_update.stable_appends`. Unbounded realtime
-sessions may omit `segments`; clients keep the stable history they already
-replayed from `transcript_update`.
+`/api/transcriptions/stream` includes top-level `segments`, using the same
+stable-segment shape as `transcript_update.stable_appends`, and `document`, using
+the same snapshot shape as `/api/transcriptions`. Unbounded realtime WebSocket
+sessions may omit `segments` and do not include `document`; clients keep the
+stable history they already replayed from `transcript_update`.
 
-After `transcript_final`, the service closes the WebSocket with code `1000`.
+After a WebSocket `transcript_final`, the service closes the WebSocket with code
+`1000`. The HTTP file-stream response ends after its terminal event.
 
 ### `error`
 
 Fatal error:
 
 ```json
-{"type":"error","error":"message","fatal":true}
+{"type":"error","error":{"code":"internal_error","message":"Offline transcription failed."},"fatal":true}
 ```
 
 Startup validation failures send `error` with `fatal=true` and close the
 WebSocket, usually with code `1003`. A second concurrent session is rejected
 with code `1013`. Service misconfiguration and internal session failures close
-with code `1011`.
+with code `1011`. File-stream errors use the structured `error.code` /
+`error.message` shape; WebSocket errors may use a string `error` message for
+legacy realtime command failures.
 
 Recoverable command error after `ready`:
 

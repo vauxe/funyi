@@ -4,7 +4,7 @@ import argparse
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import json
 import logging
@@ -19,7 +19,12 @@ import wave
 import numpy as np
 
 from qwen3_asr_runtime.cuda_serialization import CUDA_GRAPH_CAPTURE_LOCK
-from qwen3_asr_runtime.offline_transcription import OfflineTranscriptionOptions, transcribe_file
+from qwen3_asr_runtime.offline_transcription import (
+    OfflineTranscriptionInputError,
+    OfflineTranscriptionOptions,
+    stream_transcribe_file,
+    transcribe_file,
+)
 from qwen3_asr_runtime.realtime_session import RealtimeASRConfig, RealtimeConnectionSession
 from qwen3_asr_runtime.realtime_timestamps import (
     AudioTimelineBuffer,
@@ -47,11 +52,15 @@ from qwen3_asr_runtime.translation import (
     HYMTTranslator,
 )
 from qwen3_asr_runtime.transcript_store import TranscriptStore
+from qwen3_asr_runtime.transcription_document import TranscriptDocument, TranscriptSegment
 from qwen3_asr_runtime.utils import SAMPLE_RATE, normalize_language_name, validate_language
 from qwen3_asr_runtime.vad import VadDecision
 
 _SERVICE_SEND_TIMEOUT_SEC = 5.0
 _SERVICE_EVENT_QUEUE_MAXSIZE = 128
+# File-stream translation is a side track. Keep only a small backlog so ASR
+# cannot run arbitrarily far ahead of a slow or timing-out HY-MT worker.
+_SERVICE_TRANSLATION_JOB_QUEUE_MAXSIZE = 8
 # DoS backstop on a single binary PCM frame (~500s of 16kHz mono s16le). Normal frames are
 # fractions of a second; this only rejects pathological/abusive frames.
 _SERVICE_MAX_PCM_FRAME_BYTES = 16_000_000
@@ -104,6 +113,7 @@ class TranslationServiceConfig:
     preview_enabled: bool = True
     preview_debounce_ms: int = _SERVICE_TRANSLATION_PREVIEW_DEBOUNCE_MS
     preview_timeout_ms: int = 30_000
+    stable_timeout_ms: int = 30_000
     max_new_tokens: int | None = None
     stable_batch_size: int = 1
 
@@ -112,8 +122,17 @@ class TranslationServiceConfig:
             raise ValueError("preview_debounce_ms must be >= 0")
         if int(self.preview_timeout_ms) <= 0:
             raise ValueError("preview_timeout_ms must be > 0")
+        if int(self.stable_timeout_ms) <= 0:
+            raise ValueError("stable_timeout_ms must be > 0")
         if int(self.stable_batch_size) <= 0:
             raise ValueError("stable_batch_size must be > 0")
+
+
+@dataclass(frozen=True)
+class _OfflineTranslationJob:
+    segment_list_index: int
+    segment: TranscriptSegment
+    revision: int
 
 
 class WebSocketSendTimeout(RuntimeError):
@@ -286,7 +305,7 @@ def build_app(
     try:
         from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
         from fastapi.middleware.cors import CORSMiddleware
-        from fastapi.responses import JSONResponse
+        from fastapi.responses import JSONResponse, StreamingResponse
     except ImportError as exc:
         raise RuntimeError("Install service dependencies with: uv sync --python 3.12") from exc
 
@@ -325,6 +344,10 @@ def build_app(
     def error_response(code: str, message: str, status_code: int) -> Any:
         return JSONResponse({"error": {"code": code, "message": message}}, status_code=status_code)
 
+    async def release_active_connection() -> None:
+        async with active_lock:
+            active_connection["open"] = False
+
     @app.post("/api/transcriptions")
     async def create_transcription(
         request: Request,
@@ -360,12 +383,16 @@ def build_app(
                 audio_path = Path(tmpdir) / _offline_upload_filename(filename)
                 try:
                     await _write_offline_upload(request, audio_path)
-                    options = OfflineTranscriptionOptions(
-                        language=normalized_language,
-                        context=str(context or ""),
-                        target_language=target,
-                        timestamps=bool(timestamps),
-                    )
+                except ValueError as exc:
+                    return error_response("invalid_request", str(exc), 400)
+
+                options = OfflineTranscriptionOptions(
+                    language=normalized_language,
+                    context=str(context or ""),
+                    target_language=target,
+                    timestamps=bool(timestamps),
+                )
+                try:
                     document = await transcribe_file(
                         model,
                         str(audio_path),
@@ -377,12 +404,123 @@ def build_app(
                         ),
                         asr_executor=asr_executor,
                     )
-                except ValueError as exc:
+                except OfflineTranscriptionInputError as exc:
                     return error_response("invalid_request", str(exc), 400)
+                except ValueError:
+                    _LOGGER.exception("Offline transcription failed with a backend value error.")
+                    return error_response("internal_error", "Offline transcription failed.", 500)
+                except Exception:
+                    _LOGGER.exception("Offline transcription failed.")
+                    return error_response("internal_error", "Offline transcription failed.", 500)
             return document.to_payload()
         finally:
-            async with active_lock:
-                active_connection["open"] = False
+            await release_active_connection()
+
+    @app.post("/api/transcriptions/stream")
+    async def create_transcription_stream(
+        request: Request,
+        language: str | None = None,
+        context: str = "",
+        targetLanguage: str | None = None,
+        target_language: str | None = None,
+        timestamps: bool = True,
+        filename: str = "",
+    ) -> Any:
+        reject_request = False
+        async with active_lock:
+            if active_connection["open"]:
+                reject_request = True
+            else:
+                active_connection["open"] = True
+        if reject_request:
+            return error_response("busy", "Another transcription session is active.", 409)
+
+        tmp_context: tempfile.TemporaryDirectory[str] | None = None
+        stream_owns_resources = False
+        try:
+            try:
+                normalized_language = _normalize_optional_asr_language(language)
+                target = _normalize_optional_translation_target(targetLanguage or target_language)
+            except ValueError as exc:
+                return error_response("invalid_request", str(exc), 400)
+            if target and translation_actor is None:
+                return error_response(
+                    "translation_unavailable",
+                    "Translation was requested but the backend was not started with a translation model.",
+                    400,
+                )
+
+            tmp_context = tempfile.TemporaryDirectory(prefix="funyi-offline-")
+            audio_path = Path(tmp_context.name) / _offline_upload_filename(filename)
+            try:
+                await _write_offline_upload(request, audio_path)
+            except ValueError as exc:
+                return error_response("invalid_request", str(exc), 400)
+
+            stream_tmp_context = tmp_context
+            async def event_stream() -> Any:
+                output_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(
+                    maxsize=_SERVICE_EVENT_QUEUE_MAXSIZE
+                )
+                translation_max_new_tokens = (
+                    translation_service_config.max_new_tokens if translation_service_config is not None else None
+                )
+                translation_timeout_sec = (
+                    _translation_stable_timeout_sec(translation_service_config)
+                    if translation_service_config is not None
+                    else None
+                )
+                producer_task = asyncio.create_task(
+                    _produce_offline_stream_payloads(
+                        model,
+                        str(audio_path),
+                        options=OfflineTranscriptionOptions(
+                            language=normalized_language,
+                            context=str(context or ""),
+                            timestamps=bool(timestamps),
+                        ),
+                        timestamp_actor=timestamp_actor,
+                        translation_actor=translation_actor,
+                        translation_target_language=target,
+                        translation_max_new_tokens=translation_max_new_tokens,
+                        translation_timeout_sec=translation_timeout_sec,
+                        asr_executor=asr_executor,
+                        output_queue=output_queue,
+                    )
+                )
+                try:
+                    while True:
+                        payload = await output_queue.get()
+                        if payload is None:
+                            break
+                        yield _json_line(payload)
+                    await producer_task
+                finally:
+                    try:
+                        if not producer_task.done():
+                            producer_task.cancel()
+                            with suppress(asyncio.CancelledError):
+                                await producer_task
+                    finally:
+                        try:
+                            stream_tmp_context.cleanup()
+                        finally:
+                            await release_active_connection()
+
+            response = StreamingResponse(
+                event_stream(),
+                media_type="application/x-ndjson",
+                headers={"Cache-Control": "no-store"},
+            )
+            stream_owns_resources = True
+            return response
+        finally:
+            if not stream_owns_resources:
+                try:
+                    if tmp_context is not None:
+                        tmp_context.cleanup()
+                finally:
+                    await release_active_connection()
 
     @app.websocket("/ws/asr")
     async def websocket_asr(websocket: WebSocket) -> None:
@@ -649,6 +787,291 @@ async def _write_offline_upload(request: Any, path: Path) -> None:
             handle.write(chunk)
     if total == 0:
         raise ValueError("offline upload body is empty")
+
+
+async def _produce_offline_stream_payloads(
+    model: Any,
+    audio_path: str,
+    *,
+    options: OfflineTranscriptionOptions,
+    timestamp_actor: Any | None,
+    translation_actor: Any | None,
+    translation_target_language: str | None,
+    translation_max_new_tokens: int | None,
+    translation_timeout_sec: float | None,
+    asr_executor: Any | None,
+    output_queue: asyncio.Queue[dict[str, Any] | None],
+) -> None:
+    segments: list[TranscriptSegment] = []
+    revision = 0
+    final_document: TranscriptDocument | None = None
+    translation_jobs: asyncio.Queue[_OfflineTranslationJob | None] | None = None
+    translation_task: asyncio.Task[None] | None = None
+    target_language = str(translation_target_language or "").strip()
+
+    if target_language and translation_actor is not None:
+        translation_jobs = asyncio.Queue(maxsize=_SERVICE_TRANSLATION_JOB_QUEUE_MAXSIZE)
+        translation_task = asyncio.create_task(
+            _offline_translation_worker(
+                translation_jobs,
+                output_queue,
+                segments,
+                translation_actor=translation_actor,
+                target_language=target_language,
+                source_language=str(options.language or ""),
+                max_new_tokens=translation_max_new_tokens,
+                timeout_sec=translation_timeout_sec,
+            )
+        )
+
+    try:
+        async for event in stream_transcribe_file(
+            model,
+            audio_path,
+            options=options,
+            timestamp_actor=timestamp_actor,
+            asr_executor=asr_executor,
+        ):
+            if event.kind == "segment" and event.segment is not None:
+                segment = event.segment
+                segments.append(segment)
+                revision = max(revision + 1, int(segment.index))
+                await output_queue.put(_offline_segment_stream_payload(segment, revision))
+                if translation_jobs is not None:
+                    await translation_jobs.put(
+                        _OfflineTranslationJob(
+                            segment_list_index=len(segments) - 1,
+                            segment=segment,
+                            revision=revision,
+                        )
+                    )
+            elif event.kind == "complete" and event.document is not None:
+                final_document = event.document
+
+        if translation_jobs is not None and translation_task is not None:
+            await translation_jobs.put(None)
+            await translation_task
+            translation_jobs = None
+            translation_task = None
+
+        if final_document is None:
+            final_document = TranscriptDocument(duration_ms=0, language="", segments=segments)
+        await output_queue.put(
+            _offline_final_stream_payload(replace(final_document, segments=segments), revision)
+        )
+    except OfflineTranscriptionInputError as exc:
+        await _cancel_offline_translation_worker(translation_task)
+        translation_task = None
+        await output_queue.put(_offline_stream_error_payload("invalid_request", str(exc)))
+    except ValueError:
+        await _cancel_offline_translation_worker(translation_task)
+        translation_task = None
+        _LOGGER.exception("Offline transcription stream failed with a backend value error.")
+        await output_queue.put(_offline_stream_error_payload("internal_error", "Offline transcription failed."))
+    except asyncio.CancelledError:
+        await _cancel_offline_translation_worker(translation_task)
+        translation_task = None
+        raise
+    except Exception:
+        await _cancel_offline_translation_worker(translation_task)
+        translation_task = None
+        _LOGGER.exception("Offline transcription stream failed.")
+        await output_queue.put(_offline_stream_error_payload("internal_error", "Offline transcription failed."))
+    finally:
+        await _cancel_offline_translation_worker(translation_task)
+        if not _current_task_is_cancelling():
+            await output_queue.put(None)
+
+
+def _current_task_is_cancelling() -> bool:
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() > 0
+
+
+async def _cancel_offline_translation_worker(task: asyncio.Task[None] | None) -> None:
+    if task is None:
+        return
+    if not task.done():
+        task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        _LOGGER.exception("Offline translation worker failed.")
+
+
+async def _offline_translation_worker(
+    jobs: asyncio.Queue[_OfflineTranslationJob | None],
+    output_queue: asyncio.Queue[dict[str, Any] | None],
+    segments: list[TranscriptSegment],
+    *,
+    translation_actor: Any,
+    target_language: str,
+    source_language: str,
+    max_new_tokens: int | None,
+    timeout_sec: float | None,
+) -> None:
+    while True:
+        job = await jobs.get()
+        try:
+            if job is None:
+                return
+            translated, error_code = await _translate_offline_segment(
+                job.segment,
+                translation_actor=translation_actor,
+                target_language=target_language,
+                source_language=job.segment.language or source_language,
+                max_new_tokens=max_new_tokens,
+                timeout_sec=timeout_sec,
+            )
+            if translated:
+                translated_segment = replace(job.segment, translation=translated)
+                segments[job.segment_list_index] = translated_segment
+                await output_queue.put(
+                    _offline_translation_stable_payload(translated_segment, job.revision, target_language)
+                )
+            else:
+                await output_queue.put(
+                    _offline_translation_status_payload(
+                        job.segment,
+                        job.revision,
+                        target_language,
+                        code=error_code or "failed",
+                        message="translation failed",
+                    )
+                )
+        finally:
+            jobs.task_done()
+
+
+async def _translate_offline_segment(
+    segment: TranscriptSegment,
+    *,
+    translation_actor: Any,
+    target_language: str,
+    source_language: str,
+    max_new_tokens: int | None,
+    timeout_sec: float | None,
+) -> tuple[str | None, str | None]:
+    try:
+        translate_call = translation_actor.translate_batch(
+            [segment.text],
+            target_language=target_language,
+            source_language=source_language,
+            max_new_tokens=max_new_tokens,
+            timeout_sec=timeout_sec,
+        )
+        if timeout_sec is None:
+            outputs = await translate_call
+        else:
+            outputs = await asyncio.wait_for(translate_call, timeout=max(0.001, float(timeout_sec)) + 0.1)
+    except asyncio.TimeoutError:
+        return None, "timeout"
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        _LOGGER.exception("Offline stream translation failed.")
+        return None, "failed"
+
+    text, error = outputs[0] if outputs else (None, "missing translation output")
+    translated = str(text or "").strip()
+    if not translated:
+        return None, str(error or "failed")
+    return translated, None
+
+
+def _offline_stream_error_payload(code: str, message: str) -> dict[str, Any]:
+    return {
+        "type": "error",
+        "error": {"code": str(code), "message": str(message)},
+        "fatal": True,
+    }
+
+
+def _translation_stable_timeout_sec(config: TranslationServiceConfig) -> float:
+    return max(0.001, int(config.stable_timeout_ms) / 1000.0)
+
+
+def _json_line(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+
+def _offline_segment_stream_payload(segment: Any, revision: int) -> dict[str, Any]:
+    return {
+        "type": "transcript_update",
+        "revision": int(revision),
+        "stable_base": max(0, int(segment.index) - 1),
+        "stable_count": int(segment.index),
+        "stable_appends": [_offline_segment_realtime_payload(segment)],
+        "partial": None,
+    }
+
+
+def _offline_translation_stable_payload(
+    segment: TranscriptSegment,
+    revision: int,
+    target_language: str,
+) -> dict[str, Any]:
+    return {
+        "type": "translation_stable",
+        "source_revision": int(revision),
+        "source_segment_id": segment.id,
+        "source_segment_index": int(segment.index),
+        "source_segment_ids": [segment.id],
+        "source_segment_indices": [int(segment.index)],
+        "text": str(segment.translation or ""),
+        "target_language": target_language,
+    }
+
+
+def _offline_translation_status_payload(
+    segment: TranscriptSegment,
+    revision: int,
+    target_language: str,
+    *,
+    code: str,
+    message: str,
+) -> dict[str, Any]:
+    return {
+        "type": "translation_status",
+        "scope": "stable",
+        "code": str(code),
+        "source_revision": int(revision),
+        "source_segment_id": segment.id,
+        "source_segment_index": int(segment.index),
+        "source_segment_ids": [segment.id],
+        "source_segment_indices": [int(segment.index)],
+        "target_language": target_language,
+        "message": str(message),
+    }
+
+
+def _offline_final_stream_payload(document: Any, revision: int) -> dict[str, Any]:
+    return {
+        "type": "transcript_final",
+        "revision": int(revision),
+        "final_revision": int(revision),
+        "stable_count": len(document.segments),
+        "duration_ms": int(document.duration_ms),
+        "language": document.language,
+        "segments": [_offline_segment_realtime_payload(segment) for segment in document.segments],
+        "document": document.to_payload(),
+    }
+
+
+def _offline_segment_realtime_payload(segment: Any) -> dict[str, Any]:
+    payload = {
+        "id": segment.id,
+        "index": int(segment.index),
+        "start_ms": segment.start_ms,
+        "end_ms": segment.end_ms,
+        "text": segment.text,
+        "language": segment.language,
+    }
+    if segment.timing_status is not None:
+        payload["timing_status"] = segment.timing_status
+    return payload
 
 
 def _offline_upload_filename(filename: str) -> str:
@@ -1293,6 +1716,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--translation-preview-debounce-ms", type=int, default=_SERVICE_TRANSLATION_PREVIEW_DEBOUNCE_MS)
     parser.add_argument("--translation-preview-timeout-ms", type=int, default=30_000)
     parser.add_argument("--translation-max-new-tokens", type=int, default=_SERVICE_TRANSLATION_MAX_NEW_TOKENS)
+    parser.add_argument("--translation-stable-timeout-ms", type=int, default=30_000)
     parser.add_argument("--translation-stable-batch-size", type=int, default=1)
     parser.add_argument("--translation-sample", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--translation-decode-backend", default=DEFAULT_HYMT_DECODE_BACKEND, choices=["fixed_mask", "generate"])
@@ -1434,6 +1858,7 @@ def _build_translation(args: argparse.Namespace) -> tuple[Any | None, Translatio
         preview_enabled=bool(args.translation_preview),
         preview_debounce_ms=int(args.translation_preview_debounce_ms),
         preview_timeout_ms=int(args.translation_preview_timeout_ms),
+        stable_timeout_ms=int(args.translation_stable_timeout_ms),
         max_new_tokens=int(args.translation_max_new_tokens),
         stable_batch_size=int(args.translation_stable_batch_size),
     )

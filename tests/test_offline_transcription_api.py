@@ -1,20 +1,51 @@
 # coding=utf-8
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 import json
 from pathlib import Path
 
 import pytest
 
 import realtime_server
-from qwen3_asr_runtime.offline_transcription import OfflineTranscriptionOptions
+from qwen3_asr_runtime.offline_transcription import (
+    OfflineTranscriptionInputError,
+    OfflineTranscriptionOptions,
+    OfflineTranscriptionStreamEvent,
+)
 from qwen3_asr_runtime.transcription_document import TranscriptDocument, TranscriptSegment
 from realtime_server import TranslationServiceConfig, build_app
 
 
 class FakeTranslationActor:
-    pass
+    def __init__(self, outputs: list[str] | None = None, *, delay_sec: float = 0.0) -> None:
+        self.outputs = list(outputs or [])
+        self.delay_sec = float(delay_sec)
+        self.calls: list[dict[str, object]] = []
+
+    async def translate_batch(
+        self,
+        texts: list[str],
+        *,
+        target_language: str,
+        source_language: str,
+        max_new_tokens: int | None,
+        timeout_sec: float | None,
+    ) -> list[tuple[str | None, str | None]]:
+        self.calls.append(
+            {
+                "texts": texts,
+                "target_language": target_language,
+                "source_language": source_language,
+                "max_new_tokens": max_new_tokens,
+                "timeout_sec": timeout_sec,
+            }
+        )
+        if self.delay_sec > 0:
+            await asyncio.sleep(self.delay_sec)
+        return [(self.outputs.pop(0), None) for _ in texts]
 
 
 @pytest.mark.asyncio
@@ -129,6 +160,535 @@ async def test_offline_transcription_route_rejects_translation_without_model() -
 
 
 @pytest.mark.asyncio
+async def test_offline_transcription_route_sanitizes_backend_value_errors(monkeypatch) -> None:
+    async def fake_transcribe_file(*_args: object, **_kwargs: object) -> TranscriptDocument:
+        raise ValueError("private backend details from /tmp/secret-model-path")
+
+    monkeypatch.setattr(realtime_server, "transcribe_file", fake_transcribe_file)
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        app = build_app(model=object(), asr_executor=executor)
+        response = await asgi_post(
+            app,
+            "/api/transcriptions",
+            query="filename=clip.wav",
+            body=b"audio-bytes",
+        )
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    assert response["status"] == 500
+    assert response["json"] == {
+        "error": {"code": "internal_error", "message": "Offline transcription failed."}
+    }
+
+
+@pytest.mark.asyncio
+async def test_offline_transcription_route_sanitizes_backend_runtime_errors(monkeypatch) -> None:
+    async def fake_transcribe_file(*_args: object, **_kwargs: object) -> TranscriptDocument:
+        raise RuntimeError("private backend details from /tmp/secret-model-path")
+
+    monkeypatch.setattr(realtime_server, "transcribe_file", fake_transcribe_file)
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        app = build_app(model=object(), asr_executor=executor)
+        response = await asgi_post(
+            app,
+            "/api/transcriptions",
+            query="filename=clip.wav",
+            body=b"audio-bytes",
+        )
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    assert response["status"] == 500
+    assert response["json"] == {
+        "error": {"code": "internal_error", "message": "Offline transcription failed."}
+    }
+
+
+@pytest.mark.asyncio
+async def test_offline_transcription_stream_route_returns_incremental_events(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def fake_stream_transcribe_file(
+        model: object,
+        audio_source: str,
+        *,
+        options: OfflineTranscriptionOptions,
+        timestamp_actor: object | None,
+        asr_executor: ThreadPoolExecutor | None,
+    ):
+        calls.append(
+            {
+                "model": model,
+                "body": Path(audio_source).read_bytes(),
+                "options": options,
+                "timestamp_actor": timestamp_actor,
+                "asr_executor": asr_executor,
+            }
+        )
+        first = TranscriptSegment(
+            id="seg_000001",
+            index=1,
+            start_ms=100,
+            end_ms=900,
+            text="你好",
+            language="Chinese",
+            timing_status="aligned",
+        )
+        second = TranscriptSegment(
+            id="seg_000002",
+            index=2,
+            start_ms=1000,
+            end_ms=1800,
+            text="世界",
+            language="Chinese",
+            timing_status="aligned",
+        )
+        yield OfflineTranscriptionStreamEvent(kind="segment", segment=first)
+        yield OfflineTranscriptionStreamEvent(kind="segment", segment=second)
+        yield OfflineTranscriptionStreamEvent(
+            kind="complete",
+            document=TranscriptDocument(duration_ms=2000, language="Chinese", segments=[first, second]),
+        )
+
+    monkeypatch.setattr(realtime_server, "stream_transcribe_file", fake_stream_transcribe_file)
+    model = object()
+    translation_actor = FakeTranslationActor(["hello", "world"], delay_sec=0.01)
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        app = build_app(
+            model=model,
+            asr_executor=executor,
+            translation_actor=translation_actor,
+            translation_service_config=TranslationServiceConfig(max_new_tokens=123),
+        )
+        response = await asgi_request(
+            app,
+            "/api/transcriptions/stream",
+            method="POST",
+            query=b"language=Chinese&targetLanguage=English&filename=clip.wav",
+            body=b"audio-bytes",
+            headers=[(b"content-type", b"application/octet-stream")],
+        )
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    assert response["status"] == 200
+    assert str(response["headers"]["content-type"]).startswith("application/x-ndjson")
+    events = [json.loads(line) for line in bytes(response["body"]).decode("utf-8").splitlines()]
+    assert [event["type"] for event in events] == [
+        "transcript_update",
+        "transcript_update",
+        "translation_stable",
+        "translation_stable",
+        "transcript_final",
+    ]
+    assert events[0]["stable_appends"][0] == {
+        "id": "seg_000001",
+        "index": 1,
+        "start_ms": 100,
+        "end_ms": 900,
+        "text": "你好",
+        "language": "Chinese",
+        "timing_status": "aligned",
+    }
+    assert events[1]["stable_appends"][0] == {
+        "id": "seg_000002",
+        "index": 2,
+        "start_ms": 1000,
+        "end_ms": 1800,
+        "text": "世界",
+        "language": "Chinese",
+        "timing_status": "aligned",
+    }
+    assert events[2] == {
+        "type": "translation_stable",
+        "source_revision": 1,
+        "source_segment_id": "seg_000001",
+        "source_segment_index": 1,
+        "source_segment_ids": ["seg_000001"],
+        "source_segment_indices": [1],
+        "text": "hello",
+        "target_language": "English",
+    }
+    assert events[3] == {
+        "type": "translation_stable",
+        "source_revision": 2,
+        "source_segment_id": "seg_000002",
+        "source_segment_index": 2,
+        "source_segment_ids": ["seg_000002"],
+        "source_segment_indices": [2],
+        "text": "world",
+        "target_language": "English",
+    }
+    assert events[4]["revision"] == 2
+    assert events[4]["final_revision"] == 2
+    assert events[4]["stable_count"] == 2
+    assert events[4]["document"]["segments"][0]["translation"] == "hello"
+    assert events[4]["document"]["segments"][1]["translation"] == "world"
+    assert calls[0]["model"] is model
+    assert calls[0]["body"] == b"audio-bytes"
+    options = calls[0]["options"]
+    assert isinstance(options, OfflineTranscriptionOptions)
+    assert options.target_language is None
+    assert translation_actor.calls == [
+        {
+            "texts": ["你好"],
+            "target_language": "English",
+            "source_language": "Chinese",
+            "max_new_tokens": 123,
+            "timeout_sec": 30.0,
+        },
+        {
+            "texts": ["世界"],
+            "target_language": "English",
+            "source_language": "Chinese",
+            "max_new_tokens": 123,
+            "timeout_sec": 30.0,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_offline_transcription_stream_route_times_out_translation_and_finishes(monkeypatch) -> None:
+    async def fake_stream_transcribe_file(
+        model: object,
+        audio_source: str,
+        *,
+        options: OfflineTranscriptionOptions,
+        timestamp_actor: object | None,
+        asr_executor: ThreadPoolExecutor | None,
+    ):
+        del model, audio_source, options, timestamp_actor, asr_executor
+        segment = TranscriptSegment(
+            id="seg_000001",
+            index=1,
+            start_ms=100,
+            end_ms=900,
+            text="你好",
+            language="Chinese",
+            timing_status="aligned",
+        )
+        yield OfflineTranscriptionStreamEvent(kind="segment", segment=segment)
+        yield OfflineTranscriptionStreamEvent(
+            kind="complete",
+            document=TranscriptDocument(duration_ms=1000, language="Chinese", segments=[segment]),
+        )
+
+    monkeypatch.setattr(realtime_server, "stream_transcribe_file", fake_stream_transcribe_file)
+    translation_actor = FakeTranslationActor(["hello"], delay_sec=1.0)
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        app = build_app(
+            model=object(),
+            asr_executor=executor,
+            translation_actor=translation_actor,
+            translation_service_config=TranslationServiceConfig(max_new_tokens=123, stable_timeout_ms=1),
+        )
+        response = await asgi_request(
+            app,
+            "/api/transcriptions/stream",
+            method="POST",
+            query=b"language=Chinese&targetLanguage=English&filename=clip.wav",
+            body=b"audio-bytes",
+            headers=[(b"content-type", b"application/octet-stream")],
+        )
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    assert response["status"] == 200
+    events = [json.loads(line) for line in bytes(response["body"]).decode("utf-8").splitlines()]
+    assert [event["type"] for event in events] == ["transcript_update", "translation_status", "transcript_final"]
+    assert events[1] == {
+        "type": "translation_status",
+        "scope": "stable",
+        "code": "timeout",
+        "source_revision": 1,
+        "source_segment_id": "seg_000001",
+        "source_segment_index": 1,
+        "source_segment_ids": ["seg_000001"],
+        "source_segment_indices": [1],
+        "target_language": "English",
+        "message": "translation failed",
+    }
+    assert "translation" not in events[2]["document"]["segments"][0]
+    assert translation_actor.calls[0]["timeout_sec"] == 0.001
+
+
+@pytest.mark.asyncio
+async def test_offline_transcription_stream_route_reports_runtime_errors_as_stream_errors(monkeypatch) -> None:
+    async def fake_stream_transcribe_file(*_args: object, **_kwargs: object):
+        raise RuntimeError("gpu exploded with private details")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(realtime_server, "stream_transcribe_file", fake_stream_transcribe_file)
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        app = build_app(model=object(), asr_executor=executor)
+        response = await asgi_request(
+            app,
+            "/api/transcriptions/stream",
+            method="POST",
+            query=b"filename=clip.wav",
+            body=b"audio-bytes",
+            headers=[(b"content-type", b"application/octet-stream")],
+        )
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    assert response["status"] == 200
+    events = [json.loads(line) for line in bytes(response["body"]).decode("utf-8").splitlines()]
+    assert events == [
+        {
+            "type": "error",
+            "error": {"code": "internal_error", "message": "Offline transcription failed."},
+            "fatal": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_offline_transcription_stream_route_sanitizes_backend_value_errors(monkeypatch) -> None:
+    async def fake_stream_transcribe_file(*_args: object, **_kwargs: object):
+        raise ValueError("private backend details from /tmp/secret-model-path")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(realtime_server, "stream_transcribe_file", fake_stream_transcribe_file)
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        app = build_app(model=object(), asr_executor=executor)
+        response = await asgi_request(
+            app,
+            "/api/transcriptions/stream",
+            method="POST",
+            query=b"filename=clip.wav",
+            body=b"audio-bytes",
+            headers=[(b"content-type", b"application/octet-stream")],
+        )
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    assert response["status"] == 200
+    events = [json.loads(line) for line in bytes(response["body"]).decode("utf-8").splitlines()]
+    assert events == [
+        {
+            "type": "error",
+            "error": {"code": "internal_error", "message": "Offline transcription failed."},
+            "fatal": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_offline_transcription_stream_route_reports_typed_input_errors(monkeypatch) -> None:
+    async def fake_stream_transcribe_file(*_args: object, **_kwargs: object):
+        raise OfflineTranscriptionInputError("Unsupported or unreadable audio file: clip.wav")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(realtime_server, "stream_transcribe_file", fake_stream_transcribe_file)
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        app = build_app(model=object(), asr_executor=executor)
+        response = await asgi_request(
+            app,
+            "/api/transcriptions/stream",
+            method="POST",
+            query=b"filename=clip.wav",
+            body=b"audio-bytes",
+            headers=[(b"content-type", b"application/octet-stream")],
+        )
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    assert response["status"] == 200
+    events = [json.loads(line) for line in bytes(response["body"]).decode("utf-8").splitlines()]
+    assert events == [
+        {
+            "type": "error",
+            "error": {"code": "invalid_request", "message": "Unsupported or unreadable audio file: clip.wav"},
+            "fatal": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_offline_stream_translation_jobs_backpressure_source_producer(monkeypatch) -> None:
+    yielded: list[int] = []
+
+    async def fake_stream_transcribe_file(*_args: object, **_kwargs: object):
+        for index in range(1, 11):
+            yielded.append(index)
+            yield OfflineTranscriptionStreamEvent(
+                kind="segment",
+                segment=TranscriptSegment(
+                    id=f"seg_{index:06d}",
+                    index=index,
+                    start_ms=index * 1000,
+                    end_ms=index * 1000 + 500,
+                    text=f"text {index}",
+                    language="English",
+                ),
+            )
+        yield OfflineTranscriptionStreamEvent(
+            kind="complete",
+            document=TranscriptDocument(duration_ms=11_000, language="English", segments=[]),
+        )
+
+    class BlockingTranslationActor:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+
+        async def translate_batch(
+            self,
+            texts: list[str],
+            *,
+            target_language: str,
+            source_language: str,
+            max_new_tokens: int | None,
+            timeout_sec: float | None,
+        ) -> list[tuple[str | None, str | None]]:
+            del texts, target_language, source_language, max_new_tokens, timeout_sec
+            self.started.set()
+            await asyncio.Event().wait()
+            return []
+
+    monkeypatch.setattr(realtime_server, "stream_transcribe_file", fake_stream_transcribe_file)
+    monkeypatch.setattr(realtime_server, "_SERVICE_TRANSLATION_JOB_QUEUE_MAXSIZE", 1)
+    translation_actor = BlockingTranslationActor()
+    output_queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue(maxsize=100)
+    task = asyncio.create_task(
+        realtime_server._produce_offline_stream_payloads(
+            object(),
+            "unused.wav",
+            options=OfflineTranscriptionOptions(),
+            timestamp_actor=None,
+            translation_actor=translation_actor,
+            translation_target_language="Chinese",
+            translation_max_new_tokens=None,
+            translation_timeout_sec=None,
+            asr_executor=None,
+            output_queue=output_queue,
+        )
+    )
+
+    await asyncio.wait_for(translation_actor.started.wait(), timeout=1.0)
+    await asyncio.sleep(0.05)
+
+    assert yielded == [1, 2, 3]
+    assert not task.done()
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_offline_stream_producer_cancellation_does_not_wait_for_full_output_queue(monkeypatch) -> None:
+    async def fake_stream_transcribe_file(*_args: object, **_kwargs: object):
+        segment = TranscriptSegment(
+            id="seg_000001",
+            index=1,
+            start_ms=0,
+            end_ms=1000,
+            text="hello",
+            language="English",
+        )
+        yield OfflineTranscriptionStreamEvent(kind="segment", segment=segment)
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(realtime_server, "stream_transcribe_file", fake_stream_transcribe_file)
+    output_queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue(maxsize=1)
+    task = asyncio.create_task(
+        realtime_server._produce_offline_stream_payloads(
+            object(),
+            "unused.wav",
+            options=OfflineTranscriptionOptions(),
+            timestamp_actor=None,
+            translation_actor=None,
+            translation_target_language=None,
+            translation_max_new_tokens=None,
+            translation_timeout_sec=None,
+            asr_executor=None,
+            output_queue=output_queue,
+        )
+    )
+
+    while output_queue.qsize() == 0:
+        await asyncio.sleep(0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=0.5)
+
+
+@pytest.mark.asyncio
+async def test_offline_transcription_stream_upload_cancellation_releases_active_session(monkeypatch) -> None:
+    async def fake_stream_transcribe_file(*_args: object, **_kwargs: object):
+        yield OfflineTranscriptionStreamEvent(
+            kind="complete",
+            document=TranscriptDocument(duration_ms=0, language="", segments=[]),
+        )
+
+    monkeypatch.setattr(realtime_server, "stream_transcribe_file", fake_stream_transcribe_file)
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        app = build_app(model=object(), asr_executor=executor)
+        first_chunk_received = asyncio.Event()
+        finish_upload = asyncio.Event()
+        received = False
+
+        async def receive() -> dict[str, object]:
+            nonlocal received
+            if not received:
+                received = True
+                first_chunk_received.set()
+                return {"type": "http.request", "body": b"partial", "more_body": True}
+            await finish_upload.wait()
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(_message: dict[str, object]) -> None:
+            return
+
+        task = asyncio.create_task(
+            app(  # type: ignore[misc]
+                {
+                    "type": "http",
+                    "asgi": {"version": "3.0"},
+                    "http_version": "1.1",
+                    "method": "POST",
+                    "scheme": "http",
+                    "path": "/api/transcriptions/stream",
+                    "raw_path": b"/api/transcriptions/stream",
+                    "query_string": b"filename=clip.wav",
+                    "headers": [(b"content-type", b"application/octet-stream")],
+                    "client": ("127.0.0.1", 12345),
+                    "server": ("127.0.0.1", 8000),
+                },
+                receive,
+                send,
+            )
+        )
+        await asyncio.wait_for(first_chunk_received.wait(), timeout=1.0)
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+        response = await asgi_request(
+            app,
+            "/api/transcriptions/stream",
+            method="POST",
+            query=b"filename=clip.wav",
+            body=b"audio-bytes",
+            headers=[(b"content-type", b"application/octet-stream")],
+        )
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    assert response["status"] == 200
+
+
+@pytest.mark.asyncio
 async def test_offline_transcription_route_rejects_unreadable_audio_with_json_error() -> None:
     executor = ThreadPoolExecutor(max_workers=1)
     try:
@@ -148,13 +708,14 @@ async def test_offline_transcription_route_rejects_unreadable_audio_with_json_er
 
 
 @pytest.mark.asyncio
-async def test_offline_transcription_route_allows_loopback_cors_preflight() -> None:
+@pytest.mark.parametrize("path", ["/api/transcriptions", "/api/transcriptions/stream"])
+async def test_offline_transcription_route_allows_loopback_cors_preflight(path: str) -> None:
     executor = ThreadPoolExecutor(max_workers=1)
     try:
         app = build_app(model=object(), asr_executor=executor)
         response = await asgi_options(
             app,
-            "/api/transcriptions",
+            path,
             headers=[
                 (b"origin", b"http://localhost:5173"),
                 (b"access-control-request-method", b"POST"),
@@ -171,13 +732,14 @@ async def test_offline_transcription_route_allows_loopback_cors_preflight() -> N
 
 
 @pytest.mark.asyncio
-async def test_offline_transcription_route_rejects_non_loopback_cors_preflight() -> None:
+@pytest.mark.parametrize("path", ["/api/transcriptions", "/api/transcriptions/stream"])
+async def test_offline_transcription_route_rejects_non_loopback_cors_preflight(path: str) -> None:
     executor = ThreadPoolExecutor(max_workers=1)
     try:
         app = build_app(model=object(), asr_executor=executor)
         response = await asgi_options(
             app,
-            "/api/transcriptions",
+            path,
             headers=[
                 (b"origin", b"http://127.0.0.1.evil.example:5173"),
                 (b"access-control-request-method", b"POST"),
@@ -222,6 +784,10 @@ async def asgi_request(
     async def receive() -> dict[str, object]:
         nonlocal received
         if received:
+            # StreamingResponse starts a disconnect listener after the request body
+            # has been consumed. Keep the synthetic client connected until that
+            # listener is cancelled by response completion.
+            await asyncio.sleep(3600)
             return {"type": "http.disconnect"}
         received = True
         return {"type": "http.request", "body": body, "more_body": False}

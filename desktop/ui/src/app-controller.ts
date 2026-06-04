@@ -377,6 +377,16 @@ export class FunyiApp {
       const snapshot = await transcribeFile({
         file,
         language: this.languageControls.asrLanguage,
+        onEvent: (event) => {
+          if (this.offlineAbort !== abort) {
+            return;
+          }
+          if (event.type === "transcript_final") {
+            return;
+          }
+          this.subtitleDocument.applyEvent(event);
+          this.render();
+        },
         realtimeUrl: this.options.dom.serverUrl.value,
         signal: abort.signal,
         targetLanguage: this.languageControls.targetLanguage,

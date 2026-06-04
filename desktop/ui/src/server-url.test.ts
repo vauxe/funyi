@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   INVALID_SERVER_URL_MESSAGE,
+  transcriptionStreamUrlFromRealtimeUrl,
   transcriptionUrlFromRealtimeUrl,
   validateRealtimeServerUrl,
 } from "./server-url.js";
@@ -17,6 +18,10 @@ test("derives the offline transcription endpoint from the realtime endpoint", ()
   assert.deepEqual(transcriptionUrlFromRealtimeUrl(" ws://127.0.0.1:8000/ws/asr?debug=1#x "), {
     ok: true,
     url: "http://127.0.0.1:8000/api/transcriptions",
+  });
+  assert.deepEqual(transcriptionStreamUrlFromRealtimeUrl(" ws://127.0.0.1:8000/ws/asr?debug=1#x "), {
+    ok: true,
+    url: "http://127.0.0.1:8000/api/transcriptions/stream",
   });
 });
 
@@ -36,5 +41,6 @@ for (const url of [
   test(`rejects non-loopback realtime url: ${url}`, () => {
     assert.deepEqual(validateRealtimeServerUrl(url), { ok: false, message: INVALID_SERVER_URL_MESSAGE });
     assert.deepEqual(transcriptionUrlFromRealtimeUrl(url), { ok: false, message: INVALID_SERVER_URL_MESSAGE });
+    assert.deepEqual(transcriptionStreamUrlFromRealtimeUrl(url), { ok: false, message: INVALID_SERVER_URL_MESSAGE });
   });
 }

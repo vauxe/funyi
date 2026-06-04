@@ -99,23 +99,7 @@ test("offline file source posts the selected file and renders the returned trans
   const restore = stubFetch(async (url, init) => {
     seen.url = String(url);
     seen.init = init ?? null;
-    return jsonResponse({
-      schemaVersion: 1,
-      durationMs: 1200,
-      language: "Chinese",
-      text: "你好",
-      segments: [
-        {
-          id: "seg_000001",
-          index: 1,
-          startMs: 0,
-          endMs: 1200,
-          text: "你好",
-          language: "Chinese",
-          translation: "hello",
-        },
-      ],
-    });
+    return transcriptStreamResponse({ translation: "hello" });
   });
 
   try {
@@ -136,12 +120,91 @@ test("offline file source posts the selected file and renders the returned trans
     assert.equal(FakeWebSocket.instances.length, 0);
     assert.equal(
       seen.url,
-      "http://127.0.0.1:8000/api/transcriptions?language=Chinese&targetLanguage=English&filename=clip.wav",
+      "http://127.0.0.1:8000/api/transcriptions/stream?language=Chinese&targetLanguage=English&filename=clip.wav",
     );
     assert.equal(seen.init?.method, "POST");
     assert.equal(seen.init?.body, file);
     assert.equal(elements["current-source"]!.textContent, "你好");
     assert.equal(elements["current-translation"]!.textContent, "hello");
+    assert.equal(elements["session-status"]!.textContent, "File transcript ready.");
+  } finally {
+    restore();
+  }
+});
+
+test("offline file stream renders segments before the final transcript", async () => {
+  const elements = installDocument();
+  const file = namedBlob("clip.wav", "audio/wav");
+  const stream = controlledNdjsonResponse();
+  const restore = stubFetch(async () => stream.response);
+
+  try {
+    await bootApp();
+
+    elements["language"]!.value = "Chinese";
+    elements["translation-target-language"]!.value = "English";
+    elements["audio-source"]!.value = OFFLINE_FILE_SOURCE_ID;
+    elements["audio-source"]!.dispatch("change", {});
+    elements["offline-file"]!.files = [file];
+    elements["offline-file"]!.dispatch("change", {});
+    elements["transport-button"]!.click();
+    await nextTick();
+
+    stream.send(transcriptUpdateEvent());
+    await nextTick();
+
+    assert.equal(elements["current-source"]!.textContent, "你好");
+    assert.equal(elements["session-status"]!.textContent, "Transcribing file...");
+
+    stream.send(translationStableEvent("hello"));
+    await nextTick();
+
+    assert.equal(elements["current-translation"]!.textContent, "hello");
+
+    stream.send(finalTranscriptEvent({ translation: "hello" }));
+    await nextTick();
+
+    assert.equal(elements["current-source"]!.textContent, "你好");
+    assert.equal(elements["current-translation"]!.textContent, "hello");
+    assert.equal(elements["session-status"]!.textContent, "Transcribing file...");
+
+    stream.close();
+    await nextTick();
+    await nextTick();
+
+    assert.equal(elements["session-status"]!.textContent, "File transcript ready.");
+  } finally {
+    restore();
+  }
+});
+
+test("offline file stream keeps translation status after the final transcript", async () => {
+  const elements = installDocument();
+  const file = namedBlob("clip.wav", "audio/wav");
+  const stream = controlledNdjsonResponse();
+  const restore = stubFetch(async () => stream.response);
+
+  try {
+    await bootApp();
+
+    elements["language"]!.value = "Chinese";
+    elements["translation-target-language"]!.value = "English";
+    elements["audio-source"]!.value = OFFLINE_FILE_SOURCE_ID;
+    elements["audio-source"]!.dispatch("change", {});
+    elements["offline-file"]!.files = [file];
+    elements["offline-file"]!.dispatch("change", {});
+    elements["transport-button"]!.click();
+    await nextTick();
+
+    stream.send(transcriptUpdateEvent());
+    stream.send(translationStatusEvent("timeout", "translation failed"));
+    stream.send(finalTranscriptEvent({ translation: null }));
+    stream.close();
+    await nextTick();
+    await nextTick();
+
+    assert.equal(elements["current-source"]!.textContent, "你好");
+    assert.equal(elements["current-translation"]!.textContent, "translation failed");
     assert.equal(elements["session-status"]!.textContent, "File transcript ready.");
   } finally {
     restore();
@@ -201,13 +264,7 @@ test("offline file source asks for a fresh file after one transcription", async 
   let requests = 0;
   const restore = stubFetch(async () => {
     requests += 1;
-    return jsonResponse({
-      schemaVersion: 1,
-      durationMs: 1200,
-      language: "Chinese",
-      text: "你好",
-      segments: [{ id: "seg_000001", index: 1, startMs: 0, endMs: 1200, text: "你好", language: "Chinese" }],
-    });
+    return transcriptStreamResponse();
   });
 
   try {
@@ -642,6 +699,142 @@ function jsonResponse(payload: unknown, ok = true, status = 200): Response {
     ok,
     status,
   } as Response;
+}
+
+function transcriptStreamResponse({ translation = null }: { translation?: string | null } = {}): Response {
+  return ndjsonResponse([
+    transcriptUpdateEvent(),
+    ...(translation ? [translationStableEvent(translation)] : []),
+    finalTranscriptEvent({ translation }),
+  ]);
+}
+
+function transcriptUpdateEvent(): Record<string, unknown> {
+  return {
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 1,
+    stable_appends: [
+      {
+        id: "seg_000001",
+        index: 1,
+        start_ms: 0,
+        end_ms: 1200,
+        text: "你好",
+        language: "Chinese",
+        timing_status: "aligned",
+      },
+    ],
+    partial: null,
+  };
+}
+
+function translationStableEvent(text: string): Record<string, unknown> {
+  return {
+    type: "translation_stable",
+    source_revision: 1,
+    source_segment_id: "seg_000001",
+    source_segment_index: 1,
+    source_segment_ids: ["seg_000001"],
+    source_segment_indices: [1],
+    text,
+    target_language: "English",
+  };
+}
+
+function translationStatusEvent(code: string, message: string): Record<string, unknown> {
+  return {
+    type: "translation_status",
+    scope: "stable",
+    code,
+    message,
+    source_revision: 1,
+    source_segment_id: "seg_000001",
+    source_segment_index: 1,
+    source_segment_ids: ["seg_000001"],
+    source_segment_indices: [1],
+    target_language: "English",
+  };
+}
+
+function finalTranscriptEvent({ translation = null }: { translation?: string | null } = {}): Record<string, unknown> {
+  return {
+    type: "transcript_final",
+    revision: 1,
+    final_revision: 1,
+    stable_count: 1,
+    segments: [
+      {
+        id: "seg_000001",
+        index: 1,
+        start_ms: 0,
+        end_ms: 1200,
+        text: "你好",
+        language: "Chinese",
+      },
+    ],
+    document: {
+      schemaVersion: 1,
+      durationMs: 1200,
+      language: "Chinese",
+      text: "你好",
+      segments: [
+        {
+          id: "seg_000001",
+          index: 1,
+          startMs: 0,
+          endMs: 1200,
+          text: "你好",
+          language: "Chinese",
+          ...(translation ? { translation } : {}),
+        },
+      ],
+    },
+  };
+}
+
+function ndjsonResponse(payloads: readonly unknown[]): Response {
+  const encoder = new TextEncoder();
+  return {
+    body: new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const payload of payloads) {
+          controller.enqueue(encoder.encode(`${JSON.stringify(payload)}\n`));
+        }
+        controller.close();
+      },
+    }),
+    ok: true,
+    status: 200,
+  } as Response;
+}
+
+function controlledNdjsonResponse(): {
+  close(): void;
+  response: Response;
+  send(payload: unknown): void;
+} {
+  const encoder = new TextEncoder();
+  let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
+  const body = new ReadableStream<Uint8Array>({
+    start(streamController) {
+      controller = streamController;
+    },
+  });
+  return {
+    close() {
+      controller?.close();
+    },
+    response: {
+      body,
+      ok: true,
+      status: 200,
+    } as Response,
+    send(payload: unknown) {
+      controller?.enqueue(encoder.encode(`${JSON.stringify(payload)}\n`));
+    },
+  };
 }
 
 function stubFetch(implementation: typeof fetch): () => void {

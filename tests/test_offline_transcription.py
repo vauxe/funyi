@@ -8,7 +8,11 @@ import pytest
 import soundfile as sf
 
 import qwen3_asr_runtime.offline_transcription as offline_transcription
-from qwen3_asr_runtime.offline_transcription import OfflineTranscriptionOptions, transcribe_file
+from qwen3_asr_runtime.offline_transcription import (
+    OfflineTranscriptionOptions,
+    stream_transcribe_file,
+    transcribe_file,
+)
 from qwen3_asr_runtime.utils import SAMPLE_RATE
 
 
@@ -78,7 +82,7 @@ class FakeTranslationActor:
                 "timeout_sec": timeout_sec,
             }
         )
-        return [(self.outputs[index], None) for index in range(len(texts))]
+        return [(self.outputs.pop(0), None) for _ in texts]
 
 
 @pytest.mark.asyncio
@@ -153,3 +157,44 @@ async def test_transcribe_file_streams_local_file_path(monkeypatch, tmp_path) ->
         (100, 800, "aligned"),
         (1100, 1800, "aligned"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_stream_transcribe_file_yields_segments_before_final_document() -> None:
+    wav = np.ones((int(SAMPLE_RATE * 2.0),), dtype=np.float32) * 0.1
+    model = FakeOfflineModel(["第一句", "第二句"])
+    timestamps = FakeTimestampActor()
+
+    events = [
+        event
+        async for event in stream_transcribe_file(
+            model,
+            (wav, SAMPLE_RATE),
+            options=OfflineTranscriptionOptions(
+                language="Chinese",
+            ),
+            timestamp_actor=timestamps,
+            chunk_sec=1.0,
+        )
+    ]
+
+    assert [event.kind for event in events] == ["segment", "segment", "complete"]
+    assert [event.segment.text for event in events if event.segment is not None] == ["第一句", "第二句"]
+    assert [event.segment.translation for event in events if event.segment is not None] == [None, None]
+    assert events[-1].document is not None
+    assert events[-1].document.text == "第一句第二句"
+    assert [segment.translation for segment in events[-1].document.segments] == [None, None]
+
+
+@pytest.mark.asyncio
+async def test_stream_transcribe_file_rejects_translation_options() -> None:
+    wav = np.ones((int(SAMPLE_RATE * 1.0),), dtype=np.float32) * 0.1
+    events = stream_transcribe_file(
+        FakeOfflineModel(["第一句"]),
+        (wav, SAMPLE_RATE),
+        options=OfflineTranscriptionOptions(language="Chinese", target_language="English"),
+        chunk_sec=1.0,
+    )
+
+    with pytest.raises(ValueError, match="does not support translation"):
+        await anext(events)

@@ -191,6 +191,30 @@ test("announces only stabilized lines through the live region with language tags
   assert.equal(elements.currentSource.textContent, "typing");
 });
 
+test("announces a stable translation that arrives after the source line", () => {
+  const document = new SubtitleDocument({ translationEnabled: true });
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 1,
+    stable_appends: [stableSegment(1, "hello", { startMs: 0, endMs: 1000 })],
+    partial: null,
+  });
+  const elements = createElements();
+  const view = new CaptionView(captionViewElements(elements));
+
+  view.render(document, { historyVisible: false, translationLanguage: "English" });
+  document.applyEvent({ type: "translation_stable", source_segment_id: "seg_000001", text: "hello translation" });
+  view.render(document, { historyVisible: false, translationLanguage: "English" });
+  view.render(document, { historyVisible: false, translationLanguage: "English" });
+
+  assert.equal(elements.announcer.children.length, 2);
+  assert.equal(elements.announcer.children[0]?.children[0]?.textContent, "hello");
+  assert.equal(elements.announcer.children[1]?.children[0]?.textContent, "hello translation");
+  assert.equal(elements.announcer.children[1]?.children[0]?.attributes.get("lang"), "en");
+});
+
 test("caps the announce log at 40 lines, dropping the oldest", () => {
   const document = new SubtitleDocument({ translationEnabled: false });
   const elements = createElements();

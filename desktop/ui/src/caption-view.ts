@@ -125,22 +125,33 @@ export class CaptionView {
         continue;
       }
       const source = line.text.trim();
-      const translation = translationEnabled ? (line.translation || "").trim() : "";
+      const translation = translationEnabled ? (line.translation || line.translationMessage || "").trim() : "";
       if (!source && !translation) {
         continue;
       }
       const key = line.id || `${line.index ?? ""}:${source}`;
-      if (this.announcedKeys.has(key)) {
+      const sourceKey = `${key}:source:${source}`;
+      const translationKey = `${key}:translation:${translation}`;
+      const announceSource = Boolean(source) && !this.announcedKeys.has(sourceKey);
+      const announceTranslation = Boolean(translation) && !this.announcedKeys.has(translationKey);
+      if (!announceSource && !announceTranslation) {
         continue;
       }
-      this.announcedKeys.add(key);
+      if (announceSource) {
+        this.announcedKeys.add(sourceKey);
+      }
+      if (announceTranslation) {
+        this.announcedKeys.add(translationKey);
+      }
       // Source and translation are different languages, so each goes in its own
       // span with its own `lang` for correct screen-reader pronunciation.
       const entry = document.createElement("div");
       entry.setAttribute("dir", "auto");
-      entry.append(announceSpan(source, line.language));
-      if (translation) {
-        entry.append(announceSpan(` — ${translation}`, translationLanguage));
+      if (announceSource) {
+        entry.append(announceSpan(source, line.language));
+      }
+      if (announceTranslation) {
+        entry.append(announceSpan(`${announceSource ? " — " : ""}${translation}`, translationLanguage));
       }
       this.elements.announcer.append(entry);
       appended = true;
@@ -173,7 +184,7 @@ function renderCaptionLine(
   applyLineLanguage(sourceElement, line?.language);
   applyLineLanguage(translationElement, translationLanguage);
   setCaptionText(sourceElement, line?.text || "");
-  setCaptionText(translationElement, line?.translation || "");
+  setCaptionText(translationElement, line?.translation || line?.translationMessage || "");
 }
 
 function announceSpan(text: string, language: string | undefined): HTMLElement {

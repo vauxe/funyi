@@ -54,3 +54,13 @@ export function transcriptionUrlFromRealtimeUrl(rawUrl: string): UrlValidationRe
   url.hash = "";
   return { ok: true, url: url.href };
 }
+
+export function transcriptionStreamUrlFromRealtimeUrl(rawUrl: string): UrlValidationResult {
+  const endpoint = transcriptionUrlFromRealtimeUrl(rawUrl);
+  if (!endpoint.ok) {
+    return endpoint;
+  }
+  const url = new URL(endpoint.url);
+  url.pathname = "/api/transcriptions/stream";
+  return { ok: true, url: url.href };
+}

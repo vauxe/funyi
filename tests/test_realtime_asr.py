@@ -569,6 +569,7 @@ class TestRealtimeServerCli:
         assert args.timestamp_finish_timeout_ms == 30000
         assert args.translation_model is None
         assert args.translation_preview_debounce_ms == 700
+        assert args.translation_stable_timeout_ms == 30000
         assert args.translation_stable_batch_size == 1
         assert not args.translation_sample
         assert args.log_level == "info"
@@ -710,6 +711,14 @@ class TestRealtimeServerCli:
             ["realtime_server.py", "--model", "model", "--translation-stable-batch-size", "4"],
         ):
             assert _parse_args().translation_stable_batch_size == 4
+
+    def test_translation_stable_timeout_can_be_configured(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            ["realtime_server.py", "--model", "model", "--translation-stable-timeout-ms", "1000"],
+        ):
+            assert _parse_args().translation_stable_timeout_ms == 1000
 
     def test_w8a16_can_be_disabled(self) -> None:
         with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--no-w8a16"]):
@@ -911,6 +920,10 @@ class TestRealtimeServerCli:
         config = TranslationServiceConfig()
 
         assert _session_translation_config({'type': 'start'}, config) is None
+
+    def test_translation_service_config_rejects_invalid_stable_timeout(self) -> None:
+        with pytest.raises(ValueError, match="stable_timeout_ms must be > 0"):
+            TranslationServiceConfig(stable_timeout_ms=0)
 
     def test_start_payload_rejects_empty_translation_target(self) -> None:
         config = TranslationServiceConfig()
