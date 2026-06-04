@@ -128,7 +128,7 @@ test("offline file source posts the selected file and renders the returned trans
     elements["offline-file"]!.files = [file];
     elements["offline-file"]!.dispatch("change", {});
 
-    assert.equal(elements["session-status"]!.textContent, "File selected.");
+    assert.equal(elements["session-status"]!.textContent, "Start transcription. →");
 
     elements["transport-button"]!.click();
     await nextTick();
@@ -146,6 +146,53 @@ test("offline file source posts the selected file and renders the returned trans
   } finally {
     restore();
   }
+});
+
+test("audio source mode changes show the next action in the status bar", async () => {
+  const elements = installDocument();
+
+  await bootApp({
+    sources: [
+      {
+        id: "system_default",
+        name: "Audio",
+        kind: "system",
+        isAvailable: true,
+        detail: "available",
+      },
+      {
+        id: "mic_default",
+        name: "Mic",
+        kind: "microphone",
+        isAvailable: true,
+        detail: "available",
+      },
+    ],
+  });
+
+  elements["audio-source"]!.value = "mic_default";
+  elements["audio-source"]!.dispatch("change", {});
+  assert.equal(elements["session-status"]!.textContent, "Start mic captions. →");
+
+  elements["audio-source"]!.value = "system_default";
+  elements["audio-source"]!.dispatch("change", {});
+  assert.equal(elements["session-status"]!.textContent, "Start system captions. →");
+
+  elements["audio-source"]!.value = OFFLINE_FILE_SOURCE_ID;
+  elements["audio-source"]!.dispatch("change", {});
+  assert.equal(elements["session-status"]!.textContent, "Choose audio file. →");
+  assert.equal(elements["offline-file"]!.clicks, 1);
+
+  elements["offline-file"]!.files = [namedBlob("clip.wav", "audio/wav")];
+  elements["offline-file"]!.dispatch("change", {});
+  assert.equal(elements["session-status"]!.textContent, "Start transcription. →");
+
+  elements["audio-source"]!.value = "system_default";
+  elements["audio-source"]!.dispatch("change", {});
+  elements["audio-source"]!.value = OFFLINE_FILE_SOURCE_ID;
+  elements["audio-source"]!.dispatch("change", {});
+  assert.equal(elements["session-status"]!.textContent, "Choose audio file. →");
+  assert.equal(elements["offline-file"]!.clicks, 2);
 });
 
 test("offline file source asks for a fresh file after one transcription", async () => {
@@ -178,7 +225,7 @@ test("offline file source asks for a fresh file after one transcription", async 
 
     assert.equal(requests, 1);
     assert.equal(elements["offline-file"]!.clicks, 2);
-    assert.equal(elements["session-status"]!.textContent, "Choose an audio file.");
+    assert.equal(elements["session-status"]!.textContent, "Choose audio file. →");
   } finally {
     restore();
   }
@@ -220,7 +267,7 @@ test("audio source listing failures still allow offline file transcription", asy
   elements["offline-file"]!.files = [namedBlob("clip.wav", "audio/wav")];
   elements["offline-file"]!.dispatch("change", {});
 
-  assert.equal(elements["session-status"]!.textContent, "File selected.");
+  assert.equal(elements["session-status"]!.textContent, "Start transcription. →");
 });
 
 test("invalid selected audio source is rejected before opening a websocket", async () => {

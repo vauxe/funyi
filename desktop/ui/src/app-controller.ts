@@ -1,6 +1,10 @@
 import type { AudioAdapter } from "./audio-adapter.js";
 import type { AppElements } from "./app-dom.js";
-import { AudioSourceSelect, type SelectableAudioSource } from "./audio-source-select.js";
+import {
+  AudioSourceSelect,
+  type SelectableAudioSource,
+  type SelectableAudioSourceKind,
+} from "./audio-source-select.js";
 import type { AudioSource } from "./audio-source.js";
 import { objectUrlFromStored, prepareBackgroundImage } from "./background-image.js";
 import { CaptionView } from "./caption-view.js";
@@ -32,6 +36,9 @@ const OFFLINE_FILE_SOURCE: SelectableAudioSource = {
   kind: "file",
   name: "File",
 };
+const NEXT_ACTION_ARROW = " →";
+const OFFLINE_FILE_PICKER_STATUS = nextActionStatus("Choose audio file.");
+const OFFLINE_FILE_READY_STATUS = nextActionStatus("Start transcription.");
 
 export interface FunyiAppOptions {
   audio: AudioAdapter;
@@ -290,11 +297,15 @@ export class FunyiApp {
     const state = this.liveSession.getState();
     if (state !== "running" && state !== "paused") {
       if (audioSourceKind === "file") {
+        this.statusController.setStatus("captureStatus", "");
+        this.statusController.setStatus("connectionStatus", OFFLINE_FILE_PICKER_STATUS);
         this.openOfflineFilePicker();
         return;
       }
       if (audioSourceKind !== null) {
         this.preferences.save({ audioSourceId });
+        this.statusController.setStatus("captureStatus", "");
+        this.statusController.setStatus("connectionStatus", liveAudioSourceHint(audioSourceKind));
       }
       return;
     }
@@ -332,7 +343,10 @@ export class FunyiApp {
       this.offlineFileSelectionVersion += 1;
       this.statusController.setStatus("captureStatus", "");
     }
-    this.statusController.setStatus("connectionStatus", fileSelected ? "File selected." : "");
+    this.statusController.setStatus(
+      "connectionStatus",
+      fileSelected ? OFFLINE_FILE_READY_STATUS : OFFLINE_FILE_PICKER_STATUS,
+    );
   }
 
   private async startFileTranscription(): Promise<void> {
@@ -342,7 +356,7 @@ export class FunyiApp {
     const file = this.selectedOfflineFile();
     if (!file || this.usedOfflineFileSelectionVersion === this.offlineFileSelectionVersion) {
       this.openOfflineFilePicker();
-      this.statusController.setStatus("connectionStatus", "Choose an audio file.");
+      this.statusController.setStatus("connectionStatus", OFFLINE_FILE_PICKER_STATUS);
       return;
     }
 
@@ -453,4 +467,18 @@ function setSelectValueIfPresent(
   if (present) {
     select.value = value;
   }
+}
+
+function liveAudioSourceHint(kind: SelectableAudioSourceKind): string {
+  if (kind === "microphone") {
+    return nextActionStatus("Start mic captions.");
+  }
+  if (kind === "system") {
+    return nextActionStatus("Start system captions.");
+  }
+  return OFFLINE_FILE_PICKER_STATUS;
+}
+
+function nextActionStatus(text: string): string {
+  return `${text}${NEXT_ACTION_ARROW}`;
 }
