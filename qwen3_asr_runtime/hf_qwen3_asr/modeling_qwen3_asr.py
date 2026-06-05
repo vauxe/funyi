@@ -49,6 +49,30 @@ from .configuration_qwen3_asr import (
 )
 
 
+_UPSTREAM_DEFAULT_EOS_TOKEN_IDS = [151645, 151643]
+
+
+def _first_config_value(attribute: str, *sources: object) -> object | None:
+    for source in sources:
+        value = getattr(source, attribute, None)
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple)) and not value:
+            continue
+        return value
+    return None
+
+
+def _first_token_id(value: object) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else None
+    if value is None:
+        return None
+    return int(value)
+
+
 @use_kernel_forward_from_hub("RMSNorm")
 class Qwen3ASRTextRMSNorm(nn.Module):
     def __init__(self, hidden_size, eps: float = 1e-6) -> None:
@@ -1376,29 +1400,43 @@ class Qwen3ASRForConditionalGeneration(Qwen3ASRPreTrainedModel, GenerationMixin)
         self,
         input_ids: Optional[torch.Tensor] = None,
         max_new_tokens: int = 4096,
-        eos_token_id: int | list[int] = [151645, 151643],
+        eos_token_id: int | list[int] | None = None,
+        pad_token_id: Optional[int] = None,
         **kwargs,
     ):
-        shared_kwargs = {}
-        thinker_kwargs = {
-            "max_new_tokens": max_new_tokens,
-            "eos_token_id": eos_token_id,
-        }
+        call_generation_config = kwargs.get("generation_config")
+        model_config = getattr(self, "config", None)
+        thinker = getattr(self, "thinker", None)
+        thinker_config = getattr(thinker, "config", None)
+        generation_sources = (
+            call_generation_config,
+            getattr(self, "generation_config", None),
+            model_config,
+            getattr(thinker, "generation_config", None),
+            thinker_config,
+            getattr(model_config, "thinker_config", None),
+            getattr(thinker_config, "text_config", None),
+        )
 
-        for key, value in kwargs.items():
-            # Process special input values
-            if key == "feature_attention_mask":
-                thinker_kwargs[key] = value
-            elif key in ("input_features", "attention_mask"):
-                thinker_kwargs[key] = value
-            # Put other key to shared kwargs
-            else:
-                shared_kwargs[key] = value
+        if _first_token_id(eos_token_id) is None:
+            eos_token_id = _first_config_value("eos_token_id", *generation_sources)
+        if eos_token_id is None:
+            eos_token_id = list(_UPSTREAM_DEFAULT_EOS_TOKEN_IDS)
 
-        # Merge kwargs
-        for key, value in shared_kwargs.items():
-            if key not in thinker_kwargs:
-                thinker_kwargs[key] = value
+        if pad_token_id is None:
+            pad_token_id = _first_config_value("pad_token_id", *generation_sources)
+        if pad_token_id is None:
+            pad_token_id = _first_token_id(eos_token_id)
+
+        thinker_kwargs = dict(kwargs)
+        thinker_kwargs.update(
+            {
+                "max_new_tokens": max_new_tokens,
+                "eos_token_id": eos_token_id,
+            }
+        )
+        if pad_token_id is not None:
+            thinker_kwargs["pad_token_id"] = int(pad_token_id)
 
         thinker_result = self.thinker.generate(input_ids=input_ids, return_dict_in_generate=True, **thinker_kwargs)
 

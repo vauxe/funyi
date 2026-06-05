@@ -26,6 +26,8 @@ AutoConfig.register("qwen3_asr", Qwen3ASRConfig, exist_ok=True)
 AutoModel.register(Qwen3ASRConfig, Qwen3ASRForConditionalGeneration, exist_ok=True)
 AutoProcessor.register(Qwen3ASRConfig, Qwen3ASRProcessor, exist_ok=True)
 
+_UPSTREAM_DEFAULT_EOS_TOKEN_IDS = [151645, 151643]
+
 
 class TransformersASRBackend(ASRRuntimeBackend):
     name = "transformers"
@@ -236,10 +238,10 @@ class TransformersASRBackend(ASRRuntimeBackend):
                         max_new_tokens=max_new_tokens,
                     )
                 except CudaGraphCaptureRequired:
-                    outputs = self.model.generate(**inputs, max_new_tokens=max_new_tokens, logits_to_keep=1)
+                    outputs = self._generate_with_hf(inputs, max_new_tokens=max_new_tokens)
                     sequences = outputs.sequences if hasattr(outputs, "sequences") else outputs
             else:
-                outputs = self.model.generate(**inputs, max_new_tokens=max_new_tokens, logits_to_keep=1)
+                outputs = self._generate_with_hf(inputs, max_new_tokens=max_new_tokens)
                 sequences = outputs.sequences if hasattr(outputs, "sequences") else outputs
             decoded = self.processor.batch_decode(
                 sequences[:, prompt_len:],
@@ -268,6 +270,59 @@ class TransformersASRBackend(ASRRuntimeBackend):
             if kwargs:
                 inputs[key] = value.to(**kwargs)
         return inputs
+
+    def _generate_with_hf(self, inputs: Any, *, max_new_tokens: int) -> Any:
+        return self.model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            logits_to_keep=1,
+            **self._resolve_generation_token_kwargs(self.model, self.processor),
+        )
+
+    @classmethod
+    def _resolve_generation_token_kwargs(cls, model: Any, processor: Any) -> Dict[str, int]:
+        tokenizer = getattr(processor, "tokenizer", None)
+        thinker = getattr(model, "thinker", None)
+        model_config = getattr(model, "config", None)
+        thinker_config = getattr(thinker, "config", None)
+
+        for source in (
+            tokenizer,
+            getattr(model, "generation_config", None),
+            model_config,
+            getattr(thinker, "generation_config", None),
+            thinker_config,
+            getattr(model_config, "thinker_config", None),
+            getattr(thinker_config, "text_config", None),
+        ):
+            value = cls._first_token_id(getattr(source, "pad_token_id", None))
+            if value is not None:
+                return {"pad_token_id": value}
+
+        for source in (
+            getattr(model, "generation_config", None),
+            model_config,
+            getattr(thinker, "generation_config", None),
+            thinker_config,
+            getattr(model_config, "thinker_config", None),
+            getattr(thinker_config, "text_config", None),
+            tokenizer,
+        ):
+            value = cls._first_token_id(getattr(source, "eos_token_id", None))
+            if value is not None:
+                return {"pad_token_id": value}
+
+        return {"pad_token_id": _UPSTREAM_DEFAULT_EOS_TOKEN_IDS[0]}
+
+    @staticmethod
+    def _first_token_id(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        if isinstance(value, (list, tuple)):
+            value = value[0] if value else None
+        if value is None:
+            return None
+        return int(value)
 
     @staticmethod
     def _default_attn_implementation(device_map: Any = None) -> Optional[str]:
