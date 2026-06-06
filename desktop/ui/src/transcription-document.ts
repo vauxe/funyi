@@ -9,6 +9,15 @@ export interface TranscriptSegmentSnapshot {
   readonly language: string;
   readonly timingStatus: string | null;
   readonly translation: string | null;
+  readonly translationStatus: string | null;
+  readonly translationMessage: string | null;
+}
+
+export interface TranscriptTranslationUnitSnapshot {
+  readonly text: string;
+  readonly targetLanguage: string;
+  readonly sourceSegmentIds: readonly string[];
+  readonly sourceSegmentIndices: readonly number[];
 }
 
 export interface TranscriptDocumentSnapshot {
@@ -17,6 +26,7 @@ export interface TranscriptDocumentSnapshot {
   readonly language: string;
   readonly text: string;
   readonly segments: readonly TranscriptSegmentSnapshot[];
+  readonly translationUnits: readonly TranscriptTranslationUnitSnapshot[];
 }
 
 export function parseTranscriptDocumentSnapshot(payload: unknown): TranscriptDocumentSnapshot {
@@ -27,13 +37,13 @@ export function parseTranscriptDocumentSnapshot(payload: unknown): TranscriptDoc
   if (schemaVersion !== 1) {
     throw new Error(`unsupported transcript document schema: ${schemaVersion}`);
   }
-  const segments = recordArray(payload.segments, "segments").map(segmentFromRecord);
   return {
     schemaVersion,
     durationMs: optionalInteger(payload.durationMs),
     language: stringOrEmpty(payload.language),
     text: stringOrEmpty(payload.text),
-    segments,
+    segments: recordArray(payload.segments, "segments").map(segmentFromRecord),
+    translationUnits: recordArray(payload.translationUnits, "translationUnits").map(translationUnitFromRecord),
   };
 }
 
@@ -47,6 +57,17 @@ function segmentFromRecord(segment: Record<string, unknown>): TranscriptSegmentS
     language: stringOrEmpty(segment.language),
     timingStatus: optionalString(segment.timingStatus),
     translation: optionalString(segment.translation),
+    translationStatus: optionalString(segment.translationStatus),
+    translationMessage: optionalString(segment.translationMessage),
+  };
+}
+
+function translationUnitFromRecord(unit: Record<string, unknown>): TranscriptTranslationUnitSnapshot {
+  return {
+    text: stringOrEmpty(unit.text).trim(),
+    targetLanguage: stringOrEmpty(unit.targetLanguage),
+    sourceSegmentIds: stringArray(unit.sourceSegmentIds),
+    sourceSegmentIndices: integerArray(unit.sourceSegmentIndices),
   };
 }
 
@@ -64,4 +85,18 @@ function optionalString(value: unknown): string | null {
 
 function stringOrEmpty(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map((item) => stringOrEmpty(item).trim()).filter((item) => item.length > 0);
+}
+
+function integerArray(value: unknown): number[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is number => isInteger(item) && item > 0);
 }

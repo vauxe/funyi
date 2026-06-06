@@ -26,19 +26,23 @@ requests are rejected with `409` and `error.code: "busy"`.
 `POST /api/transcriptions` accepts the media file as the raw request body and
 returns a complete transcript snapshot. `POST /api/transcriptions/stream`
 accepts the same request and returns newline-delimited JSON (`application/x-ndjson`)
-so clients can render each completed chunk before the full document is ready.
+so clients can render each completed source segment before the full document is
+ready.
 Both endpoints are intentionally not job APIs: the request owns the work and
 completes when transcription is finished. Uploads are written to a temporary
-file as they arrive; local audio files are decoded through project dependencies
-(`librosa` / `soundfile`) and transcribed in bounded chunks, with no fixed
-upload-size or duration limit. The final JSON still contains the complete
-transcript, so extremely long files remain bounded by local disk, runtime, and
-response size in practice.
+file as they arrive; audio files that `libsndfile` can open are decoded through
+project dependencies (`librosa` / `soundfile`), while audio or video containers
+it cannot (mp4, mkv, mov, webm, m4a, ...) are transparently decoded to 16 kHz
+mono via `ffmpeg`, which must be available on `PATH` for those formats. Either
+way the audio track is transcribed in bounded chunks, with no fixed upload-size
+or duration limit. The final JSON still contains the complete transcript, so
+extremely long files remain bounded by local disk, runtime, and response size in
+practice.
 
 Query parameters are `language` (optional Qwen3-ASR language; empty means auto),
 `context`, `targetLanguage` / `target_language` (optional HY-MT target, requiring
 `--translation-model`), `timestamps` (default `true`), and `filename` (used only
-to preserve a safe temporary suffix for audio decoding).
+to preserve a safe temporary suffix for media decoding).
 
 Example:
 
@@ -50,15 +54,22 @@ curl -X POST \
 
 Successful responses use `schemaVersion: 1`, `durationMs`, `language`, `text`,
 and `segments[]` with `id`, `index`, `startMs`, `endMs`, `text`, `language`,
-optional `timingStatus`, and optional `translation`. `timingStatus` is
-`estimated` for chunk boundaries and `aligned` after forced alignment. Error
-responses use `{"error":{"code":"...","message":"..."}}`.
+optional `timingStatus`, optional `translation`, and optional
+`translationStatus` / `translationMessage`. Multi-cue translations may also
+include `translationUnits[]`; single-cue translations stay on the segment.
+`timingStatus` is `estimated` when cue timing is derived from ASR text and chunk
+duration, and `aligned` after item-level forced alignment. Error responses use
+`{"error":{"code":"...","message":"..."}}`.
 
 The streaming endpoint emits realtime-compatible events: `transcript_update`
 for each source segment, optional `translation_stable` when `targetLanguage` is
 set, and a terminal `transcript_final` event. Source `transcript_update` events
 are emitted after ASR/timestamp work and do not wait for HY-MT translation.
 Translation events are a service-layer side track and include `source_revision`.
+In `transcript_final`, the top-level `segments` field keeps the realtime
+snake_case segment shape, while `document.segments` keeps the snapshot
+camelCase shape returned by `/api/transcriptions` (`translation_status` maps to
+`translationStatus`, and `translation_message` maps to `translationMessage`).
 The side-track backlog is bounded; once it is full, later ASR chunks wait for
 translation to drain instead of accumulating unbounded work. File-stream stable
 translation is bounded by `--translation-stable-timeout-ms`; timeout emits
@@ -244,6 +255,9 @@ Each stable segment has `id`, `index`, `start_ms`, `end_ms`, `text`, and
 `timing_status: "pending"` with `start_ms` and `end_ms` set to `null`; the
 forced aligner later patches that segment to `aligned` or `failed`.
 `stable_appends` are transcript history segments, not subtitle layout units.
+For offline file streams, those transcript history segments are already
+subtitle-shaped public `TranscriptSegment` values so the final document can be
+exported directly as subtitles.
 
 Clients append `stable_appends`, replace `partial`, and require `stable_base` to
 match local `stable_count`. Clients that need compact subtitles render the latest
@@ -330,8 +344,9 @@ segment.
 
 Client replay rules:
 
-- Prefer `source_segment_ids` / `source_segment_indices` when present. Treat the
-  covered stable source segments as one translation unit.
+- Prefer `source_segment_ids` / `source_segment_indices` when present. They
+  describe one translation unit's source coverage; they do not fold the covered
+  source cues into one source line.
 - When both coverage lists are present, they are emitted in the same stable
   history order, have the same length, and each id/index pair refers to the
   same source segment. Clients should resolve by id first and use the paired
@@ -339,13 +354,12 @@ Client replay rules:
 - `source_segment_id` / `source_segment_index` are the anchor for older clients
   and for fallback lookup. They do not describe the full covered source text
   when coverage lists are present.
-- A client that renders source history, copies transcripts, or exports subtitles
-  should display the concatenated covered source text with this single
-  translation. Do not attach the full translation only to the anchor fragment
-  while leaving earlier covered fragments as separate untranslated lines.
-- Covered source segments are adjacent in stable history. The display timestamp
-  range should use the first covered segment start and the last covered segment
-  end when both are available.
+- Source history, copy, and subtitle export should keep the source segment list as
+  emitted. Coverage lists describe which source cues a translation belongs to;
+  they do not change the number of source subtitle cues.
+- Covered source segments are adjacent in stable history. A client that renders a
+  grouped translation overlay can use the first covered segment start and the
+  last covered segment end when both are available.
 
 ### `translation_status`
 

@@ -125,11 +125,11 @@ export class CaptionView {
         continue;
       }
       const source = line.text.trim();
-      const translation = translationEnabled ? (line.translation || line.translationMessage || "").trim() : "";
+      const translation = translationEnabled ? (visibleTranslation(line) || "").trim() : "";
       if (!source && !translation) {
         continue;
       }
-      const key = line.id || `${line.index ?? ""}:${source}`;
+      const key = stableLineKey(line);
       const sourceKey = `${key}:source:${source}`;
       const translationKey = `${key}:translation:${translation}`;
       const announceSource = Boolean(source) && !this.announcedKeys.has(sourceKey);
@@ -175,6 +175,10 @@ function editedValue(element: HTMLElement | undefined): string | null {
   return element?.dataset.userEdited === "true" ? (element.textContent ?? "") : null;
 }
 
+function visibleTranslation(line: SubtitleLine): string | null {
+  return line.translation || line.translationMessage;
+}
+
 function renderCaptionLine(
   line: SubtitleLine | null,
   sourceElement: HTMLElement,
@@ -184,7 +188,7 @@ function renderCaptionLine(
   applyLineLanguage(sourceElement, line?.language);
   applyLineLanguage(translationElement, translationLanguage);
   setCaptionText(sourceElement, line?.text || "");
-  setCaptionText(translationElement, line?.translation || line?.translationMessage || "");
+  setCaptionText(translationElement, line ? visibleTranslation(line) || "" : "");
 }
 
 function announceSpan(text: string, language: string | undefined): HTMLElement {
@@ -244,7 +248,7 @@ function updateHistoryItem(
   }
   setTextIfChanged(time, formatRange(line.startMs, line.endMs, line.timingStatus));
   setEditableTextIfChanged(source, line.text);
-  setEditableTextIfChanged(translation, translationEnabled ? line.translation || line.translationMessage || "" : "");
+  setEditableTextIfChanged(translation, translationEnabled ? visibleTranslation(line) || "" : "");
 }
 
 function setTextIfChanged(element: HTMLElement | undefined, value: string): void {
@@ -273,13 +277,23 @@ function applyLineLanguage(element: HTMLElement, language: string | undefined): 
 }
 
 function isSameHistoryLine(left: SubtitleLine, right: SubtitleLine): boolean {
+  if (isInteger(left.index) && isInteger(right.index)) {
+    return left.index === right.index;
+  }
   if (left.id || right.id) {
     return left.id === right.id;
   }
-  if (isInteger(left.index) || isInteger(right.index)) {
-    return left.index === right.index;
-  }
   return left === right;
+}
+
+function stableLineKey(line: SubtitleLine): string {
+  if (isInteger(line.index)) {
+    return `index:${line.index}`;
+  }
+  if (line.id) {
+    return `id:${line.id}`;
+  }
+  return `text:${line.text.trim()}`;
 }
 
 function formatRange(startMs: number | null, endMs: number | null, status: string | null): string {

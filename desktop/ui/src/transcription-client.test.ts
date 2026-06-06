@@ -58,6 +58,15 @@ test("posts a raw file to the offline transcription endpoint and parses the snap
               text: "你好",
               language: "Chinese",
               translation: "hello",
+              translationStatus: "ok",
+            },
+          ],
+          translationUnits: [
+            {
+              text: "hello",
+              targetLanguage: "English",
+              sourceSegmentIds: ["seg_000001"],
+              sourceSegmentIndices: [1],
             },
           ],
         },
@@ -84,6 +93,9 @@ test("posts a raw file to the offline transcription endpoint and parses the snap
     assert.deepEqual(events, ["transcript_update", "translation_stable", "transcript_final"]);
     assert.equal(snapshot.segments[0]?.text, "你好");
     assert.equal(snapshot.segments[0]?.translation, "hello");
+    assert.equal(snapshot.segments[0]?.translationStatus, "ok");
+    assert.equal(snapshot.translationUnits[0]?.text, "hello");
+    assert.deepEqual(snapshot.translationUnits[0]?.sourceSegmentIds, ["seg_000001"]);
   } finally {
     restore();
   }

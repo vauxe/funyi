@@ -261,8 +261,8 @@ test("does not re-announce stable lines when the list is rebuilt on final", () =
     type: "transcript_final",
     revision: 2,
     segments: [
-      stableSegment(1, "one", { startMs: 0, endMs: 500 }),
-      stableSegment(2, "two", { startMs: 500, endMs: 1000 }),
+      { ...stableSegment(1, "one", { startMs: 0, endMs: 500 }), id: "rebuilt_seg_1" },
+      { ...stableSegment(2, "two", { startMs: 500, endMs: 1000 }), id: "rebuilt_seg_2" },
       stableSegment(3, "three", { startMs: 1000, endMs: 1500 }),
     ],
   });
@@ -270,6 +270,37 @@ test("does not re-announce stable lines when the list is rebuilt on final", () =
 
   assert.equal(elements.announcer.children.length, 3);
   assert.equal(elements.announcer.children[2]?.children[0]?.textContent, "three");
+});
+
+test("keeps inline history edits when final rebuild reassigns ids but keeps indexes", () => {
+  const document = new SubtitleDocument({ translationEnabled: false });
+  const elements = createElements();
+  const view = new CaptionView(captionViewElements(elements));
+
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 1,
+    stable_appends: [stableSegment(1, "one", { startMs: 0, endMs: 500 })],
+    partial: null,
+  });
+  view.render(document, { historyVisible: true });
+
+  const source = elements.historyList.children[0]?.children[1];
+  assert.ok(source);
+  source.textContent = "ONE edited";
+  source.dispatch("input", {});
+
+  document.applyEvent({
+    type: "transcript_final",
+    revision: 2,
+    segments: [{ ...stableSegment(1, "one", { startMs: 0, endMs: 500 }), id: "rebuilt_seg_1" }],
+  });
+  view.render(document, { historyVisible: true });
+
+  assert.equal(elements.historyList.children[0]?.children[1]?.textContent, "ONE edited");
+  assert.deepEqual(view.collectTranscriptLines(), [{ startMs: 0, text: "ONE edited", translation: null }]);
 });
 
 test("collectTranscriptLines reflects inline history edits", () => {
@@ -286,6 +317,14 @@ test("collectTranscriptLines reflects inline history edits", () => {
     partial: null,
   });
   document.applyEvent({ type: "translation_stable", source_segment_id: "seg_000001", text: "uno" });
+  document.applyEvent({
+    type: "translation_status",
+    scope: "stable",
+    code: "timeout",
+    message: "translation failed",
+    source_segment_id: "seg_000002",
+    source_segment_index: 2,
+  });
   const elements = createElements();
   const view = new CaptionView(captionViewElements(elements));
   view.render(document, { historyVisible: true });
@@ -298,6 +337,42 @@ test("collectTranscriptLines reflects inline history edits", () => {
   assert.deepEqual(view.collectTranscriptLines(), [
     { startMs: 0, text: "ONE edited", translation: "uno" },
     { startMs: 500, text: "two", translation: null },
+  ]);
+});
+
+test("collectTranscriptLines returns the visible grouped translation", () => {
+  const document = new SubtitleDocument({ translationEnabled: true });
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 2,
+    stable_appends: [
+      stableSegment(1, "今天讨论字幕显示问题，", { startMs: 0, endMs: 2000 }),
+      stableSegment(2, "并且保持翻译输入完整。", { startMs: 2000, endMs: 3800 }),
+    ],
+    partial: null,
+  });
+  document.applyEvent({
+    type: "translation_stable",
+    source_segment_id: "seg_000002",
+    source_segment_index: 2,
+    source_segment_ids: ["seg_000001", "seg_000002"],
+    source_segment_indices: [1, 2],
+    text: "We discuss subtitle display while preserving translation context.",
+  });
+  const elements = createElements();
+  const view = new CaptionView(captionViewElements(elements));
+
+  view.render(document, { historyVisible: true });
+
+  assert.deepEqual(view.collectTranscriptLines(), [
+    { startMs: 0, text: "今天讨论字幕显示问题，", translation: null },
+    {
+      startMs: 2000,
+      text: "并且保持翻译输入完整。",
+      translation: "We discuss subtitle display while preserving translation context.",
+    },
   ]);
 });
 

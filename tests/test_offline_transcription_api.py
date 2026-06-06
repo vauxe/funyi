@@ -14,6 +14,7 @@ from qwen3_asr_runtime.offline_transcription import (
     OfflineTranscriptionInputError,
     OfflineTranscriptionOptions,
     OfflineTranscriptionStreamEvent,
+    OfflineTranslationUnit,
 )
 from qwen3_asr_runtime.transcription_document import TranscriptDocument, TranscriptSegment
 from realtime_server import TranslationServiceConfig, build_app
@@ -247,7 +248,27 @@ async def test_offline_transcription_stream_route_returns_incremental_events(mon
             timing_status="aligned",
         )
         yield OfflineTranscriptionStreamEvent(kind="segment", segment=first)
+        yield OfflineTranscriptionStreamEvent(
+            kind="translation_unit",
+            translation_unit=OfflineTranslationUnit(
+                source_text=first.text,
+                source_language=first.language,
+                source_segment_ids=(first.id,),
+                source_segment_indices=(first.index,),
+                anchor_segment_list_index=0,
+            ),
+        )
         yield OfflineTranscriptionStreamEvent(kind="segment", segment=second)
+        yield OfflineTranscriptionStreamEvent(
+            kind="translation_unit",
+            translation_unit=OfflineTranslationUnit(
+                source_text=second.text,
+                source_language=second.language,
+                source_segment_ids=(second.id,),
+                source_segment_indices=(second.index,),
+                anchor_segment_list_index=1,
+            ),
+        )
         yield OfflineTranscriptionStreamEvent(
             kind="complete",
             document=TranscriptDocument(duration_ms=2000, language="Chinese", segments=[first, second]),
@@ -326,6 +347,8 @@ async def test_offline_transcription_stream_route_returns_incremental_events(mon
     assert events[4]["revision"] == 2
     assert events[4]["final_revision"] == 2
     assert events[4]["stable_count"] == 2
+    assert events[4]["segments"][0]["translation"] == "hello"
+    assert events[4]["segments"][1]["translation"] == "world"
     assert events[4]["document"]["segments"][0]["translation"] == "hello"
     assert events[4]["document"]["segments"][1]["translation"] == "world"
     assert calls[0]["model"] is model
@@ -373,6 +396,16 @@ async def test_offline_transcription_stream_route_times_out_translation_and_fini
         )
         yield OfflineTranscriptionStreamEvent(kind="segment", segment=segment)
         yield OfflineTranscriptionStreamEvent(
+            kind="translation_unit",
+            translation_unit=OfflineTranslationUnit(
+                source_text=segment.text,
+                source_language=segment.language,
+                source_segment_ids=(segment.id,),
+                source_segment_indices=(segment.index,),
+                anchor_segment_list_index=0,
+            ),
+        )
+        yield OfflineTranscriptionStreamEvent(
             kind="complete",
             document=TranscriptDocument(duration_ms=1000, language="Chinese", segments=[segment]),
         )
@@ -414,7 +447,205 @@ async def test_offline_transcription_stream_route_times_out_translation_and_fini
         "message": "translation failed",
     }
     assert "translation" not in events[2]["document"]["segments"][0]
-    assert translation_actor.calls[0]["timeout_sec"] == 0.001
+    assert events[2]["document"]["segments"][0]["translationStatus"] == "timeout"
+    assert events[2]["document"]["segments"][0]["translationMessage"] == "translation failed"
+    assert events[2]["segments"][0]["translation_status"] == "timeout"
+    assert events[2]["segments"][0]["translation_message"] == "translation failed"
+
+
+@pytest.mark.asyncio
+async def test_offline_transcription_stream_route_translates_source_unit_covering_multiple_cues(
+    monkeypatch,
+) -> None:
+    first = TranscriptSegment(
+        id="seg_000001",
+        index=1,
+        start_ms=0,
+        end_ms=2000,
+        text="今天讨论字幕显示问题，",
+        language="Chinese",
+        timing_status="aligned",
+    )
+    second = TranscriptSegment(
+        id="seg_000002",
+        index=2,
+        start_ms=2000,
+        end_ms=3800,
+        text="并且保持翻译输入完整。",
+        language="Chinese",
+        timing_status="aligned",
+    )
+
+    async def fake_stream_transcribe_file(*_args: object, **_kwargs: object):
+        yield OfflineTranscriptionStreamEvent(kind="segment", segment=first)
+        yield OfflineTranscriptionStreamEvent(kind="segment", segment=second)
+        yield OfflineTranscriptionStreamEvent(
+            kind="translation_unit",
+            translation_unit=OfflineTranslationUnit(
+                source_text="今天讨论字幕显示问题，并且保持翻译输入完整。",
+                source_language="Chinese",
+                source_segment_ids=("seg_000001", "seg_000002"),
+                source_segment_indices=(1, 2),
+                anchor_segment_list_index=1,
+            ),
+        )
+        yield OfflineTranscriptionStreamEvent(
+            kind="complete",
+            document=TranscriptDocument(duration_ms=4000, language="Chinese", segments=[first, second]),
+        )
+
+    monkeypatch.setattr(realtime_server, "stream_transcribe_file", fake_stream_transcribe_file)
+    translation_actor = FakeTranslationActor(["We discuss subtitle display while preserving translation context."])
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        app = build_app(
+            model=object(),
+            asr_executor=executor,
+            translation_actor=translation_actor,
+            translation_service_config=TranslationServiceConfig(max_new_tokens=123),
+        )
+        response = await asgi_request(
+            app,
+            "/api/transcriptions/stream",
+            method="POST",
+            query=b"language=Chinese&targetLanguage=English&filename=clip.wav",
+            body=b"audio-bytes",
+            headers=[(b"content-type", b"application/octet-stream")],
+        )
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    assert response["status"] == 200
+    events = [json.loads(line) for line in bytes(response["body"]).decode("utf-8").splitlines()]
+    assert [event["type"] for event in events] == [
+        "transcript_update",
+        "transcript_update",
+        "translation_stable",
+        "transcript_final",
+    ]
+    assert events[2] == {
+        "type": "translation_stable",
+        "source_revision": 2,
+        "source_segment_id": "seg_000002",
+        "source_segment_index": 2,
+        "source_segment_ids": ["seg_000001", "seg_000002"],
+        "source_segment_indices": [1, 2],
+        "text": "We discuss subtitle display while preserving translation context.",
+        "target_language": "English",
+    }
+    assert events[3]["document"]["segments"][0].get("translation") is None
+    assert events[3]["document"]["segments"][1]["translation"] == (
+        "We discuss subtitle display while preserving translation context."
+    )
+    assert events[3]["segments"][0].get("translation") is None
+    assert events[3]["segments"][1]["translation"] == (
+        "We discuss subtitle display while preserving translation context."
+    )
+    assert events[3]["document"]["translationUnits"] == [
+        {
+            "text": "We discuss subtitle display while preserving translation context.",
+            "targetLanguage": "English",
+            "sourceSegmentIds": ["seg_000001", "seg_000002"],
+            "sourceSegmentIndices": [1, 2],
+        }
+    ]
+    assert translation_actor.calls == [
+        {
+            "texts": ["今天讨论字幕显示问题，并且保持翻译输入完整。"],
+            "target_language": "English",
+            "source_language": "Chinese",
+            "max_new_tokens": 123,
+            "timeout_sec": 30.0,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_offline_stream_translation_units_apply_backpressure(monkeypatch) -> None:
+    yielded_segments = 0
+    translation_started = asyncio.Event()
+    release_translation = asyncio.Event()
+
+    async def fake_stream_transcribe_file(*_args: object, **_kwargs: object):
+        nonlocal yielded_segments
+        for index in range(1, 20):
+            segment = TranscriptSegment(
+                id=f"seg_{index:06d}",
+                index=index,
+                start_ms=(index - 1) * 1000,
+                end_ms=index * 1000,
+                text=f"source {index}",
+                language="English",
+            )
+            yielded_segments += 1
+            yield OfflineTranscriptionStreamEvent(kind="segment", segment=segment)
+            yield OfflineTranscriptionStreamEvent(
+                kind="translation_unit",
+                translation_unit=OfflineTranslationUnit(
+                    source_text=segment.text,
+                    source_language=segment.language,
+                    source_segment_ids=(segment.id,),
+                    source_segment_indices=(segment.index,),
+                    anchor_segment_list_index=index - 1,
+                ),
+            )
+        yield OfflineTranscriptionStreamEvent(
+            kind="complete",
+            document=TranscriptDocument(duration_ms=20_000, language="English", segments=[]),
+        )
+
+    class BlockingTranslationActor:
+        async def translate_batch(
+            self,
+            texts: list[str],
+            *,
+            target_language: str,
+            source_language: str,
+            max_new_tokens: int | None,
+            timeout_sec: float | None,
+        ) -> list[tuple[str | None, str | None]]:
+            del texts, target_language, source_language, max_new_tokens, timeout_sec
+            translation_started.set()
+            await release_translation.wait()
+            return [("translated", None)]
+
+    monkeypatch.setattr(realtime_server, "stream_transcribe_file", fake_stream_transcribe_file)
+    output_queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue(maxsize=100)
+    task = asyncio.create_task(
+        realtime_server._produce_offline_stream_payloads(
+            object(),
+            "unused.wav",
+            options=OfflineTranscriptionOptions(),
+            timestamp_actor=None,
+            translation_actor=BlockingTranslationActor(),
+            translation_target_language="English",
+            translation_max_new_tokens=None,
+            translation_timeout_sec=None,
+            asr_executor=None,
+            output_queue=output_queue,
+        )
+    )
+
+    async def wait_for_output_segments(count: int) -> None:
+        while output_queue.qsize() < count:
+            await asyncio.sleep(0)
+
+    expected_segments_before_backpressure = realtime_server._SERVICE_TRANSLATION_JOB_QUEUE_MAXSIZE + 2
+    try:
+        await asyncio.wait_for(translation_started.wait(), timeout=0.5)
+        await asyncio.wait_for(
+            wait_for_output_segments(expected_segments_before_backpressure),
+            timeout=0.5,
+        )
+        await asyncio.sleep(0)
+
+        assert yielded_segments == expected_segments_before_backpressure
+        assert output_queue.qsize() == expected_segments_before_backpressure
+    finally:
+        task.cancel()
+        release_translation.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=0.5)
 
 
 @pytest.mark.asyncio
@@ -514,77 +745,9 @@ async def test_offline_transcription_stream_route_reports_typed_input_errors(mon
 
 
 @pytest.mark.asyncio
-async def test_offline_stream_translation_jobs_backpressure_source_producer(monkeypatch) -> None:
-    yielded: list[int] = []
-
-    async def fake_stream_transcribe_file(*_args: object, **_kwargs: object):
-        for index in range(1, 11):
-            yielded.append(index)
-            yield OfflineTranscriptionStreamEvent(
-                kind="segment",
-                segment=TranscriptSegment(
-                    id=f"seg_{index:06d}",
-                    index=index,
-                    start_ms=index * 1000,
-                    end_ms=index * 1000 + 500,
-                    text=f"text {index}",
-                    language="English",
-                ),
-            )
-        yield OfflineTranscriptionStreamEvent(
-            kind="complete",
-            document=TranscriptDocument(duration_ms=11_000, language="English", segments=[]),
-        )
-
-    class BlockingTranslationActor:
-        def __init__(self) -> None:
-            self.started = asyncio.Event()
-
-        async def translate_batch(
-            self,
-            texts: list[str],
-            *,
-            target_language: str,
-            source_language: str,
-            max_new_tokens: int | None,
-            timeout_sec: float | None,
-        ) -> list[tuple[str | None, str | None]]:
-            del texts, target_language, source_language, max_new_tokens, timeout_sec
-            self.started.set()
-            await asyncio.Event().wait()
-            return []
-
-    monkeypatch.setattr(realtime_server, "stream_transcribe_file", fake_stream_transcribe_file)
-    monkeypatch.setattr(realtime_server, "_SERVICE_TRANSLATION_JOB_QUEUE_MAXSIZE", 1)
-    translation_actor = BlockingTranslationActor()
-    output_queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue(maxsize=100)
-    task = asyncio.create_task(
-        realtime_server._produce_offline_stream_payloads(
-            object(),
-            "unused.wav",
-            options=OfflineTranscriptionOptions(),
-            timestamp_actor=None,
-            translation_actor=translation_actor,
-            translation_target_language="Chinese",
-            translation_max_new_tokens=None,
-            translation_timeout_sec=None,
-            asr_executor=None,
-            output_queue=output_queue,
-        )
-    )
-
-    await asyncio.wait_for(translation_actor.started.wait(), timeout=1.0)
-    await asyncio.sleep(0.05)
-
-    assert yielded == [1, 2, 3]
-    assert not task.done()
-    task.cancel()
-    with suppress(asyncio.CancelledError):
-        await task
-
-
-@pytest.mark.asyncio
 async def test_offline_stream_producer_cancellation_does_not_wait_for_full_output_queue(monkeypatch) -> None:
+    keep_stream_open = asyncio.Event()
+
     async def fake_stream_transcribe_file(*_args: object, **_kwargs: object):
         segment = TranscriptSegment(
             id="seg_000001",
@@ -595,7 +758,7 @@ async def test_offline_stream_producer_cancellation_does_not_wait_for_full_outpu
             language="English",
         )
         yield OfflineTranscriptionStreamEvent(kind="segment", segment=segment)
-        await asyncio.sleep(3600)
+        await keep_stream_open.wait()
 
     monkeypatch.setattr(realtime_server, "stream_transcribe_file", fake_stream_transcribe_file)
     output_queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue(maxsize=1)
@@ -704,7 +867,8 @@ async def test_offline_transcription_route_rejects_unreadable_audio_with_json_er
 
     assert response["status"] == 400
     assert response["json"]["error"]["code"] == "invalid_request"
-    assert "Unsupported or unreadable audio file" in response["json"]["error"]["message"]
+    message = response["json"]["error"]["message"]
+    assert "media file" in message or "ffmpeg" in message
 
 
 @pytest.mark.asyncio
@@ -780,6 +944,7 @@ async def asgi_request(
 ) -> dict[str, object]:
     sent: list[dict[str, object]] = []
     received = False
+    keep_connected = asyncio.Event()
 
     async def receive() -> dict[str, object]:
         nonlocal received
@@ -787,7 +952,7 @@ async def asgi_request(
             # StreamingResponse starts a disconnect listener after the request body
             # has been consumed. Keep the synthetic client connected until that
             # listener is cancelled by response completion.
-            await asyncio.sleep(3600)
+            await keep_connected.wait()
             return {"type": "http.disconnect"}
         received = True
         return {"type": "http.request", "body": body, "more_body": False}
@@ -795,22 +960,25 @@ async def asgi_request(
     async def send(message: dict[str, object]) -> None:
         sent.append(message)
 
-    await app(  # type: ignore[misc]
-        {
-            "type": "http",
-            "asgi": {"version": "3.0"},
-            "http_version": "1.1",
-            "method": method,
-            "scheme": "http",
-            "path": path,
-            "raw_path": path.encode("ascii"),
-            "query_string": query,
-            "headers": headers or [],
-            "client": ("127.0.0.1", 12345),
-            "server": ("127.0.0.1", 8000),
-        },
-        receive,
-        send,
+    await asyncio.wait_for(
+        app(  # type: ignore[misc]
+            {
+                "type": "http",
+                "asgi": {"version": "3.0"},
+                "http_version": "1.1",
+                "method": method,
+                "scheme": "http",
+                "path": path,
+                "raw_path": path.encode("ascii"),
+                "query_string": query,
+                "headers": headers or [],
+                "client": ("127.0.0.1", 12345),
+                "server": ("127.0.0.1", 8000),
+            },
+            receive,
+            send,
+        ),
+        timeout=2.0,
     )
 
     status = next(message for message in sent if message["type"] == "http.response.start")["status"]

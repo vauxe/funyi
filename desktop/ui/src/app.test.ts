@@ -198,7 +198,12 @@ test("offline file stream keeps translation status after the final transcript", 
 
     stream.send(transcriptUpdateEvent());
     stream.send(translationStatusEvent("timeout", "translation failed"));
-    stream.send(finalTranscriptEvent({ translation: null }));
+    stream.send(
+      finalTranscriptEvent({
+        translation: null,
+        translationMessage: "translation failed",
+      }),
+    );
     stream.close();
     await nextTick();
     await nextTick();
@@ -243,7 +248,7 @@ test("audio source mode changes show the next action in the status bar", async (
 
   elements["audio-source"]!.value = OFFLINE_FILE_SOURCE_ID;
   elements["audio-source"]!.dispatch("change", {});
-  assert.equal(elements["session-status"]!.textContent, "Choose audio file. →");
+  assert.equal(elements["session-status"]!.textContent, "Choose audio or video file. →");
   assert.equal(elements["offline-file"]!.clicks, 1);
 
   elements["offline-file"]!.files = [namedBlob("clip.wav", "audio/wav")];
@@ -254,7 +259,7 @@ test("audio source mode changes show the next action in the status bar", async (
   elements["audio-source"]!.dispatch("change", {});
   elements["audio-source"]!.value = OFFLINE_FILE_SOURCE_ID;
   elements["audio-source"]!.dispatch("change", {});
-  assert.equal(elements["session-status"]!.textContent, "Choose audio file. →");
+  assert.equal(elements["session-status"]!.textContent, "Choose audio or video file. →");
   assert.equal(elements["offline-file"]!.clicks, 2);
 });
 
@@ -282,7 +287,7 @@ test("offline file source asks for a fresh file after one transcription", async 
 
     assert.equal(requests, 1);
     assert.equal(elements["offline-file"]!.clicks, 2);
-    assert.equal(elements["session-status"]!.textContent, "Choose audio file. →");
+    assert.equal(elements["session-status"]!.textContent, "Choose audio or video file. →");
   } finally {
     restore();
   }
@@ -758,7 +763,13 @@ function translationStatusEvent(code: string, message: string): Record<string, u
   };
 }
 
-function finalTranscriptEvent({ translation = null }: { translation?: string | null } = {}): Record<string, unknown> {
+function finalTranscriptEvent({
+  translation = null,
+  translationMessage = null,
+}: {
+  translation?: string | null;
+  translationMessage?: string | null;
+} = {}): Record<string, unknown> {
   return {
     type: "transcript_final",
     revision: 1,
@@ -788,6 +799,7 @@ function finalTranscriptEvent({ translation = null }: { translation?: string | n
           text: "你好",
           language: "Chinese",
           ...(translation ? { translation } : {}),
+          ...(translationMessage ? { translationMessage } : {}),
         },
       ],
     },

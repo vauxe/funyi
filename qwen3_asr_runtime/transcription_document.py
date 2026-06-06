@@ -16,6 +16,8 @@ class TranscriptSegment:
     language: str = ""
     timing_status: str | None = None
     translation: str | None = None
+    translation_status: str | None = None
+    translation_message: str | None = None
 
     def to_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -30,7 +32,27 @@ class TranscriptSegment:
             payload["timingStatus"] = self.timing_status
         if self.translation is not None:
             payload["translation"] = self.translation
+        if self.translation_status is not None:
+            payload["translationStatus"] = self.translation_status
+        if self.translation_message is not None:
+            payload["translationMessage"] = self.translation_message
         return payload
+
+
+@dataclass(frozen=True)
+class TranscriptTranslationUnit:
+    text: str
+    target_language: str
+    source_segment_ids: tuple[str, ...]
+    source_segment_indices: tuple[int, ...]
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "text": self.text,
+            "targetLanguage": self.target_language,
+            "sourceSegmentIds": list(self.source_segment_ids),
+            "sourceSegmentIndices": [int(index) for index in self.source_segment_indices],
+        }
 
 
 @dataclass(frozen=True)
@@ -39,19 +61,23 @@ class TranscriptDocument:
     language: str
     segments: list[TranscriptSegment]
     schema_version: int = 1
+    translation_units: list[TranscriptTranslationUnit] | None = None
 
     @property
     def text(self) -> str:
         return _join_segment_texts(segment.text for segment in self.segments)
 
     def to_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "schemaVersion": int(self.schema_version),
             "durationMs": int(self.duration_ms),
             "language": self.language,
             "text": self.text,
             "segments": [segment.to_payload() for segment in self.segments],
         }
+        if self.translation_units:
+            payload["translationUnits"] = [unit.to_payload() for unit in self.translation_units]
+        return payload
 
 
 def _join_segment_texts(texts: Iterable[str]) -> str:
@@ -79,4 +105,4 @@ def _is_ascii_alnum(value: str) -> bool:
     return len(value) == 1 and value.isascii() and value.isalnum()
 
 
-__all__ = ["TranscriptDocument", "TranscriptSegment"]
+__all__ = ["TranscriptDocument", "TranscriptSegment", "TranscriptTranslationUnit"]

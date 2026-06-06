@@ -49,7 +49,7 @@ sender task
   -> websocket.send_text(...)
 
 client SubtitleDocument
-  -> previous stable line / current draft line / SRT history
+  -> stable history / current display line / SRT export
 ```
 
 Only the sender task writes to the WebSocket.
@@ -98,8 +98,9 @@ Stable, while a target language is active:
   `--translation-stable-batch-size` is greater than `1`, adjacent queued stable
   jobs with the same source language and target language may share one
   `translate_batch` call;
-- stable jobs are not dropped for backlog pressure and are not timed out by the
-  service;
+- realtime WebSocket stable jobs are not dropped for backlog pressure and are
+  not timed out by the service; offline file-stream stable jobs use
+  `--translation-stable-timeout-ms` so the final file document can complete;
 - translator failures emit `translation_status` for the affected stable
   translation unit.
 
@@ -116,27 +117,23 @@ Preview:
 
 Client replay:
 
-- `SubtitleDocument` replays server events into one local document;
-- `stable_appends` append immutable history;
-- `partial` replaces the current draft line;
-- while stable source text is pending inside the current translation unit,
-  `translation_preview` should be displayed against the composed source text
-  `pending stable source text + partial.text`;
-- `translation_stable` / stable `translation_status` should prefer
-  `source_segment_ids` / `source_segment_indices` over the anchor fields and
-  fold the covered stable source segments into one displayed translation unit;
-- the anchor `source_segment_id` / `source_segment_index` is a compatibility
-  lookup, not the full source coverage when lists are present;
-- `translation_preview` annotates the current draft only when `source_revision`
-  matches;
-- the compact subtitle window renders `stable_lines[-1]` above `current` below
-  and lets the client layout constrain the visible text;
-- SRT/detail output uses stable history only, with translation as a second line
-  in the same SRT entry when translation display is enabled.
+- `SubtitleDocument` replays service events into one local document; stable
+  source history remains the source of truth for copy and SRT/detail export.
+- `translation_preview` annotates only the matching current revision. When a
+  preview covers pending stable source text plus the current partial, the compact
+  subtitle window composes that text into one current display line without
+  folding stable history.
+- `translation_stable` and stable `translation_status` replay follow
+  `@docs/realtime_asr_service.md`; coverage lists describe source coverage, and
+  anchor fields identify the source cue that carries the visible translation or
+  status.
 
 Scheduling:
 
-- audio ingest and source event sending never wait for translation;
+- realtime WebSocket audio ingest and source event sending never wait for
+  translation; offline file-stream source events may wait behind the bounded
+  stable-translation backlog so final documents can complete without unbounded
+  queued work;
 - preview has priority over normal stable backlog because it is the lowest
   latency translation path;
 - preview work that has not entered the model can be superseded by newer state;

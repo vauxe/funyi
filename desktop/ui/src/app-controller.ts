@@ -30,14 +30,14 @@ import { transcribeFile } from "./transcription-client.js";
 export const OFFLINE_FILE_SOURCE_ID = "__funyi_offline_file__";
 
 const OFFLINE_FILE_SOURCE: SelectableAudioSource = {
-  detail: "Transcribe a local audio file.",
+  detail: "Transcribe a local audio or video file.",
   id: OFFLINE_FILE_SOURCE_ID,
   isAvailable: true,
   kind: "file",
   name: "File",
 };
 const NEXT_ACTION_ARROW = " →";
-const OFFLINE_FILE_PICKER_STATUS = nextActionStatus("Choose audio file.");
+const OFFLINE_FILE_PICKER_STATUS = nextActionStatus("Choose audio or video file.");
 const OFFLINE_FILE_READY_STATUS = nextActionStatus("Start transcription.");
 
 export interface FunyiAppOptions {

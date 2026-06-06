@@ -127,14 +127,15 @@ class SubtitleDocument:
             self.revision = int(event.get("revision") or self.revision)
             return
 
-        existing = {line.id: line for line in self.stable_lines if line.id}
+        existing_by_id = {line.id: line for line in self.stable_lines if line.id}
+        existing_by_index = {line.index: line for line in self.stable_lines if line.index is not None}
         lines: list[SubtitleLine] = []
         for segment in event.get("segments") or []:
             if not isinstance(segment, dict):
                 continue
             line = _line_from_segment(segment, source_revision=int(event.get("revision") or self.revision))
-            previous = existing.get(line.id or "")
-            if previous is not None:
+            previous = existing_by_id.get(line.id or "") or existing_by_index.get(line.index)
+            if previous is not None and not _segment_has_translation_state(segment):
                 line = replace(
                     line,
                     translation=previous.translation,
@@ -142,6 +143,7 @@ class SubtitleDocument:
                     translation_message=previous.translation_message,
                 )
             lines.append(line)
+        _apply_document_translation_units(lines, event.get("document"))
         self.stable_lines = lines
         self.current = None
         self.revision = int(event.get("revision") or self.revision)
@@ -176,6 +178,7 @@ class SubtitleDocument:
             return
         self.stable_lines[index] = replace(
             self.stable_lines[index],
+            translation=None,
             translation_status=str(event.get("code") or ""),
             translation_message=str(event.get("message") or ""),
         )
@@ -209,13 +212,62 @@ def _line_from_segment(segment: dict[str, Any], *, source_revision: int) -> Subt
         language=str(segment.get("language") or ""),
         source_revision=int(source_revision),
         timing_status=str(segment.get("timing_status") or "") or None,
+        translation=str(segment.get("translation") or "") or None,
+        translation_status=str(segment.get("translation_status") or "") or None,
+        translation_message=str(segment.get("translation_message") or "") or None,
     )
 
 
 def _render_line(line: SubtitleLine | None, *, include_translation: bool) -> SubtitleLine | None:
     if line is None or include_translation:
         return line
-    return replace(line, translation=None, translation_status=None, translation_message=None)
+    return replace(
+        line,
+        translation=None,
+        translation_status=None,
+        translation_message=None,
+    )
+
+
+def _segment_has_translation_state(segment: dict[str, Any]) -> bool:
+    return any(key in segment for key in ("translation", "translation_status", "translation_message"))
+
+
+def _apply_document_translation_units(lines: list[SubtitleLine], document: Any) -> None:
+    if not isinstance(document, dict):
+        return
+    for unit in document.get("translationUnits") or []:
+        if not isinstance(unit, dict):
+            continue
+        text = str(unit.get("text") or "").strip()
+        if not text:
+            continue
+        index = _translation_unit_anchor_index(lines, unit)
+        if index is None:
+            continue
+        lines[index] = replace(
+            lines[index],
+            translation=text,
+            translation_status=None,
+            translation_message=None,
+        )
+
+
+def _translation_unit_anchor_index(lines: list[SubtitleLine], unit: dict[str, Any]) -> int | None:
+    segment_ids = _string_tuple(unit.get("sourceSegmentIds"))
+    segment_indices = _int_tuple(unit.get("sourceSegmentIndices"))
+    for coverage_index in range(max(len(segment_ids), len(segment_indices)) - 1, -1, -1):
+        if coverage_index < len(segment_ids):
+            segment_id = segment_ids[coverage_index]
+            for index, line in enumerate(lines):
+                if line.id == segment_id:
+                    return index
+        if coverage_index < len(segment_indices):
+            segment_index = segment_indices[coverage_index]
+            for index, line in enumerate(lines):
+                if line.index == segment_index:
+                    return index
+    return None
 
 
 def _format_srt_time(ms: int) -> str:
@@ -234,6 +286,23 @@ def _optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(str(item or "").strip() for item in value if str(item or "").strip())
+
+
+def _int_tuple(value: Any) -> tuple[int, ...]:
+    if not isinstance(value, list):
+        return ()
+    values: list[int] = []
+    for item in value:
+        parsed = _optional_int(item)
+        if parsed is not None and parsed > 0:
+            values.append(parsed)
+    return tuple(values)
 
 
 __all__ = ["SubtitleDocument", "SubtitleLine", "SubtitleWindow"]

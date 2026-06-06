@@ -22,6 +22,8 @@ from qwen3_asr_runtime.cuda_serialization import CUDA_GRAPH_CAPTURE_LOCK
 from qwen3_asr_runtime.offline_transcription import (
     OfflineTranscriptionInputError,
     OfflineTranscriptionOptions,
+    OfflineTranslationUnit,
+    apply_unit_translation,
     stream_transcribe_file,
     transcribe_file,
 )
@@ -52,7 +54,11 @@ from qwen3_asr_runtime.translation import (
     HYMTTranslator,
 )
 from qwen3_asr_runtime.transcript_store import TranscriptStore
-from qwen3_asr_runtime.transcription_document import TranscriptDocument, TranscriptSegment
+from qwen3_asr_runtime.transcription_document import (
+    TranscriptDocument,
+    TranscriptSegment,
+    TranscriptTranslationUnit,
+)
 from qwen3_asr_runtime.utils import SAMPLE_RATE, normalize_language_name, validate_language
 from qwen3_asr_runtime.vad import VadDecision
 
@@ -130,8 +136,7 @@ class TranslationServiceConfig:
 
 @dataclass(frozen=True)
 class _OfflineTranslationJob:
-    segment_list_index: int
-    segment: TranscriptSegment
+    unit: OfflineTranslationUnit
     revision: int
 
 
@@ -803,6 +808,7 @@ async def _produce_offline_stream_payloads(
     output_queue: asyncio.Queue[dict[str, Any] | None],
 ) -> None:
     segments: list[TranscriptSegment] = []
+    translation_units: list[TranscriptTranslationUnit] = []
     revision = 0
     final_document: TranscriptDocument | None = None
     translation_jobs: asyncio.Queue[_OfflineTranslationJob | None] | None = None
@@ -816,6 +822,7 @@ async def _produce_offline_stream_payloads(
                 translation_jobs,
                 output_queue,
                 segments,
+                translation_units,
                 translation_actor=translation_actor,
                 target_language=target_language,
                 source_language=str(options.language or ""),
@@ -837,13 +844,10 @@ async def _produce_offline_stream_payloads(
                 segments.append(segment)
                 revision = max(revision + 1, int(segment.index))
                 await output_queue.put(_offline_segment_stream_payload(segment, revision))
+            elif event.kind == "translation_unit" and event.translation_unit is not None:
                 if translation_jobs is not None:
                     await translation_jobs.put(
-                        _OfflineTranslationJob(
-                            segment_list_index=len(segments) - 1,
-                            segment=segment,
-                            revision=revision,
-                        )
+                        _offline_translation_job_from_unit(event.translation_unit, revision)
                     )
             elif event.kind == "complete" and event.document is not None:
                 final_document = event.document
@@ -857,7 +861,10 @@ async def _produce_offline_stream_payloads(
         if final_document is None:
             final_document = TranscriptDocument(duration_ms=0, language="", segments=segments)
         await output_queue.put(
-            _offline_final_stream_payload(replace(final_document, segments=segments), revision)
+            _offline_final_stream_payload(
+                replace(final_document, segments=segments, translation_units=translation_units),
+                revision,
+            )
         )
     except OfflineTranscriptionInputError as exc:
         await _cancel_offline_translation_worker(translation_task)
@@ -901,10 +908,19 @@ async def _cancel_offline_translation_worker(task: asyncio.Task[None] | None) ->
         _LOGGER.exception("Offline translation worker failed.")
 
 
+def _offline_translation_job_from_unit(
+    unit: OfflineTranslationUnit,
+    revision: int,
+) -> _OfflineTranslationJob:
+    revision = max(int(revision), max(unit.source_segment_indices, default=int(revision)))
+    return _OfflineTranslationJob(unit=unit, revision=revision)
+
+
 async def _offline_translation_worker(
     jobs: asyncio.Queue[_OfflineTranslationJob | None],
     output_queue: asyncio.Queue[dict[str, Any] | None],
     segments: list[TranscriptSegment],
+    translation_units: list[TranscriptTranslationUnit],
     *,
     translation_actor: Any,
     target_language: str,
@@ -917,25 +933,26 @@ async def _offline_translation_worker(
         try:
             if job is None:
                 return
-            translated, error_code = await _translate_offline_segment(
-                job.segment,
+            unit = job.unit
+            translated, error_code = await _translate_offline_unit(
+                unit,
                 translation_actor=translation_actor,
                 target_language=target_language,
-                source_language=job.segment.language or source_language,
+                source_language=unit.source_language or source_language,
                 max_new_tokens=max_new_tokens,
                 timeout_sec=timeout_sec,
             )
-            if translated:
-                translated_segment = replace(job.segment, translation=translated)
-                segments[job.segment_list_index] = translated_segment
-                await output_queue.put(
-                    _offline_translation_stable_payload(translated_segment, job.revision, target_language)
-                )
+            document_unit = apply_unit_translation(
+                segments, unit, target_language=target_language, text=translated, error=error_code
+            )
+            if document_unit is not None:
+                translation_units.append(document_unit)
+            if translated and error_code is None:
+                await output_queue.put(_offline_translation_stable_payload(job, translated, target_language))
             else:
                 await output_queue.put(
                     _offline_translation_status_payload(
-                        job.segment,
-                        job.revision,
+                        job,
                         target_language,
                         code=error_code or "failed",
                         message="translation failed",
@@ -945,8 +962,8 @@ async def _offline_translation_worker(
             jobs.task_done()
 
 
-async def _translate_offline_segment(
-    segment: TranscriptSegment,
+async def _translate_offline_unit(
+    unit: OfflineTranslationUnit,
     *,
     translation_actor: Any,
     target_language: str,
@@ -956,7 +973,7 @@ async def _translate_offline_segment(
 ) -> tuple[str | None, str | None]:
     try:
         translate_call = translation_actor.translate_batch(
-            [segment.text],
+            [unit.source_text],
             target_language=target_language,
             source_language=source_language,
             max_new_tokens=max_new_tokens,
@@ -1009,25 +1026,20 @@ def _offline_segment_stream_payload(segment: Any, revision: int) -> dict[str, An
 
 
 def _offline_translation_stable_payload(
-    segment: TranscriptSegment,
-    revision: int,
+    job: _OfflineTranslationJob,
+    translated: str,
     target_language: str,
 ) -> dict[str, Any]:
     return {
         "type": "translation_stable",
-        "source_revision": int(revision),
-        "source_segment_id": segment.id,
-        "source_segment_index": int(segment.index),
-        "source_segment_ids": [segment.id],
-        "source_segment_indices": [int(segment.index)],
-        "text": str(segment.translation or ""),
+        **_offline_translation_source_payload(job),
+        "text": str(translated or ""),
         "target_language": target_language,
     }
 
 
 def _offline_translation_status_payload(
-    segment: TranscriptSegment,
-    revision: int,
+    job: _OfflineTranslationJob,
     target_language: str,
     *,
     code: str,
@@ -1037,13 +1049,20 @@ def _offline_translation_status_payload(
         "type": "translation_status",
         "scope": "stable",
         "code": str(code),
-        "source_revision": int(revision),
-        "source_segment_id": segment.id,
-        "source_segment_index": int(segment.index),
-        "source_segment_ids": [segment.id],
-        "source_segment_indices": [int(segment.index)],
+        **_offline_translation_source_payload(job),
         "target_language": target_language,
         "message": str(message),
+    }
+
+
+def _offline_translation_source_payload(job: _OfflineTranslationJob) -> dict[str, Any]:
+    unit = job.unit
+    return {
+        "source_revision": int(job.revision),
+        "source_segment_id": unit.source_segment_ids[-1] if unit.source_segment_ids else "",
+        "source_segment_index": int(unit.source_segment_indices[-1]) if unit.source_segment_indices else 0,
+        "source_segment_ids": list(unit.source_segment_ids),
+        "source_segment_indices": [int(index) for index in unit.source_segment_indices],
     }
 
 
@@ -1061,7 +1080,7 @@ def _offline_final_stream_payload(document: Any, revision: int) -> dict[str, Any
 
 
 def _offline_segment_realtime_payload(segment: Any) -> dict[str, Any]:
-    payload = {
+    payload: dict[str, Any] = {
         "id": segment.id,
         "index": int(segment.index),
         "start_ms": segment.start_ms,
@@ -1071,6 +1090,12 @@ def _offline_segment_realtime_payload(segment: Any) -> dict[str, Any]:
     }
     if segment.timing_status is not None:
         payload["timing_status"] = segment.timing_status
+    if segment.translation is not None:
+        payload["translation"] = segment.translation
+    if segment.translation_status is not None:
+        payload["translation_status"] = segment.translation_status
+    if segment.translation_message is not None:
+        payload["translation_message"] = segment.translation_message
     return payload
 
 

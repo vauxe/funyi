@@ -1,7 +1,11 @@
 # coding=utf-8
 from __future__ import annotations
 
-from qwen3_asr_runtime.transcription_document import TranscriptDocument, TranscriptSegment
+from qwen3_asr_runtime.transcription_document import (
+    TranscriptDocument,
+    TranscriptSegment,
+    TranscriptTranslationUnit,
+)
 
 
 def test_transcript_document_payload_uses_stable_snapshot_schema() -> None:
@@ -18,6 +22,8 @@ def test_transcript_document_payload_uses_stable_snapshot_schema() -> None:
                 language="Chinese",
                 timing_status="aligned",
                 translation="hello",
+                translation_status="ok",
+                translation_message="translated",
             ),
             TranscriptSegment(
                 id="seg_000002",
@@ -45,6 +51,8 @@ def test_transcript_document_payload_uses_stable_snapshot_schema() -> None:
                 "language": "Chinese",
                 "timingStatus": "aligned",
                 "translation": "hello",
+                "translationStatus": "ok",
+                "translationMessage": "translated",
             },
             {
                 "id": "seg_000002",
@@ -70,3 +78,38 @@ def test_transcript_document_text_preserves_readable_ascii_boundaries() -> None:
     )
 
     assert document.text == "hello world. Next"
+
+
+def test_transcript_document_payload_can_express_grouped_translation_units() -> None:
+    document = TranscriptDocument(
+        duration_ms=1800,
+        language="Chinese",
+        segments=[
+            TranscriptSegment(id="seg_000001", index=1, start_ms=0, end_ms=1000, text="今天讨论字幕显示问题，"),
+            TranscriptSegment(
+                id="seg_000002",
+                index=2,
+                start_ms=1000,
+                end_ms=1800,
+                text="并且保持翻译输入完整。",
+                translation="We discuss subtitle display while preserving translation context.",
+            ),
+        ],
+        translation_units=[
+            TranscriptTranslationUnit(
+                text="We discuss subtitle display while preserving translation context.",
+                target_language="English",
+                source_segment_ids=("seg_000001", "seg_000002"),
+                source_segment_indices=(1, 2),
+            )
+        ],
+    )
+
+    assert document.to_payload()["translationUnits"] == [
+        {
+            "text": "We discuss subtitle display while preserving translation context.",
+            "targetLanguage": "English",
+            "sourceSegmentIds": ["seg_000001", "seg_000002"],
+            "sourceSegmentIndices": [1, 2],
+        }
+    ]

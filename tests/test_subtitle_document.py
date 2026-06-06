@@ -219,6 +219,75 @@ class TestSubtitleDocument:
         assert window.current.translation == 'current line'  # type: ignore[union-attr]
         assert document.to_srt() == '1\n00:00:00,000 --> 00:00:01,000\n稳定行\nstable line\n'
 
+    def test_translation_status_clears_existing_translation(self) -> None:
+        document = SubtitleDocument()
+        document.apply_event(
+            {
+                "type": "transcript_update",
+                "revision": 1,
+                "stable_base": 0,
+                "stable_count": 1,
+                "stable_appends": [stable_segment(1, "稳定行", start_ms=0, end_ms=1000)],
+                "partial": None,
+            }
+        )
+        document.apply_event(
+            {
+                "type": "translation_stable",
+                "source_revision": 1,
+                "source_segment_id": "seg_000001",
+                "source_segment_index": 1,
+                "target_language": "English",
+                "text": "stable line",
+            }
+        )
+        document.apply_event(
+            {
+                "type": "translation_status",
+                "source_revision": 1,
+                "source_segment_id": "seg_000001",
+                "source_segment_index": 1,
+                "target_language": "English",
+                "code": "failed",
+                "message": "translation failed",
+            }
+        )
+
+        window = document.window()
+        assert window.previous.translation is None  # type: ignore[union-attr]
+        assert window.previous.translation_status == "failed"  # type: ignore[union-attr]
+        assert window.previous.translation_message == "translation failed"  # type: ignore[union-attr]
+
+    def test_grouped_translation_anchors_without_folding_source_segments(self) -> None:
+        document = SubtitleDocument()
+        document.apply_event(
+            {
+                "type": "transcript_update",
+                "revision": 1,
+                "stable_base": 0,
+                "stable_count": 2,
+                "stable_appends": [
+                    stable_segment(1, "今天讨论字幕显示问题，", start_ms=0, end_ms=2000),
+                    stable_segment(2, "并且保持翻译输入完整。", start_ms=2000, end_ms=3800),
+                ],
+                "partial": None,
+            }
+        )
+
+        document.apply_event(
+            {
+                "type": "translation_stable",
+                "source_segment_id": "seg_000002",
+                "source_segment_index": 2,
+                "source_segment_ids": ["seg_000001", "seg_000002"],
+                "source_segment_indices": [1, 2],
+                "target_language": "English",
+                "text": "We discuss subtitle display while preserving translation context.",
+            }
+        )
+
+        assert document.stable_lines[1].translation == "We discuss subtitle display while preserving translation context."
+
     def test_translation_can_be_hidden_without_changing_source_state(self) -> None:
         document = SubtitleDocument(translation_enabled=False)
         document.apply_event(
@@ -308,6 +377,177 @@ class TestSubtitleDocument:
         assert window.previous.text == '第一句'  # type: ignore[union-attr]
         assert window.previous.translation == 'first line'  # type: ignore[union-attr]
         assert window.current is None
+
+    def test_final_snapshot_preserves_stable_translation_by_index_when_ids_change(self) -> None:
+        document = SubtitleDocument()
+        document.apply_event(
+            {
+                "type": "transcript_update",
+                "revision": 1,
+                "stable_base": 0,
+                "stable_count": 1,
+                "stable_appends": [stable_segment(1, "第一句", start_ms=0, end_ms=1000)],
+                "partial": None,
+            }
+        )
+        document.apply_event(
+            {
+                "type": "translation_stable",
+                "source_revision": 1,
+                "source_segment_id": "seg_000001",
+                "source_segment_index": 1,
+                "target_language": "English",
+                "text": "first line",
+            }
+        )
+        final_segment = stable_segment(1, "第一句", start_ms=0, end_ms=1000)
+        final_segment["id"] = "rebuilt_seg_1"
+
+        document.apply_event(
+            {
+                "type": "transcript_final",
+                "revision": 2,
+                "stable_count": 1,
+                "segments": [final_segment],
+            }
+        )
+
+        window = document.window()
+        assert window.previous.translation == "first line"  # type: ignore[union-attr]
+        assert window.current is None
+
+    def test_final_snapshot_prefers_segment_translation_over_replayed_state(self) -> None:
+        document = SubtitleDocument()
+        document.apply_event(
+            {
+                "type": "transcript_update",
+                "revision": 1,
+                "stable_base": 0,
+                "stable_count": 1,
+                "stable_appends": [stable_segment(1, "第一句", start_ms=0, end_ms=1000)],
+                "partial": None,
+            }
+        )
+        document.apply_event(
+            {
+                "type": "translation_stable",
+                "source_revision": 1,
+                "source_segment_id": "seg_000001",
+                "source_segment_index": 1,
+                "target_language": "English",
+                "text": "old translation",
+            }
+        )
+        final_segment = stable_segment(1, "第一句", start_ms=0, end_ms=1000)
+        final_segment["translation"] = "final translation"
+
+        document.apply_event(
+            {
+                "type": "transcript_final",
+                "revision": 2,
+                "stable_count": 1,
+                "segments": [final_segment],
+            }
+        )
+
+        window = document.window()
+        assert window.previous.translation == "final translation"  # type: ignore[union-attr]
+
+    def test_final_snapshot_anchors_document_translation_units(self) -> None:
+        document = SubtitleDocument()
+        document.apply_event(
+            {
+                "type": "transcript_final",
+                "revision": 1,
+                "stable_count": 2,
+                "segments": [
+                    stable_segment(1, "今天讨论字幕显示问题，", start_ms=0, end_ms=2000),
+                    stable_segment(2, "并且保持翻译输入完整。", start_ms=2000, end_ms=3800),
+                ],
+                "document": {
+                    "translationUnits": [
+                        {
+                            "text": "We discuss subtitle display while preserving translation context.",
+                            "targetLanguage": "English",
+                            "sourceSegmentIds": ["seg_000001", "seg_000002"],
+                            "sourceSegmentIndices": [1, 2],
+                        }
+                    ]
+                },
+            }
+        )
+
+        assert document.stable_lines[1].translation == "We discuss subtitle display while preserving translation context."
+
+    def test_final_snapshot_anchors_translation_unit_with_paired_index_fallback(self) -> None:
+        document = SubtitleDocument()
+        second_segment = stable_segment(2, "并且保持翻译输入完整。", start_ms=2000, end_ms=3800)
+        second_segment["id"] = "rebuilt_seg_2"
+
+        document.apply_event(
+            {
+                "type": "transcript_final",
+                "revision": 1,
+                "stable_count": 2,
+                "segments": [
+                    stable_segment(1, "今天讨论字幕显示问题，", start_ms=0, end_ms=2000),
+                    second_segment,
+                ],
+                "document": {
+                    "translationUnits": [
+                        {
+                            "text": "We discuss subtitle display while preserving translation context.",
+                            "targetLanguage": "English",
+                            "sourceSegmentIds": ["seg_000001", "old_seg_000002"],
+                            "sourceSegmentIndices": [1, 2],
+                        }
+                    ]
+                },
+            }
+        )
+
+        assert document.stable_lines[0].translation is None
+        assert document.stable_lines[1].translation == "We discuss subtitle display while preserving translation context."
+
+    def test_final_snapshot_prefers_segment_translation_status_over_replayed_state(self) -> None:
+        document = SubtitleDocument()
+        document.apply_event(
+            {
+                "type": "transcript_update",
+                "revision": 1,
+                "stable_base": 0,
+                "stable_count": 1,
+                "stable_appends": [stable_segment(1, "第一句", start_ms=0, end_ms=1000)],
+                "partial": None,
+            }
+        )
+        document.apply_event(
+            {
+                "type": "translation_stable",
+                "source_revision": 1,
+                "source_segment_id": "seg_000001",
+                "source_segment_index": 1,
+                "target_language": "English",
+                "text": "old translation",
+            }
+        )
+        final_segment = stable_segment(1, "第一句", start_ms=0, end_ms=1000)
+        final_segment["translation_status"] = "timeout"
+        final_segment["translation_message"] = "translation failed"
+
+        document.apply_event(
+            {
+                "type": "transcript_final",
+                "revision": 2,
+                "stable_count": 1,
+                "segments": [final_segment],
+            }
+        )
+
+        window = document.window()
+        assert window.previous.translation is None  # type: ignore[union-attr]
+        assert window.previous.translation_status == "timeout"  # type: ignore[union-attr]
+        assert window.previous.translation_message == "translation failed"  # type: ignore[union-attr]
 
     def test_final_marker_without_snapshot_clears_current_and_keeps_replayed_stable_history(self) -> None:
         document = SubtitleDocument()
