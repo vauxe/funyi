@@ -16,6 +16,7 @@ Coverage: opus-100 is English-centric, so this yields en<->zh and en<->ja
 Caveat: opus-100 references are loose subtitle alignments (noisy). Absolute chrF
 is unreliable; trust the paired base-vs-candidate delta, which cancels ref noise.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -34,8 +35,12 @@ _OPUS_REVISION = "805090dc28bf78897da9641cdf08b61287580df9"
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build an opus-100 paired translation eval JSONL.")
-    parser.add_argument("--output", default=str(ROOT / "local_data" / "opus_mt_eval.jsonl"))
+    parser = argparse.ArgumentParser(
+        description="Build an opus-100 paired translation eval JSONL."
+    )
+    parser.add_argument(
+        "--output", default=str(ROOT / "local_data" / "opus_mt_eval.jsonl")
+    )
     parser.add_argument(
         "--per-dir",
         type=int,
@@ -56,7 +61,9 @@ def _stride(items: list, count: int) -> list:
     return [items[int(i * step)] for i in range(count)]
 
 
-def _load_pair(config: str, a: str, b: str, *, min_chars: int, max_chars: int) -> list[dict[str, str]]:
+def _load_pair(
+    config: str, a: str, b: str, *, min_chars: int, max_chars: int
+) -> list[dict[str, str]]:
     try:
         from huggingface_hub import hf_hub_download
         import pyarrow.parquet as pq
@@ -91,12 +98,18 @@ def main() -> None:
     args = _parse_args()
     rows: list[dict[str, object]] = []
     for config, a, b in _PAIRS:
-        pairs = _load_pair(config, a, b, min_chars=args.min_chars, max_chars=args.max_chars)
+        pairs = _load_pair(
+            config, a, b, min_chars=args.min_chars, max_chars=args.max_chars
+        )
         sampled = _stride(pairs, args.per_dir)
         # Each pair yields both directions: src->ref and ref->src.
         for index, pair in enumerate(sampled):
-            rows.append(_case(f"opus_{a}-{b}_{index:04d}", a, b, pair["src"], pair["ref"]))
-            rows.append(_case(f"opus_{b}-{a}_{index:04d}", b, a, pair["ref"], pair["src"]))
+            rows.append(
+                _case(f"opus_{a}-{b}_{index:04d}", a, b, pair["src"], pair["ref"])
+            )
+            rows.append(
+                _case(f"opus_{b}-{a}_{index:04d}", b, a, pair["ref"], pair["src"])
+            )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", encoding="utf-8") as handle:
@@ -107,11 +120,18 @@ def main() -> None:
         )
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-    directions = sorted({f"{row['source_language']}->{row['target_language']}" for row in rows})
-    print(f"wrote {len(rows)} cases to {output} across {len(directions)} directions: {directions}", file=sys.stderr)
+    directions = sorted(
+        {f"{row['source_language']}->{row['target_language']}" for row in rows}
+    )
+    print(
+        f"wrote {len(rows)} cases to {output} across {len(directions)} directions: {directions}",
+        file=sys.stderr,
+    )
 
 
-def _case(case_id: str, src_short: str, tgt_short: str, text: str, reference: str) -> dict[str, object]:
+def _case(
+    case_id: str, src_short: str, tgt_short: str, text: str, reference: str
+) -> dict[str, object]:
     return {
         "id": case_id,
         "group": "opus_mt",

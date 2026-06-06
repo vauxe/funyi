@@ -5,6 +5,7 @@ Pure-CPU structural tests always run (guarded by mlx availability). The
 end-to-end test runs only when FUNYI_MLX_TEST_MODEL points at a local 0.6B
 checkpoint, so CI without MLX/weights stays green.
 """
+
 from __future__ import annotations
 
 import os
@@ -14,14 +15,21 @@ import pytest
 
 mx = pytest.importorskip("mlx.core")
 
-from qwen3_asr_runtime.mlx_qwen3_asr.audio_encoder import AudioEncoder, feat_extract_output_length
+from qwen3_asr_runtime.mlx_qwen3_asr.audio_encoder import (
+    AudioEncoder,
+    feat_extract_output_length,
+)
 from qwen3_asr_runtime.mlx_qwen3_asr.config import MLXQwen3ASRConfig
 from qwen3_asr_runtime.mlx_common.weights import load_weights_dict
 
 MODEL = os.environ.get("FUNYI_MLX_TEST_MODEL")
-needs_model = pytest.mark.skipif(not MODEL, reason="set FUNYI_MLX_TEST_MODEL to a local 0.6B checkpoint")
+needs_model = pytest.mark.skipif(
+    not MODEL, reason="set FUNYI_MLX_TEST_MODEL to a local 0.6B checkpoint"
+)
 MODEL_4BIT = os.environ.get("FUNYI_MLX_4BIT_MODEL")
-needs_4bit = pytest.mark.skipif(not MODEL_4BIT, reason="set FUNYI_MLX_4BIT_MODEL to a local 4-bit checkpoint")
+needs_4bit = pytest.mark.skipif(
+    not MODEL_4BIT, reason="set FUNYI_MLX_4BIT_MODEL to a local 4-bit checkpoint"
+)
 
 
 def _synthetic_config_dict() -> dict:
@@ -33,15 +41,27 @@ def _synthetic_config_dict() -> dict:
             "audio_end_token_id": 151670,
             "dtype": "bfloat16",
             "audio_config": {
-                "num_mel_bins": 128, "d_model": 896, "encoder_layers": 18,
-                "encoder_attention_heads": 14, "encoder_ffn_dim": 3584, "output_dim": 1024,
-                "downsample_hidden_size": 480, "n_window": 50, "n_window_infer": 800,
+                "num_mel_bins": 128,
+                "d_model": 896,
+                "encoder_layers": 18,
+                "encoder_attention_heads": 14,
+                "encoder_ffn_dim": 3584,
+                "output_dim": 1024,
+                "downsample_hidden_size": 480,
+                "n_window": 50,
+                "n_window_infer": 800,
                 "max_source_positions": 1500,
             },
             "text_config": {
-                "vocab_size": 151936, "hidden_size": 1024, "intermediate_size": 3072,
-                "num_hidden_layers": 28, "num_attention_heads": 16, "num_key_value_heads": 8,
-                "head_dim": 128, "rope_theta": 1000000, "rms_norm_eps": 1e-6,
+                "vocab_size": 151936,
+                "hidden_size": 1024,
+                "intermediate_size": 3072,
+                "num_hidden_layers": 28,
+                "num_attention_heads": 16,
+                "num_key_value_heads": 8,
+                "head_dim": 128,
+                "rope_theta": 1000000,
+                "rms_norm_eps": 1e-6,
                 "tie_word_embeddings": True,
                 "rope_scaling": {"rope_type": "default", "mrope_section": [24, 20, 20]},
             },
@@ -58,10 +78,14 @@ def test_config_parses_nested_fields():
 
 
 def test_feat_length_matches_reference_formula():
-    from qwen3_asr_runtime.hf_qwen3_asr.processing_qwen3_asr import _get_feat_extract_output_lengths
+    from qwen3_asr_runtime.hf_qwen3_asr.processing_qwen3_asr import (
+        _get_feat_extract_output_lengths,
+    )
 
     for length in [1, 2, 50, 99, 100, 101, 200, 313, 999, 3001]:
-        assert feat_extract_output_length(length) == int(_get_feat_extract_output_lengths(length))
+        assert feat_extract_output_length(length) == int(
+            _get_feat_extract_output_lengths(length)
+        )
 
 
 def test_block_mask_coverage_and_pattern():
@@ -78,8 +102,12 @@ def test_block_mask_rejects_wrong_coverage():
 
 
 def test_load_weights_dict_merges_sharded_safetensors(tmp_path):
-    mx.save_safetensors(str(tmp_path / "model-00001-of-00002.safetensors"), {"b.weight": mx.array([2])})
-    mx.save_safetensors(str(tmp_path / "model-00002-of-00002.safetensors"), {"a.weight": mx.array([1])})
+    mx.save_safetensors(
+        str(tmp_path / "model-00001-of-00002.safetensors"), {"b.weight": mx.array([2])}
+    )
+    mx.save_safetensors(
+        str(tmp_path / "model-00002-of-00002.safetensors"), {"a.weight": mx.array([1])}
+    )
 
     weights = load_weights_dict(str(tmp_path))
 
@@ -110,7 +138,9 @@ def test_quantized_4bit_loads_and_transcribes():
     _, cfg = load_mlx_qwen3_asr(MODEL_4BIT, dtype="bfloat16")
     assert cfg.quantization and int(cfg.quantization["bits"]) == 4
 
-    model = Qwen3ASRModel.from_pretrained(MODEL_4BIT, backend="mlx", dtype="bfloat16").eval()
+    model = Qwen3ASRModel.from_pretrained(
+        MODEL_4BIT, backend="mlx", dtype="bfloat16"
+    ).eval()
     wav_path = "local_data/e2e_en_espeak_20260522T201810.wav"
     if not os.path.exists(wav_path):
         pytest.skip("validation wav not present")

@@ -7,6 +7,7 @@ single audio window and attributes repeated streaming inference cost across:
 processor, audio tower, prefill, decode, CUDA graph replay/capture/cache-copy,
 batch_decode, and backend inference wrappers.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -25,7 +26,12 @@ if str(ROOT) not in sys.path:
 
 from tools.audio_window import load_audio_window
 from tools.streaming_regression_common import StreamingCaseSpec, run_streaming_case
-from tools.runtime_helpers import _default_attn_implementation, _dispose_model, _resolve_dtype, _set_seed
+from tools.runtime_helpers import (
+    _default_attn_implementation,
+    _dispose_model,
+    _resolve_dtype,
+    _set_seed,
+)
 
 
 def _sync() -> None:
@@ -64,14 +70,18 @@ class Stopwatch:
                     "total_sec": round(total, 4),
                     "calls": count,
                     "avg_ms": round(total * 1000.0 / max(1, count), 3),
-                    "wall_pct": round(100.0 * total / wall_sec, 2) if wall_sec > 0 else None,
+                    "wall_pct": round(100.0 * total / wall_sec, 2)
+                    if wall_sec > 0
+                    else None,
                 }
             )
         return rows
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Profile streaming transcription stages.")
+    parser = argparse.ArgumentParser(
+        description="Profile streaming transcription stages."
+    )
     parser.add_argument("--golden", default="local_goldens/streaming_regression.json")
     parser.add_argument("--audio", default=None)
     parser.add_argument("--start-sec", type=float, default=0.0)
@@ -85,7 +95,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-window-sec", type=float, default=30.0)
     parser.add_argument("--max-prefix-tokens", type=int, default=None)
     parser.add_argument("--warmup", type=int, default=1)
-    parser.add_argument("--dtype", default=None, choices=["float32", "float16", "bfloat16"])
+    parser.add_argument(
+        "--dtype", default=None, choices=["float32", "float16", "bfloat16"]
+    )
     parser.add_argument("--device-map", default=None)
     parser.add_argument("--attn-implementation", default=None)
     parser.add_argument("--max-new-tokens", type=int, default=None)
@@ -115,7 +127,11 @@ def main() -> None:
     if args.max_new_tokens is not None:
         load_kwargs["max_new_tokens"] = args.max_new_tokens
 
-    attn_implementation = args.attn_implementation or load_kwargs.get("attn_implementation") or _default_attn_implementation(load_kwargs.get("device_map"))
+    attn_implementation = (
+        args.attn_implementation
+        or load_kwargs.get("attn_implementation")
+        or _default_attn_implementation(load_kwargs.get("device_map"))
+    )
     load_kwargs["attn_implementation"] = attn_implementation
     dtype_name = load_kwargs.pop("dtype")
     max_inference_batch_size = int(load_kwargs.pop("max_inference_batch_size"))
@@ -243,7 +259,11 @@ def main() -> None:
             try:
                 return original_thinker_forward(*call_args, **call_kwargs)
             finally:
-                name = "thinker.forward[prefill]" if idx == 0 else "thinker.forward[decode]"
+                name = (
+                    "thinker.forward[prefill]"
+                    if idx == 0
+                    else "thinker.forward[decode]"
+                )
                 sw.add(name, _now() - t0)
 
         backend.infer_with_prompts = timed_infer
@@ -254,7 +274,9 @@ def main() -> None:
         thinker.forward = timed_thinker_forward
         thinker.get_audio_features = timed_get_audio_features
         if graph_decoder is not None:
-            graph_decoder.set_profile_callback(lambda name, seconds: sw.add(name, seconds))
+            graph_decoder.set_profile_callback(
+                lambda name, seconds: sw.add(name, seconds)
+            )
 
         t0 = _now()
         payload = run_streaming_case(
@@ -277,21 +299,35 @@ def main() -> None:
         rows = sw.summary(wall_sec=wall_sec)
         stage = {row["name"]: row for row in rows}
         prefill_sec = stage.get("thinker.forward[prefill]", {}).get("total_sec", 0.0)
-        audio_sec = stage.get("audio_tower.get_audio_features", {}).get("total_sec", 0.0)
+        audio_sec = stage.get("audio_tower.get_audio_features", {}).get(
+            "total_sec", 0.0
+        )
         decode_sec = stage.get("thinker.forward[decode]", {}).get("total_sec", 0.0)
         processor_sec = stage.get("processor.__call__", {}).get("total_sec", 0.0)
         batch_decode_sec = stage.get("processor.batch_decode", {}).get("total_sec", 0.0)
-        infer_prompt_sec = stage.get("backend.infer_with_prompts", {}).get("total_sec", 0.0)
-        infer_draft_sec = stage.get("backend.infer_streaming_with_draft", {}).get("total_sec", 0.0)
+        infer_prompt_sec = stage.get("backend.infer_with_prompts", {}).get(
+            "total_sec", 0.0
+        )
+        infer_draft_sec = stage.get("backend.infer_streaming_with_draft", {}).get(
+            "total_sec", 0.0
+        )
         infer_sec = float(infer_prompt_sec) + float(infer_draft_sec)
-        cuda_graph_sec = sum(row["total_sec"] for row in rows if row["name"].startswith("cuda_graph."))
+        cuda_graph_sec = sum(
+            row["total_sec"] for row in rows if row["name"].startswith("cuda_graph.")
+        )
         cuda_graph_replay_sec = stage.get("cuda_graph.replay", {}).get("total_sec", 0.0)
         cuda_graph_replay_calls = stage.get("cuda_graph.replay", {}).get("calls", 0)
-        cuda_graph_capture_sec = stage.get("cuda_graph.capture_total", {}).get("total_sec", 0.0)
-        cuda_graph_cache_copy_sec = stage.get("cuda_graph.cache_copy_dynamic_to_static", {}).get("total_sec", 0.0)
+        cuda_graph_capture_sec = stage.get("cuda_graph.capture_total", {}).get(
+            "total_sec", 0.0
+        )
+        cuda_graph_cache_copy_sec = stage.get(
+            "cuda_graph.cache_copy_dynamic_to_static", {}
+        ).get("total_sec", 0.0)
         # capture_total wraps decode forwards during CUDA graph capture, so it is
         # reported separately but not subtracted here as a non-overlapping stage.
-        cuda_graph_non_overlap_sec = float(cuda_graph_replay_sec) + float(cuda_graph_cache_copy_sec)
+        cuda_graph_non_overlap_sec = float(cuda_graph_replay_sec) + float(
+            cuda_graph_cache_copy_sec
+        )
         prefill_ex_audio_sec = max(0.0, float(prefill_sec) - float(audio_sec))
         other_inside_infer_sec = max(
             0.0,
@@ -322,7 +358,9 @@ def main() -> None:
                 "push_count": payload["metrics"]["push_count"],
                 "final_chars": payload["final"]["text_chars"],
                 "spec_decode_stats": payload["metrics"].get("spec_decode_stats", {}),
-                "active_update_wall_median_sec": round(float(median(active_walls)), 4) if active_walls else None,
+                "active_update_wall_median_sec": round(float(median(active_walls)), 4)
+                if active_walls
+                else None,
                 "prefill_ex_audio_sec": round(prefill_ex_audio_sec, 4),
                 "other_inside_infer_sec": round(other_inside_infer_sec, 4),
                 "cuda_graph_sec": round(float(cuda_graph_sec), 4),
@@ -331,7 +369,9 @@ def main() -> None:
                 "cuda_graph_capture_sec": round(float(cuda_graph_capture_sec), 4),
                 "cuda_graph_cache_copy_sec": round(float(cuda_graph_cache_copy_sec), 4),
                 "cuda_graph": bool(args.cuda_graph),
-                "cuda_graph_len_bucket": int(args.cuda_graph_len_bucket) if args.cuda_graph else None,
+                "cuda_graph_len_bucket": int(args.cuda_graph_len_bucket)
+                if args.cuda_graph
+                else None,
                 "flashinfer": bool(args.flashinfer),
                 "fused_rmsnorm": bool(args.fused_rmsnorm),
                 "fused_linears": bool(args.fused_linears),

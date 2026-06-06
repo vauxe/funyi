@@ -27,7 +27,9 @@ class FakeBackend:
     def reset_decode_runtime(self) -> None:
         return None
 
-    def apply_chat_template(self, messages, *, add_generation_prompt: bool, tokenize: bool) -> str:
+    def apply_chat_template(
+        self, messages, *, add_generation_prompt: bool, tokenize: bool
+    ) -> str:
         del messages, add_generation_prompt, tokenize
         return "prompt:"
 
@@ -70,12 +72,12 @@ class TestStreamingSpecDraft:
     def test_low_latency_preset_uses_half_second_cadence(self) -> None:
         kwargs = Qwen3ASRModel.low_latency_preset_kwargs()
 
-        assert kwargs['chunk_size_sec'] == 0.5
-        assert kwargs['unfixed_chunk_num'] == 4
-        assert kwargs['unfixed_token_num'] == 5
-        assert kwargs['max_window_sec'] == 20.0
-        assert kwargs['max_prefix_tokens'] == 64
-        assert kwargs['spec_decode']
+        assert kwargs["chunk_size_sec"] == 0.5
+        assert kwargs["unfixed_chunk_num"] == 4
+        assert kwargs["unfixed_token_num"] == 5
+        assert kwargs["max_window_sec"] == 20.0
+        assert kwargs["max_prefix_tokens"] == 64
+        assert kwargs["spec_decode"]
 
     def test_trimmed_prefix_still_reuses_rollback_token_ids(self) -> None:
         backend = FakeBackend()
@@ -93,19 +95,19 @@ class TestStreamingSpecDraft:
         model._run_streaming_decode_step(state)
 
         assert len(backend.draft_calls) == 1
-        assert backend.draft_calls[0]['prompt'] == state.prompt_raw + 'bcd'
-        assert backend.draft_calls[0]['draft_ids'] == [ord('e'), ord('f')]
+        assert backend.draft_calls[0]["prompt"] == state.prompt_raw + "bcd"
+        assert backend.draft_calls[0]["draft_ids"] == [ord("e"), ord("f")]
         assert backend.prompt_calls == []
-        assert state.carried_text_prefix == 'a'
-        assert state.committed_text == 'a'
-        assert state._raw_decoded == 'bcdG'
-        assert state.text == 'abcdG'
+        assert state.carried_text_prefix == "a"
+        assert state.committed_text == "a"
+        assert state._raw_decoded == "bcdG"
+        assert state.text == "abcdG"
         assert state.recognition_frame is not None
-        assert state.recognition_frame.full_text == 'abcdG'
-        assert state.recognition_frame.generated_text == 'G'
-        assert state.spec_decode_stats['spec_attempt_steps'] == 1
-        assert state.spec_decode_stats['spec_trimmed_attempt_steps'] == 1
-        assert state.spec_decode_stats['spec_accepted_tokens'] == 1
+        assert state.recognition_frame.full_text == "abcdG"
+        assert state.recognition_frame.generated_text == "G"
+        assert state.spec_decode_stats["spec_attempt_steps"] == 1
+        assert state.spec_decode_stats["spec_trimmed_attempt_steps"] == 1
+        assert state.spec_decode_stats["spec_accepted_tokens"] == 1
 
     def test_rolling_window_advances_audio_trim_cursor(self) -> None:
         backend = FakeBackend()
@@ -126,6 +128,7 @@ class TestStreamingSpecDraft:
         assert state.recognition_frame is not None
         assert state.recognition_frame.window_start_sample == 16000
         assert state.recognition_frame.audio_end_sample == 32000
+
 
 class FakeSpecThinker:
     generation_config = SimpleNamespace(eos_token_id=[])

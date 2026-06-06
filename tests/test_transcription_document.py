@@ -71,9 +71,30 @@ def test_transcript_document_text_preserves_readable_ascii_boundaries() -> None:
         duration_ms=3000,
         language="English",
         segments=[
-            TranscriptSegment(id="seg_000001", index=1, start_ms=0, end_ms=1000, text="hello", language="English"),
-            TranscriptSegment(id="seg_000002", index=2, start_ms=1000, end_ms=2000, text="world.", language="English"),
-            TranscriptSegment(id="seg_000003", index=3, start_ms=2000, end_ms=3000, text="Next", language="English"),
+            TranscriptSegment(
+                id="seg_000001",
+                index=1,
+                start_ms=0,
+                end_ms=1000,
+                text="hello",
+                language="English",
+            ),
+            TranscriptSegment(
+                id="seg_000002",
+                index=2,
+                start_ms=1000,
+                end_ms=2000,
+                text="world.",
+                language="English",
+            ),
+            TranscriptSegment(
+                id="seg_000003",
+                index=3,
+                start_ms=2000,
+                end_ms=3000,
+                text="Next",
+                language="English",
+            ),
         ],
     )
 
@@ -85,7 +106,13 @@ def test_transcript_document_payload_can_express_grouped_translation_units() -> 
         duration_ms=1800,
         language="Chinese",
         segments=[
-            TranscriptSegment(id="seg_000001", index=1, start_ms=0, end_ms=1000, text="今天讨论字幕显示问题，"),
+            TranscriptSegment(
+                id="seg_000001",
+                index=1,
+                start_ms=0,
+                end_ms=1000,
+                text="今天讨论字幕显示问题，",
+            ),
             TranscriptSegment(
                 id="seg_000002",
                 index=2,

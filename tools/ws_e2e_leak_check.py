@@ -51,7 +51,11 @@ def _summarize_event_timings(
     audio_sent_sec: float,
 ) -> dict[str, Any]:
     def times_for(event_type: str) -> list[float]:
-        return [float(item["wall_sec"]) for item in event_times if item.get("type") == event_type]
+        return [
+            float(item["wall_sec"])
+            for item in event_times
+            if item.get("type") == event_type
+        ]
 
     update_times = times_for("transcript_update")
     timing_update_times = times_for("transcript_timing_update")
@@ -66,11 +70,15 @@ def _summarize_event_timings(
         elif item.get("type") == "transcript_timing_update":
             segment_id = str(item.get("source_segment_id") or "")
             if segment_id in stable_emit_wall_by_id:
-                timing_update_lags.append(float(item["wall_sec"]) - stable_emit_wall_by_id[segment_id])
+                timing_update_lags.append(
+                    float(item["wall_sec"]) - stable_emit_wall_by_id[segment_id]
+                )
 
     final_wall = final_times[0] if final_times else None
     return {
-        "first_transcript_update_wall_sec": round(update_times[0], 3) if update_times else None,
+        "first_transcript_update_wall_sec": round(update_times[0], 3)
+        if update_times
+        else None,
         "final_wall_sec": round(final_wall, 3) if final_wall is not None else None,
         "finish_to_final_sec": (
             round(final_wall - finish_sent_wall_sec, 3)
@@ -78,9 +86,13 @@ def _summarize_event_timings(
             else None
         ),
         "update_gap_p95_sec": (
-            round(_percentile(update_gaps, 0.95), 3) if _percentile(update_gaps, 0.95) is not None else None
+            round(_percentile(update_gaps, 0.95), 3)
+            if _percentile(update_gaps, 0.95) is not None
+            else None
         ),
-        "first_timing_update_wall_sec": round(timing_update_times[0], 3) if timing_update_times else None,
+        "first_timing_update_wall_sec": round(timing_update_times[0], 3)
+        if timing_update_times
+        else None,
         "timing_update_lag_p50_sec": (
             round(_percentile(timing_update_lags, 0.50), 3)
             if _percentile(timing_update_lags, 0.50) is not None
@@ -91,7 +103,9 @@ def _summarize_event_timings(
             if _percentile(timing_update_lags, 0.95) is not None
             else None
         ),
-        "processing_speed_x": round(audio_sent_sec / elapsed_sec, 3) if elapsed_sec > 0 else None,
+        "processing_speed_x": round(audio_sent_sec / elapsed_sec, 3)
+        if elapsed_sec > 0
+        else None,
     }
 
 
@@ -107,17 +121,25 @@ def _translation_validation_issues(
     issues: list[str] = []
     if expect_translation:
         translation_ready = (ready_event or {}).get("translation")
-        if not isinstance(translation_ready, dict) or not translation_ready.get("enabled"):
+        if not isinstance(translation_ready, dict) or not translation_ready.get(
+            "enabled"
+        ):
             issues.append("ready.translation is missing or disabled")
     stable_count = counters.get("translation_stable", 0)
     if stable_count < min_translation_stable:
-        issues.append(f"translation_stable count {stable_count} < {min_translation_stable}")
+        issues.append(
+            f"translation_stable count {stable_count} < {min_translation_stable}"
+        )
     preview_count = counters.get("translation_preview", 0)
     if preview_count < min_translation_preview:
-        issues.append(f"translation_preview count {preview_count} < {min_translation_preview}")
+        issues.append(
+            f"translation_preview count {preview_count} < {min_translation_preview}"
+        )
     status_count = counters.get("translation_status", 0)
     if max_translation_status is not None and status_count > max_translation_status:
-        issues.append(f"translation_status count {status_count} > {max_translation_status}")
+        issues.append(
+            f"translation_status count {status_count} > {max_translation_status}"
+        )
     return issues
 
 
@@ -140,7 +162,9 @@ def _record_event_contract(state: dict[str, Any], event: dict[str, Any]) -> list
                 continue
             segment_id = str(segment.get("id") or "")
             if not segment_id:
-                issues.append("transcript_update stable_appends contains a segment without id")
+                issues.append(
+                    "transcript_update stable_appends contains a segment without id"
+                )
                 continue
             if segment_id in seen_source_ids:
                 issues.append(f"duplicate source stable segment id: {segment_id}")
@@ -161,19 +185,27 @@ def _record_event_contract(state: dict[str, Any], event: dict[str, Any]) -> list
         covered_ids = _translation_source_segment_ids(event)
         issues.extend(_translation_coverage_issues(state, event, event_type=event_type))
         translated_ids = state.setdefault("translation_stable_segment_ids", [])
-        seen_translated_ids = state.setdefault("seen_translation_stable_segment_ids", set())
+        seen_translated_ids = state.setdefault(
+            "seen_translation_stable_segment_ids", set()
+        )
         if not segment_id:
             issues.append("translation_stable is missing source_segment_id")
         else:
             if segment_id not in covered_ids:
-                issues.append("translation_stable source_segment_ids does not include source_segment_id")
+                issues.append(
+                    "translation_stable source_segment_ids does not include source_segment_id"
+                )
             for covered_id in covered_ids:
                 if covered_id in seen_translated_ids:
-                    issues.append(f"duplicate translation_stable for source segment: {covered_id}")
+                    issues.append(
+                        f"duplicate translation_stable for source segment: {covered_id}"
+                    )
                     continue
                 translated_ids.append(covered_id)
                 seen_translated_ids.add(covered_id)
-    elif event_type == "translation_status" and str(event.get("scope") or "") == "stable":
+    elif (
+        event_type == "translation_status" and str(event.get("scope") or "") == "stable"
+    ):
         issues.extend(_translation_coverage_issues(state, event, event_type=event_type))
         status_ids = state.setdefault("translation_status_segment_ids", [])
         status_ids.extend(_translation_source_segment_ids(event))
@@ -181,11 +213,17 @@ def _record_event_contract(state: dict[str, Any], event: dict[str, Any]) -> list
         segment_id = str(event.get("source_segment_id") or "")
         if not segment_id:
             issues.append("transcript_timing_update is missing source_segment_id")
-        elif segment_id not in state.setdefault("seen_source_stable_segment_ids", set()):
-            issues.append(f"transcript_timing_update references unknown source segment: {segment_id}")
+        elif segment_id not in state.setdefault(
+            "seen_source_stable_segment_ids", set()
+        ):
+            issues.append(
+                f"transcript_timing_update references unknown source segment: {segment_id}"
+            )
         status = str(event.get("timing_status") or "")
         if status not in {"aligned", "failed"}:
-            issues.append(f"transcript_timing_update has invalid timing_status: {status}")
+            issues.append(
+                f"transcript_timing_update has invalid timing_status: {status}"
+            )
     return issues
 
 
@@ -214,7 +252,9 @@ def _translation_coverage_issues(
     segment_ids = [str(item or "") for item in raw_ids]
     segment_indices = [_optional_int(item) for item in raw_indices]
     if len(segment_ids) != len(segment_indices):
-        return [f"{event_type} source_segment_ids/source_segment_indices length mismatch"]
+        return [
+            f"{event_type} source_segment_ids/source_segment_indices length mismatch"
+        ]
 
     source_indices_by_id: dict[str, int] = {}
     for segment in state.get("source_stable_segments") or []:
@@ -226,9 +266,15 @@ def _translation_coverage_issues(
             source_indices_by_id[segment_id] = segment_index
 
     issues: list[str] = []
-    for position, (segment_id, segment_index) in enumerate(zip(segment_ids, segment_indices, strict=True)):
+    for position, (segment_id, segment_index) in enumerate(
+        zip(segment_ids, segment_indices, strict=True)
+    ):
         source_index = source_indices_by_id.get(segment_id)
-        if source_index is None or segment_index is None or segment_index == source_index:
+        if (
+            source_index is None
+            or segment_index is None
+            or segment_index == source_index
+        ):
             continue
         issues.append(
             f"{event_type} source_segment_indices[{position}] {segment_index} "
@@ -262,7 +308,9 @@ def _final_event_contract_issues(
             if isinstance(segment, dict) and str(segment.get("id") or "")
         ]
         if source_ids and source_ids != final_ids:
-            issues.append("transcript_update stable history does not match transcript_final segments")
+            issues.append(
+                "transcript_update stable history does not match transcript_final segments"
+            )
     else:
         final_ids = source_ids
         final_count = int(final_event.get("stable_count") or 0)
@@ -275,17 +323,33 @@ def _final_event_contract_issues(
         return issues
 
     translated_ids = set(state.get("translation_stable_segment_ids") or [])
-    missing = [segment_id for segment_id in final_ids if segment_id not in translated_ids]
+    missing = [
+        segment_id for segment_id in final_ids if segment_id not in translated_ids
+    ]
     if missing:
-        issues.append(f"missing translation_stable for source segments: {', '.join(missing)}")
+        issues.append(
+            f"missing translation_stable for source segments: {', '.join(missing)}"
+        )
 
     final_id_set = set(final_ids)
-    unknown = [segment_id for segment_id in state.get("translation_stable_segment_ids") or [] if segment_id not in final_id_set]
+    unknown = [
+        segment_id
+        for segment_id in state.get("translation_stable_segment_ids") or []
+        if segment_id not in final_id_set
+    ]
     if unknown:
-        issues.append(f"translation_stable references unknown source segments: {', '.join(unknown)}")
-    status_ids = [segment_id for segment_id in state.get("translation_status_segment_ids") or [] if segment_id in final_id_set]
+        issues.append(
+            f"translation_stable references unknown source segments: {', '.join(unknown)}"
+        )
+    status_ids = [
+        segment_id
+        for segment_id in state.get("translation_status_segment_ids") or []
+        if segment_id in final_id_set
+    ]
     if status_ids:
-        issues.append(f"translation_status emitted for stable source segments: {', '.join(status_ids)}")
+        issues.append(
+            f"translation_status emitted for stable source segments: {', '.join(status_ids)}"
+        )
     return issues
 
 
@@ -300,13 +364,24 @@ def _compute_reference_cer(
 ) -> dict[str, Any] | None:
     if reference_srt is None:
         return None
-    from tools.sweep_cer_vs_srt import _cer, _normalize_for_cer, load_srt, srt_text_in_window
+    from tools.sweep_cer_vs_srt import (
+        _cer,
+        _normalize_for_cer,
+        load_srt,
+        srt_text_in_window,
+    )
 
     segments = (final_event or {}).get("segments")
     if not isinstance(segments, list):
         segments = stable_segments or []
-    hyp_text = "".join(str(segment.get("text") or "") for segment in segments if isinstance(segment, dict))
-    ref_text = srt_text_in_window(load_srt(reference_srt, strip_ruby=strip_ruby), start_sec, duration_sec)
+    hyp_text = "".join(
+        str(segment.get("text") or "")
+        for segment in segments
+        if isinstance(segment, dict)
+    )
+    ref_text = srt_text_in_window(
+        load_srt(reference_srt, strip_ruby=strip_ruby), start_sec, duration_sec
+    )
     return {
         "reference_srt": reference_srt,
         "cer": round(_cer(hyp_text, ref_text), 6),
@@ -342,7 +417,10 @@ def _detect_repetition_loop(text: str) -> dict[str, Any] | None:
             repeats = 1
             while (
                 start + (repeats + 1) * unit_len <= len(normalized)
-                and normalized[start + repeats * unit_len : start + (repeats + 1) * unit_len] == unit
+                and normalized[
+                    start + repeats * unit_len : start + (repeats + 1) * unit_len
+                ]
+                == unit
             ):
                 repeats += 1
             if repeats >= required_repeats:
@@ -357,7 +435,11 @@ def _detect_repetition_loop(text: str) -> dict[str, Any] | None:
 
 
 def _repetition_validation_issues(segments: list[dict[str, Any]]) -> list[str]:
-    text = "".join(str(segment.get("text") or "") for segment in segments if isinstance(segment, dict))
+    text = "".join(
+        str(segment.get("text") or "")
+        for segment in segments
+        if isinstance(segment, dict)
+    )
     loop = _detect_repetition_loop(text)
     if loop is None:
         return []
@@ -446,7 +528,9 @@ def _compute_timestamp_quality(
     if not hyp_chars or not ref_chars:
         return None
 
-    matcher = SequenceMatcher(None, "".join(hyp_chars), "".join(ref_chars), autojunk=False)
+    matcher = SequenceMatcher(
+        None, "".join(hyp_chars), "".join(ref_chars), autojunk=False
+    )
     hyp_to_ref: dict[int, int] = {}
     for block in matcher.get_matching_blocks():
         for offset in range(block.size):
@@ -470,7 +554,9 @@ def _compute_timestamp_quality(
             pending_segments += 1
         start_ms = segment.get("start_ms")
         end_ms = segment.get("end_ms")
-        ref_indexes = [hyp_to_ref[idx] for idx in range(begin, end) if idx in hyp_to_ref]
+        ref_indexes = [
+            hyp_to_ref[idx] for idx in range(begin, end) if idx in hyp_to_ref
+        ]
         hyp_len = max(0, end - begin)
         match_ratio = len(ref_indexes) / hyp_len if hyp_len else 0.0
         row: dict[str, Any] = {
@@ -497,7 +583,9 @@ def _compute_timestamp_quality(
                     "ref_end_ms": round(ref_end_sec * 1000.0),
                     "start_error_ms": round(start_error, 1),
                     "end_error_ms": round(end_error, 1),
-                    "boundary_abs_error_ms": round((abs(start_error) + abs(end_error)) / 2.0, 1),
+                    "boundary_abs_error_ms": round(
+                        (abs(start_error) + abs(end_error)) / 2.0, 1
+                    ),
                 }
             )
             matched_segments += 1
@@ -514,11 +602,17 @@ def _compute_timestamp_quality(
         "failed_segments": failed_segments,
         "pending_segments": pending_segments,
         "matched_segments": matched_segments,
-        "matched_segment_ratio": round(matched_segments / len(segments), 3) if segments else None,
+        "matched_segment_ratio": round(matched_segments / len(segments), 3)
+        if segments
+        else None,
         "start_error_ms": _summarize_ms(start_errors),
         "end_error_ms": _summarize_ms(end_errors),
-        "start_bias_ms": round(float(sum(start_errors) / len(start_errors)), 1) if start_errors else None,
-        "end_bias_ms": round(float(sum(end_errors) / len(end_errors)), 1) if end_errors else None,
+        "start_bias_ms": round(float(sum(start_errors) / len(start_errors)), 1)
+        if start_errors
+        else None,
+        "end_bias_ms": round(float(sum(end_errors) / len(end_errors)), 1)
+        if end_errors
+        else None,
         "boundary_abs_error_ms": _summarize_ms(boundary_abs_errors),
         "segments": rows,
     }
@@ -650,19 +744,35 @@ async def _monitor_resources(
         samples.append(sample)
 
         if sample.elapsed_sec > max_wall_sec:
-            abort_reason[0] = f"wall timeout: {sample.elapsed_sec:.1f}s > {max_wall_sec:.1f}s"
+            abort_reason[0] = (
+                f"wall timeout: {sample.elapsed_sec:.1f}s > {max_wall_sec:.1f}s"
+            )
         elif time.monotonic() - last_event_time[0] > no_event_timeout_sec:
             abort_reason[0] = f"no event for {no_event_timeout_sec:.1f}s"
-        elif max_rss_mb is not None and sample.rss_mb is not None and sample.rss_mb > max_rss_mb:
-            abort_reason[0] = f"rss exceeded: {sample.rss_mb:.1f}MB > {max_rss_mb:.1f}MB"
+        elif (
+            max_rss_mb is not None
+            and sample.rss_mb is not None
+            and sample.rss_mb > max_rss_mb
+        ):
+            abort_reason[0] = (
+                f"rss exceeded: {sample.rss_mb:.1f}MB > {max_rss_mb:.1f}MB"
+            )
         elif (
             max_gpu_used_mb is not None
             and sample.gpu_used_mb is not None
             and sample.gpu_used_mb > max_gpu_used_mb
         ):
-            abort_reason[0] = f"whole-gpu memory exceeded: {sample.gpu_used_mb}MB > {max_gpu_used_mb}MB"
-        elif max_gpu_temp_c is not None and sample.gpu_temp_c is not None and sample.gpu_temp_c > max_gpu_temp_c:
-            abort_reason[0] = f"gpu temperature exceeded: {sample.gpu_temp_c}C > {max_gpu_temp_c}C"
+            abort_reason[0] = (
+                f"whole-gpu memory exceeded: {sample.gpu_used_mb}MB > {max_gpu_used_mb}MB"
+            )
+        elif (
+            max_gpu_temp_c is not None
+            and sample.gpu_temp_c is not None
+            and sample.gpu_temp_c > max_gpu_temp_c
+        ):
+            abort_reason[0] = (
+                f"gpu temperature exceeded: {sample.gpu_temp_c}C > {max_gpu_temp_c}C"
+            )
 
         if abort_reason[0] is not None:
             stop_event.set()
@@ -690,13 +800,19 @@ async def run_check(args: argparse.Namespace) -> dict[str, Any]:
     try:
         with sf.SoundFile(args.audio) as audio_file:
             if audio_file.samplerate != 16000:
-                raise ValueError(f"audio sample rate must be 16000 Hz, got {audio_file.samplerate}")
+                raise ValueError(
+                    f"audio sample rate must be 16000 Hz, got {audio_file.samplerate}"
+                )
             if audio_file.channels != 1:
-                raise ValueError(f"audio must be mono, got {audio_file.channels} channels")
+                raise ValueError(
+                    f"audio must be mono, got {audio_file.channels} channels"
+                )
             if args.start_sec > 0:
                 audio_file.seek(int(args.start_sec * audio_file.samplerate))
 
-            async with websockets.connect(args.url, max_size=None, ping_interval=None) as ws:
+            async with websockets.connect(
+                args.url, max_size=None, ping_interval=None
+            ) as ws:
                 start_command = {
                     "type": "start",
                     "session_id": args.session_id,
@@ -748,7 +864,9 @@ async def run_check(args: argparse.Namespace) -> dict[str, Any]:
                     )
                 )
 
-                chunk_frames = max(1, int(round(args.chunk_sec * audio_file.samplerate)))
+                chunk_frames = max(
+                    1, int(round(args.chunk_sec * audio_file.samplerate))
+                )
                 target_frames = int(round(args.max_audio_sec * audio_file.samplerate))
                 sent_frames = 0
                 try:
@@ -770,15 +888,21 @@ async def run_check(args: argparse.Namespace) -> dict[str, Any]:
                         finish_sent_wall_sec[0] = time.monotonic() - start_time
                         await ws.send(json.dumps({"type": "finish"}))
                         try:
-                            await asyncio.wait_for(recv_task, timeout=args.finish_timeout_sec)
+                            await asyncio.wait_for(
+                                recv_task, timeout=args.finish_timeout_sec
+                            )
                         except asyncio.TimeoutError:
-                            abort_reason[0] = f"finish timeout after {args.finish_timeout_sec:.1f}s"
+                            abort_reason[0] = (
+                                f"finish timeout after {args.finish_timeout_sec:.1f}s"
+                            )
                 finally:
                     stop_event.set()
                     monitor_task.cancel()
                     if not recv_task.done():
                         recv_task.cancel()
-                    await asyncio.gather(monitor_task, recv_task, return_exceptions=True)
+                    await asyncio.gather(
+                        monitor_task, recv_task, return_exceptions=True
+                    )
     except (ConnectionClosed, OSError, RuntimeError, ValueError) as exc:
         if abort_reason[0] is None:
             abort_reason[0] = f"{type(exc).__name__}: {exc}"
@@ -793,10 +917,14 @@ async def run_check(args: argparse.Namespace) -> dict[str, Any]:
 
     elapsed_sec = round(time.monotonic() - start_time, 3)
     audio_sent_sec = round(audio_sent[0], 3)
-    gpu_values = [sample.gpu_used_mb for sample in samples if sample.gpu_used_mb is not None]
+    gpu_values = [
+        sample.gpu_used_mb for sample in samples if sample.gpu_used_mb is not None
+    ]
     max_gpu_used_mb_seen = max(gpu_values, default=0)
     max_gpu_delta_from_check_start_mb_seen = (
-        None if check_start_gpu_used is None or not gpu_values else max(0, max_gpu_used_mb_seen - check_start_gpu_used)
+        None
+        if check_start_gpu_used is None or not gpu_values
+        else max(0, max_gpu_used_mb_seen - check_start_gpu_used)
     )
     translation_issues = _translation_validation_issues(
         ready_event=ready_event,
@@ -813,8 +941,12 @@ async def run_check(args: argparse.Namespace) -> dict[str, Any]:
     )
     stable_segments = list(contract_state.get("source_stable_segments") or [])
     repetition_issues = _repetition_validation_issues(stable_segments)
-    if abort_reason[0] is None and (translation_issues or event_stream_issues or repetition_issues):
-        abort_reason[0] = "; ".join(translation_issues + event_stream_issues + repetition_issues)
+    if abort_reason[0] is None and (
+        translation_issues or event_stream_issues or repetition_issues
+    ):
+        abort_reason[0] = "; ".join(
+            translation_issues + event_stream_issues + repetition_issues
+        )
 
     summary = {
         "ok": abort_reason[0] is None and final_event[0] is not None,
@@ -872,17 +1004,23 @@ async def run_check(args: argparse.Namespace) -> dict[str, Any]:
     if args.output_json:
         path = Path(args.output_json)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        path.write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
     return summary
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Protected realtime WebSocket E2E leak check.")
+    parser = argparse.ArgumentParser(
+        description="Protected realtime WebSocket E2E leak check."
+    )
     parser.add_argument("--url", default="ws://127.0.0.1:8000/ws/asr")
     parser.add_argument("--audio", required=True)
     parser.add_argument("--reference-srt", default=None)
     parser.add_argument("--strip-ruby", action="store_true")
-    parser.add_argument("--pid", type=int, default=None, help="Service PID to monitor via /proc.")
+    parser.add_argument(
+        "--pid", type=int, default=None, help="Service PID to monitor via /proc."
+    )
     parser.add_argument("--session-id", default="leak-check")
     parser.add_argument("--language", default="Chinese")
     parser.add_argument("--target-language", default=None)
@@ -895,7 +1033,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--finish-timeout-sec", type=float, default=180.0)
     parser.add_argument("--no-event-timeout-sec", type=float, default=120.0)
     parser.add_argument("--max-rss-mb", type=float, default=12000.0)
-    parser.add_argument("--max-gpu-used-mb", type=int, default=23000, help="Whole-GPU memory.used guard in MiB.")
+    parser.add_argument(
+        "--max-gpu-used-mb",
+        type=int,
+        default=23000,
+        help="Whole-GPU memory.used guard in MiB.",
+    )
     parser.add_argument("--max-gpu-temp-c", type=int, default=86)
     parser.add_argument("--max-logged-events", type=int, default=20)
     parser.add_argument("--expect-translation", action="store_true")
@@ -909,7 +1052,13 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     summary = asyncio.run(run_check(parse_args()))
     omitted = {"samples", "events", "event_times"}
-    print(json.dumps({k: v for k, v in summary.items() if k not in omitted}, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {k: v for k, v in summary.items() if k not in omitted},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     if not summary["ok"]:
         raise SystemExit(2)
 

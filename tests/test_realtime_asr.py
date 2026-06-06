@@ -70,7 +70,9 @@ from qwen3_asr_runtime.vad import SileroVadAdapter, SileroVadConfig, VadDecision
 def _desktop_language_options(name: str) -> tuple[str, ...]:
     path = Path(__file__).resolve().parents[1] / "desktop/ui/src/languages.ts"
     text = path.read_text(encoding="utf-8")
-    match = re.search(rf"export const {re.escape(name)} = \[(.*?)\] as const;", text, re.DOTALL)
+    match = re.search(
+        rf"export const {re.escape(name)} = \[(.*?)\] as const;", text, re.DOTALL
+    )
     if match is None:
         raise AssertionError(f"missing desktop language constant: {name}")
     values = ast.literal_eval(f"[{match.group(1)}]")
@@ -115,7 +117,9 @@ class FakeStreamingModel:
             recognition_frame=None,
         )
 
-    def streaming_transcribe(self, audio: np.ndarray, state: SimpleNamespace) -> SimpleNamespace:
+    def streaming_transcribe(
+        self, audio: np.ndarray, state: SimpleNamespace
+    ) -> SimpleNamespace:
         self.stream_calls += 1
         self.stream_audio_lengths.append(int(audio.shape[0]))
         self.audio_seen_samples += int(audio.shape[0])
@@ -166,7 +170,11 @@ class FakeVadAdapter:
 
     def accept(self, audio: np.ndarray) -> VadDecision:
         self.accept_lengths.append(int(audio.shape[0]))
-        decision = self.decisions.pop(0) if self.decisions else VadDecision(speech_active=self._speech_active)
+        decision = (
+            self.decisions.pop(0)
+            if self.decisions
+            else VadDecision(speech_active=self._speech_active)
+        )
         self._speech_active = bool(decision.speech_active)
         return decision
 
@@ -226,7 +234,9 @@ def assert_transcript_update_invariants(events: list[dict[str, object]]) -> None
 
 
 def test_resolve_service_backends_auto_uses_mlx_on_apple_silicon() -> None:
-    args = SimpleNamespace(backend="auto", translation_backend="auto", timestamp_backend="auto")
+    args = SimpleNamespace(
+        backend="auto", translation_backend="auto", timestamp_backend="auto"
+    )
 
     with patch("realtime_server._prefer_mlx", return_value=True):
         _resolve_service_backends(args)
@@ -237,7 +247,9 @@ def test_resolve_service_backends_auto_uses_mlx_on_apple_silicon() -> None:
 
 
 def test_resolve_service_backends_auto_follows_explicit_transformers_backend() -> None:
-    args = SimpleNamespace(backend="transformers", translation_backend="auto", timestamp_backend="auto")
+    args = SimpleNamespace(
+        backend="transformers", translation_backend="auto", timestamp_backend="auto"
+    )
 
     with patch("realtime_server._prefer_mlx", return_value=True):
         _resolve_service_backends(args)
@@ -250,36 +262,57 @@ def test_resolve_service_backends_auto_follows_explicit_transformers_backend() -
 class TestTranscriptStore:
     def test_segments_are_appended_with_monotonic_timestamps(self) -> None:
         store = TranscriptStore(transcript_id="t1")
-        first = store.append_stable_segment(text="第一句。", start_ms=0, end_ms=1200, language="Chinese")
-        store.append_stable_segment(text="Second.", start_ms=1000, end_ms=2300, language="English")
+        first = store.append_stable_segment(
+            text="第一句。", start_ms=0, end_ms=1200, language="Chinese"
+        )
+        store.append_stable_segment(
+            text="Second.", start_ms=1000, end_ms=2300, language="English"
+        )
 
-        assert [segment.text for segment in store.stable_segments] == ['第一句。', 'Second.']
+        assert [segment.text for segment in store.stable_segments] == [
+            "第一句。",
+            "Second.",
+        ]
         assert store.stable_segments[1].start_ms == first.end_ms
         assert store.stable_count == 2
 
     def test_stable_segment_text_preserves_boundary_whitespace(self) -> None:
         store = TranscriptStore(transcript_id="t1")
-        first = store.append_stable_segment(text="hello ", start_ms=0, end_ms=1000, language="English")
-        second = store.append_stable_segment(text="world", start_ms=1000, end_ms=2000, language="English")
+        first = store.append_stable_segment(
+            text="hello ", start_ms=0, end_ms=1000, language="English"
+        )
+        second = store.append_stable_segment(
+            text="world", start_ms=1000, end_ms=2000, language="English"
+        )
 
-        assert ''.join((segment.text for segment in store.stable_segments)) == 'hello world'
+        assert (
+            "".join((segment.text for segment in store.stable_segments))
+            == "hello world"
+        )
         event = store.update_event(stable_base=0, stable_appends=[first, second])
-        assert ''.join((str(segment['text']) for segment in event['stable_appends'])) == 'hello world'
+        assert (
+            "".join((str(segment["text"]) for segment in event["stable_appends"]))
+            == "hello world"
+        )
 
     def test_update_event_uses_stable_cursor_and_replaceable_partial(self) -> None:
         store = TranscriptStore(transcript_id="t1")
-        segment = store.append_stable_segment(text="稳定", start_ms=0, end_ms=1000, language="Chinese")
+        segment = store.append_stable_segment(
+            text="稳定", start_ms=0, end_ms=1000, language="Chinese"
+        )
         event = store.update_event(stable_base=0, stable_appends=[segment])
 
-        assert event['type'] == 'transcript_update'
-        assert event['stable_base'] == 0
-        assert event['stable_count'] == 1
-        assert event['stable_appends'][0]['text'] == '稳定'
-        assert event['partial'] is None
+        assert event["type"] == "transcript_update"
+        assert event["stable_base"] == 0
+        assert event["stable_count"] == 1
+        assert event["stable_appends"][0]["text"] == "稳定"
+        assert event["partial"] is None
 
     def test_update_event_rejects_stale_stable_base(self) -> None:
         store = TranscriptStore(transcript_id="t1")
-        segment = store.append_stable_segment(text="稳定", start_ms=0, end_ms=1000, language="Chinese")
+        segment = store.append_stable_segment(
+            text="稳定", start_ms=0, end_ms=1000, language="Chinese"
+        )
 
         with pytest.raises(ValueError):
             store.update_event(stable_base=1, stable_appends=[segment])
@@ -295,9 +328,9 @@ class TestTranscriptStore:
         )
         update = store.update_event(stable_base=0, stable_appends=[segment])
 
-        assert update['stable_appends'][0]['start_ms'] is None
-        assert update['stable_appends'][0]['end_ms'] is None
-        assert update['stable_appends'][0]['timing_status'] == 'pending'
+        assert update["stable_appends"][0]["start_ms"] is None
+        assert update["stable_appends"][0]["end_ms"] is None
+        assert update["stable_appends"][0]["timing_status"] == "pending"
 
         timing_update = store.update_segment_timing(
             source_segment_id="seg_000001",
@@ -308,40 +341,54 @@ class TestTranscriptStore:
         final = store.final_event()
 
         assert timing_update == {
-            'type': 'transcript_timing_update',
-            'source_segment_id': 'seg_000001',
-            'start_ms': 120,
-            'end_ms': 860,
-            'timing_status': 'aligned',
+            "type": "transcript_timing_update",
+            "source_segment_id": "seg_000001",
+            "start_ms": 120,
+            "end_ms": 860,
+            "timing_status": "aligned",
         }
-        assert final['segments'][0]['start_ms'] == 120
-        assert final['segments'][0]['end_ms'] == 860
-        assert final['segments'][0]['timing_status'] == 'aligned'
+        assert final["segments"][0]["start_ms"] == 120
+        assert final["segments"][0]["end_ms"] == 860
+        assert final["segments"][0]["timing_status"] == "aligned"
 
     def test_out_of_order_timing_patch_does_not_overlap_later_segment(self) -> None:
         store = TranscriptStore(transcript_id="t1")
         for _ in range(2):
             store.append_stable_segment(
-                text="句", start_ms=None, end_ms=None, language="Chinese", timing_status="pending"
+                text="句",
+                start_ms=None,
+                end_ms=None,
+                language="Chinese",
+                timing_status="pending",
             )
 
         # Patch the SECOND segment first (out of index order).
         store.update_segment_timing(
-            source_segment_id="seg_000002", start_ms=1000, end_ms=2000, timing_status="aligned"
+            source_segment_id="seg_000002",
+            start_ms=1000,
+            end_ms=2000,
+            timing_status="aligned",
         )
         # Now the first segment aligns with an end that would overlap into seg2's start.
         first = store.update_segment_timing(
-            source_segment_id="seg_000001", start_ms=0, end_ms=1500, timing_status="aligned"
+            source_segment_id="seg_000001",
+            start_ms=0,
+            end_ms=1500,
+            timing_status="aligned",
         )
 
         # seg1.end is clamped to seg2.start so the public timeline stays non-overlapping.
-        assert first['start_ms'] == 0
-        assert first['end_ms'] == 1000
+        assert first["start_ms"] == 0
+        assert first["end_ms"] == 1000
         assert store.stable_segments[0].end_ms <= store.stable_segments[1].start_ms
 
-    def test_unbounded_store_final_event_reports_revision_without_full_segments(self) -> None:
+    def test_unbounded_store_final_event_reports_revision_without_full_segments(
+        self,
+    ) -> None:
         store = TranscriptStore(transcript_id="t1", keep_segments=False)
-        segment = store.append_stable_segment(text="稳定", start_ms=0, end_ms=1000, language="Chinese")
+        segment = store.append_stable_segment(
+            text="稳定", start_ms=0, end_ms=1000, language="Chinese"
+        )
         update = store.update_event(stable_base=0, stable_appends=[segment])
         final = store.final_event()
 
@@ -359,20 +406,22 @@ class TestTextStabilizer:
         first = stabilizer.observe("第一秒", end_sample=16_000, can_commit=True)
         second = stabilizer.observe("第一秒第二秒", end_sample=32_000, can_commit=True)
 
-        assert first.stable_text == ''
-        assert first.partial_text == '第一秒'
+        assert first.stable_text == ""
+        assert first.partial_text == "第一秒"
         assert first.stable_end_sample is None
-        assert second.stable_text == '第一秒'
-        assert second.partial_text == '第二秒'
+        assert second.stable_text == "第一秒"
+        assert second.partial_text == "第二秒"
         assert second.stable_end_sample == 16000
 
     def test_stable_prefix_does_not_split_ascii_word(self) -> None:
         stabilizer = TextStabilizer("hello wor", 16_000)
 
-        update = stabilizer.observe("hello world today", end_sample=32_000, can_commit=True)
+        update = stabilizer.observe(
+            "hello world today", end_sample=32_000, can_commit=True
+        )
 
-        assert update.stable_text == 'hello'
-        assert update.partial_text == 'world today'
+        assert update.stable_text == "hello"
+        assert update.partial_text == "world today"
         assert update.stable_end_sample == 16000
 
 
@@ -387,10 +436,12 @@ class TestTailSelector:
             language="Chinese",
         )
 
-        tail = TailSelector.select(frame, stable_text_prefix="前段", stable_end_sample=16_000)
+        tail = TailSelector.select(
+            frame, stable_text_prefix="前段", stable_end_sample=16_000
+        )
 
         assert tail.aligned
-        assert tail.text == '后段'
+        assert tail.text == "后段"
 
     def test_window_after_stable_cursor_keeps_decoded_mutable_tail(self) -> None:
         frame = RecognitionFrame(
@@ -409,7 +460,7 @@ class TestTailSelector:
         )
 
         assert tail.aligned
-        assert tail.text == '草稿后段'
+        assert tail.text == "草稿后段"
 
     def test_prompt_prefix_echo_is_not_returned_as_window_tail(self) -> None:
         stable = "现在已经没悬念了后段"
@@ -429,7 +480,7 @@ class TestTailSelector:
         )
 
         assert tail.aligned
-        assert tail.text == '有轻微改写后段继续'
+        assert tail.text == "有轻微改写后段继续"
 
     def test_stable_suffix_overlap_removes_committed_prompt_tail(self) -> None:
         frame = RecognitionFrame(
@@ -448,7 +499,7 @@ class TestTailSelector:
         )
 
         assert tail.aligned
-        assert tail.text == '出来创业'
+        assert tail.text == "出来创业"
 
     def test_stable_suffix_overlap_ignores_boundary_punctuation(self) -> None:
         frame = RecognitionFrame(
@@ -467,7 +518,7 @@ class TestTailSelector:
         )
 
         assert tail.aligned
-        assert tail.text == '有一些广告'
+        assert tail.text == "有一些广告"
 
     def test_long_stable_context_echo_is_not_committable(self) -> None:
         stable = "昨天发布会怎么样兴奋困想睡觉一般来讲"
@@ -489,7 +540,9 @@ class TestTailSelector:
 
         assert not tail.aligned
 
-    def test_repeated_phrase_at_window_boundary_is_not_removed_as_prompt_echo(self) -> None:
+    def test_repeated_phrase_at_window_boundary_is_not_removed_as_prompt_echo(
+        self,
+    ) -> None:
         frame = RecognitionFrame(
             window_start_sample=16_000,
             audio_end_sample=32_000,
@@ -506,7 +559,7 @@ class TestTailSelector:
         )
 
         assert tail.aligned
-        assert tail.text == '谢谢大家下一句'
+        assert tail.text == "谢谢大家下一句"
 
     def test_empty_full_text_does_not_hide_decoded_tail(self) -> None:
         frame = RecognitionFrame(
@@ -525,7 +578,7 @@ class TestTailSelector:
         )
 
         assert tail.aligned
-        assert tail.text == '后段'
+        assert tail.text == "后段"
 
     def test_visible_partial_is_not_removed_by_stable_suffix_overlap(self) -> None:
         frame = RecognitionFrame(
@@ -545,7 +598,7 @@ class TestTailSelector:
         )
 
         assert tail.aligned
-        assert tail.text == '谢谢大家下一句'
+        assert tail.text == "谢谢大家下一句"
 
 
 class TestRealtimeServerCli:
@@ -560,7 +613,7 @@ class TestRealtimeServerCli:
         assert args.fused_linears is None
         assert args.w8a16 is None
         assert args.cuda_graph_prewarm
-        assert args.cuda_graph_prewarm_language == 'Chinese'
+        assert args.cuda_graph_prewarm_language == "Chinese"
         assert args.cuda_graph_prewarm_window_sec == 20.0
         assert args.cuda_graph_prewarm_prefix_tokens == 64
         assert args.timestamp_model is None
@@ -578,11 +631,17 @@ class TestRealtimeServerCli:
         assert not args.no_vad
 
     def test_no_vad_can_disable_vad(self) -> None:
-        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--no-vad"]):
+        with patch.object(
+            sys, "argv", ["realtime_server.py", "--model", "model", "--no-vad"]
+        ):
             assert _parse_args().no_vad
 
     def test_debug_log_level_can_be_configured(self) -> None:
-        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--log-level", "debug"]):
+        with patch.object(
+            sys,
+            "argv",
+            ["realtime_server.py", "--model", "model", "--log-level", "debug"],
+        ):
             args = _parse_args()
 
         assert args.log_level == "debug"
@@ -627,7 +686,9 @@ class TestRealtimeServerCli:
         assert "zero_pct=33.3" in stats
 
     def test_pcm_debug_summary_throttles_frame_logs(self) -> None:
-        summary = _PcmDebugSummary(session_id="s1", sample_rate=16_000, interval_ms=1000)
+        summary = _PcmDebugSummary(
+            session_id="s1", sample_rate=16_000, interval_ms=1000
+        )
         half_second = np.ones(8000, dtype=np.float32) * 0.5
 
         assert summary.accept(half_second, byte_count=16_000) is None
@@ -657,13 +718,23 @@ class TestRealtimeServerCli:
         assert "partial='这这这'" in summary
 
     def test_realtime_event_debug_log_filter_skips_partial_only_updates(self) -> None:
-        assert not _should_log_realtime_event({"type": "transcript_update", "partial": {"text": "draft"}})
-        assert _should_log_realtime_event({"type": "transcript_update", "stable_appends": [{"text": "done"}]})
+        assert not _should_log_realtime_event(
+            {"type": "transcript_update", "partial": {"text": "draft"}}
+        )
+        assert _should_log_realtime_event(
+            {"type": "transcript_update", "stable_appends": [{"text": "done"}]}
+        )
         assert _should_log_realtime_event({"type": "error", "error": "bad"})
-        assert not _should_log_realtime_event({"type": "translation_preview", "text": "draft"})
+        assert not _should_log_realtime_event(
+            {"type": "translation_preview", "text": "draft"}
+        )
 
     def test_save_debug_audio_cli_uses_default_directory(self) -> None:
-        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--save-debug-audio"]):
+        with patch.object(
+            sys,
+            "argv",
+            ["realtime_server.py", "--model", "model", "--save-debug-audio"],
+        ):
             args = _parse_args()
 
         assert args.save_debug_audio
@@ -673,7 +744,14 @@ class TestRealtimeServerCli:
         with patch.object(
             sys,
             "argv",
-            ["realtime_server.py", "--model", "model", "--save-debug-audio", "--debug-audio-dir", "/tmp/funyi-audio"],
+            [
+                "realtime_server.py",
+                "--model",
+                "model",
+                "--save-debug-audio",
+                "--debug-audio-dir",
+                "/tmp/funyi-audio",
+            ],
         ):
             args = _parse_args()
 
@@ -701,14 +779,24 @@ class TestRealtimeServerCli:
             assert wav.readframes(3) == b"\x00\x00\xff\x7f\x00\x80"
 
     def test_translation_sampling_can_be_enabled(self) -> None:
-        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--translation-sample"]):
+        with patch.object(
+            sys,
+            "argv",
+            ["realtime_server.py", "--model", "model", "--translation-sample"],
+        ):
             assert _parse_args().translation_sample
 
     def test_translation_stable_batch_size_can_be_configured(self) -> None:
         with patch.object(
             sys,
             "argv",
-            ["realtime_server.py", "--model", "model", "--translation-stable-batch-size", "4"],
+            [
+                "realtime_server.py",
+                "--model",
+                "model",
+                "--translation-stable-batch-size",
+                "4",
+            ],
         ):
             assert _parse_args().translation_stable_batch_size == 4
 
@@ -716,27 +804,51 @@ class TestRealtimeServerCli:
         with patch.object(
             sys,
             "argv",
-            ["realtime_server.py", "--model", "model", "--translation-stable-timeout-ms", "1000"],
+            [
+                "realtime_server.py",
+                "--model",
+                "model",
+                "--translation-stable-timeout-ms",
+                "1000",
+            ],
         ):
             assert _parse_args().translation_stable_timeout_ms == 1000
 
     def test_w8a16_can_be_disabled(self) -> None:
-        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--no-w8a16"]):
+        with patch.object(
+            sys, "argv", ["realtime_server.py", "--model", "model", "--no-w8a16"]
+        ):
             assert not _parse_args().w8a16
 
-    def test_translation_model_flag_uses_default_model_when_value_is_omitted(self) -> None:
-        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--translation-model"]):
+    def test_translation_model_flag_uses_default_model_when_value_is_omitted(
+        self,
+    ) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            ["realtime_server.py", "--model", "model", "--translation-model"],
+        ):
             args = _parse_args()
 
-        assert args.translation_model == 'tencent/Hy-MT2-1.8B'
+        assert args.translation_model == "tencent/Hy-MT2-1.8B"
         assert not args.translation_trust_remote_code
-        assert args.translation_decode_backend == 'fixed_mask'
+        assert args.translation_decode_backend == "fixed_mask"
         assert args.translation_w8a16
         assert args.translation_fused_rmsnorm
 
     def test_translation_model_can_be_configured(self) -> None:
-        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--translation-model", "local/hymt"]):
-            assert _parse_args().translation_model == 'local/hymt'
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "realtime_server.py",
+                "--model",
+                "model",
+                "--translation-model",
+                "local/hymt",
+            ],
+        ):
+            assert _parse_args().translation_model == "local/hymt"
 
     def test_translation_model_enables_translation_without_default_target(self) -> None:
         with patch.object(
@@ -759,18 +871,20 @@ class TestRealtimeServerCli:
             args = _parse_args()
 
         translator = object()
-        with patch("realtime_server.HYMTTranslator", return_value=translator) as translator_class:
+        with patch(
+            "realtime_server.HYMTTranslator", return_value=translator
+        ) as translator_class:
             built_translator, config = _build_translation(args)
 
         assert built_translator is translator
         assert config is not None
-        assert translator_class.call_args.args[0] == 'local/hymt'
+        assert translator_class.call_args.args[0] == "local/hymt"
         kwargs = translator_class.call_args.kwargs
-        assert kwargs['model_revision'] == 'abc123'
-        assert not kwargs['local_files_only']
-        assert kwargs['trust_remote_code']
-        assert not kwargs['w8a16']
-        assert not kwargs['fused_rmsnorm']
+        assert kwargs["model_revision"] == "abc123"
+        assert not kwargs["local_files_only"]
+        assert kwargs["trust_remote_code"]
+        assert not kwargs["w8a16"]
+        assert not kwargs["fused_rmsnorm"]
 
     def test_translation_prewarm_uses_actor_and_configured_target_buckets(self) -> None:
         class FakeTranslationActor:
@@ -788,7 +902,9 @@ class TestRealtimeServerCli:
             TranslationServiceConfig(max_new_tokens=16, stable_batch_size=2),
         )
 
-        assert [(call["target_language"], call["batch_size"]) for call in actor.calls] == [
+        assert [
+            (call["target_language"], call["batch_size"]) for call in actor.calls
+        ] == [
             ("Chinese", 1),
             ("Chinese", 2),
         ]
@@ -828,28 +944,36 @@ class TestRealtimeServerCli:
         assert tuple(SUPPORTED_LANGUAGES) == QWEN3_ASR_MODEL_CARD_LANGUAGES
 
     def test_desktop_language_options_follow_backend_model_card_lists(self) -> None:
-        assert _desktop_language_options('ASR_LANGUAGE_OPTIONS') == QWEN3_ASR_MODEL_CARD_LANGUAGES
-        assert _desktop_language_options('TRANSLATION_TARGET_LANGUAGE_OPTIONS') == HYMT_MODEL_CARD_LANGUAGES
+        assert (
+            _desktop_language_options("ASR_LANGUAGE_OPTIONS")
+            == QWEN3_ASR_MODEL_CARD_LANGUAGES
+        )
+        assert (
+            _desktop_language_options("TRANSLATION_TARGET_LANGUAGE_OPTIONS")
+            == HYMT_MODEL_CARD_LANGUAGES
+        )
 
     def test_transformers_load_kwargs_are_default(self) -> None:
         with patch.object(sys, "argv", ["realtime_server.py", "--model", "model"]):
             backend, kwargs = _build_model_load(_parse_args())
 
-        assert backend == 'transformers'
-        assert kwargs['device_map'] == 'cuda:0'
-        assert kwargs['cuda_graph']
-        assert kwargs['cuda_graph_len_bucket'] == 64
-        assert kwargs['flashinfer']
-        assert kwargs['fused_rmsnorm']
-        assert kwargs['fused_linears']
+        assert backend == "transformers"
+        assert kwargs["device_map"] == "cuda:0"
+        assert kwargs["cuda_graph"]
+        assert kwargs["cuda_graph_len_bucket"] == 64
+        assert kwargs["flashinfer"]
+        assert kwargs["fused_rmsnorm"]
+        assert kwargs["fused_linears"]
         # W8A16 is OFF by default for the streaming service: it slows the
         # prefill-bound streaming path ~3x at equal CER (recheck_w8a16_*).
-        assert not kwargs['quantized_linears']
+        assert not kwargs["quantized_linears"]
 
     def test_w8a16_flag_forces_quantized_linears_on(self) -> None:
-        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model", "--w8a16"]):
+        with patch.object(
+            sys, "argv", ["realtime_server.py", "--model", "model", "--w8a16"]
+        ):
             _, kwargs = _build_model_load(_parse_args())
-        assert kwargs['quantized_linears']
+        assert kwargs["quantized_linears"]
 
     def test_cuda_graph_prewarm_is_default_hard_gate_for_asr_only(self) -> None:
         class FakeModel:
@@ -866,7 +990,9 @@ class TestRealtimeServerCli:
 
         _prepare_cuda_graph_runtime(model, args)
 
-        assert model.calls == [{'language': 'Chinese', 'max_window_sec': 20.0, 'max_prefix_tokens': 64}]
+        assert model.calls == [
+            {"language": "Chinese", "max_window_sec": 20.0, "max_prefix_tokens": 64}
+        ]
 
     def test_cuda_graph_prewarm_failure_is_startup_error(self) -> None:
         class FakeModel:
@@ -896,7 +1022,9 @@ class TestRealtimeServerCli:
 
         assert lock is CUDA_GRAPH_CAPTURE_LOCK
 
-    def test_translation_actor_needs_no_capture_lock_after_default_asr_cuda_graph_prewarm(self) -> None:
+    def test_translation_actor_needs_no_capture_lock_after_default_asr_cuda_graph_prewarm(
+        self,
+    ) -> None:
         class FakeModel:
             def __init__(self) -> None:
                 self.calls = 0
@@ -919,7 +1047,7 @@ class TestRealtimeServerCli:
     def test_start_payload_without_target_disables_session_translation(self) -> None:
         config = TranslationServiceConfig()
 
-        assert _session_translation_config({'type': 'start'}, config) is None
+        assert _session_translation_config({"type": "start"}, config) is None
 
     def test_translation_service_config_rejects_invalid_stable_timeout(self) -> None:
         with pytest.raises(ValueError, match="stable_timeout_ms must be > 0"):
@@ -928,14 +1056,20 @@ class TestRealtimeServerCli:
     def test_start_payload_rejects_empty_translation_target(self) -> None:
         config = TranslationServiceConfig()
 
-        with pytest.raises(ValueError, match='target_language must not be empty'):
-            _session_translation_config({"type": "start", "target_language": ""}, config)
+        with pytest.raises(ValueError, match="target_language must not be empty"):
+            _session_translation_config(
+                {"type": "start", "target_language": ""}, config
+            )
 
-    def test_start_payload_rejects_translation_target_when_translation_is_not_configured(self) -> None:
-        assert _session_translation_config({'type': 'start'}, None) is None
+    def test_start_payload_rejects_translation_target_when_translation_is_not_configured(
+        self,
+    ) -> None:
+        assert _session_translation_config({"type": "start"}, None) is None
 
-        with pytest.raises(ValueError, match='translation model to be configured'):
-            _session_translation_config({"type": "start", "target_language": "English"}, None)
+        with pytest.raises(ValueError, match="translation model to be configured"):
+            _session_translation_config(
+                {"type": "start", "target_language": "English"}, None
+            )
 
     def test_start_payload_can_enable_session_translation_target(self) -> None:
         config = TranslationServiceConfig(
@@ -947,14 +1081,18 @@ class TestRealtimeServerCli:
             config,
         )
         assert session_config is not None
-        assert session_config.target_language == 'Japanese'
+        assert session_config.target_language == "Japanese"
         assert session_config.max_new_tokens == 16
 
-    def test_start_payload_rejects_translation_target_outside_hymt_model_card(self) -> None:
+    def test_start_payload_rejects_translation_target_outside_hymt_model_card(
+        self,
+    ) -> None:
         config = TranslationServiceConfig()
 
-        with pytest.raises(ValueError, match='Unsupported target_language'):
-            _session_translation_config({"type": "start", "target_language": "Swedish"}, config)
+        with pytest.raises(ValueError, match="Unsupported target_language"):
+            _session_translation_config(
+                {"type": "start", "target_language": "Swedish"}, config
+            )
 
     def test_start_payload_normalizes_translation_target(self) -> None:
         config = TranslationServiceConfig()
@@ -965,24 +1103,31 @@ class TestRealtimeServerCli:
         )
 
         assert session_config is not None
-        assert session_config.target_language == 'Traditional Chinese'
+        assert session_config.target_language == "Traditional Chinese"
 
     def test_service_session_config_uses_start_payload_context(self) -> None:
         config = _build_realtime_session_config(
             {"type": "start", "context": "meeting", "language": "Chinese"},
         )
 
-        assert config.context == 'meeting'
-        assert config.language == 'Chinese'
+        assert config.context == "meeting"
+        assert config.language == "Chinese"
         assert config.force_align_timestamps is True
 
     def test_set_language_command_normalizes_language_choices(self) -> None:
         update = _parse_language_config_update(
-            {"type": "set_language", "language": "japanese", "target_language": "traditional chinese"},
+            {
+                "type": "set_language",
+                "language": "japanese",
+                "target_language": "traditional chinese",
+            },
             TranslationServiceConfig(),
         )
 
-        assert update == {'language': 'Japanese', 'target_language': 'Traditional Chinese'}
+        assert update == {
+            "language": "Japanese",
+            "target_language": "Traditional Chinese",
+        }
 
     def test_set_language_command_allows_auto_asr_and_translation_off(self) -> None:
         update = _parse_language_config_update(
@@ -990,27 +1135,35 @@ class TestRealtimeServerCli:
             None,
         )
 
-        assert update == {'language': None, 'target_language': None}
+        assert update == {"language": None, "target_language": None}
 
-    def test_set_language_command_rejects_target_without_translation_model(self) -> None:
-        with pytest.raises(ValueError, match='translation model to be configured'):
-            _parse_language_config_update({"type": "set_language", "target_language": "English"}, None)
+    def test_set_language_command_rejects_target_without_translation_model(
+        self,
+    ) -> None:
+        with pytest.raises(ValueError, match="translation model to be configured"):
+            _parse_language_config_update(
+                {"type": "set_language", "target_language": "English"}, None
+            )
 
     def test_set_language_command_rejects_unknown_field(self) -> None:
-        with pytest.raises(ValueError, match='Unsupported set_language command field'):
+        with pytest.raises(ValueError, match="Unsupported set_language command field"):
             _parse_language_config_update(
                 {"type": "set_language", "language": "English", "extra": True},
                 TranslationServiceConfig(),
             )
 
-    def test_aligned_session_config_rejects_languages_without_forced_aligner_support(self) -> None:
-        with pytest.raises(ValueError, match='Forced aligner does not support source language'):
+    def test_aligned_session_config_rejects_languages_without_forced_aligner_support(
+        self,
+    ) -> None:
+        with pytest.raises(
+            ValueError, match="Forced aligner does not support source language"
+        ):
             _build_realtime_session_config(
                 {"type": "start", "language": "Arabic"},
             )
 
-        assert 'Japanese' in QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES
-        assert 'Arabic' not in QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES
+        assert "Japanese" in QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES
+        assert "Arabic" not in QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES
 
     def test_realtime_session_config_accepts_only_aligned_realtime_mode(self) -> None:
         config = _build_realtime_session_config(
@@ -1027,21 +1180,27 @@ class TestRealtimeServerCli:
             )
 
     def test_streaming_ready_payload_declares_timing_patch_event(self) -> None:
-        ready = _streaming_ready_payload(RealtimeASRConfig(live_stability_delay_ms=12_000))
+        ready = _streaming_ready_payload(
+            RealtimeASRConfig(live_stability_delay_ms=12_000)
+        )
 
         assert ready["mode"] == "aligned_windowed"
         assert ready["stable"]["source"] == "asr_streaming_text_and_forced_aligner"  # type: ignore[index]
         assert ready["stable"]["patch_event"] == "transcript_timing_update"  # type: ignore[index]
         assert ready["stable"]["live_stability_delay_ms"] == 12_000  # type: ignore[index]
 
-    def test_set_language_command_accepts_only_forced_aligner_source_languages(self) -> None:
+    def test_set_language_command_accepts_only_forced_aligner_source_languages(
+        self,
+    ) -> None:
         japanese = _parse_language_config_update(
             {"type": "set_language", "language": "Japanese"},
             TranslationServiceConfig(),
         )
 
-        assert japanese == {'language': 'Japanese'}
-        with pytest.raises(ValueError, match='Forced aligner does not support source language'):
+        assert japanese == {"language": "Japanese"}
+        with pytest.raises(
+            ValueError, match="Forced aligner does not support source language"
+        ):
             _parse_language_config_update(
                 {"type": "set_language", "language": "Arabic"},
                 TranslationServiceConfig(),
@@ -1057,7 +1216,7 @@ class TestRealtimeServerTranslationOrdering:
         payload = await _receive_start(FakeWebSocket())
 
         assert payload is not None
-        assert payload['language'] == 'Japanese'  # type: ignore[index]
+        assert payload["language"] == "Japanese"  # type: ignore[index]
 
     async def test_receive_start_rejects_unsupported_language(self) -> None:
         class FakeWebSocket:
@@ -1080,10 +1239,12 @@ class TestRealtimeServerTranslationOrdering:
 
         assert payload is None
         assert websocket.closed_code == 1003
-        assert 'Unsupported language' in websocket.sent[0]
-        assert json.loads(websocket.sent[0])['fatal'] is True
+        assert "Unsupported language" in websocket.sent[0]
+        assert json.loads(websocket.sent[0])["fatal"] is True
 
-    async def test_receive_start_rejects_language_without_forced_aligner_support(self) -> None:
+    async def test_receive_start_rejects_language_without_forced_aligner_support(
+        self,
+    ) -> None:
         class FakeWebSocket:
             def __init__(self) -> None:
                 self.sent: list[str] = []
@@ -1104,8 +1265,8 @@ class TestRealtimeServerTranslationOrdering:
 
         assert payload is None
         assert websocket.closed_code == 1003
-        assert 'Forced aligner does not support source language' in websocket.sent[0]
-        assert json.loads(websocket.sent[0])['fatal'] is True
+        assert "Forced aligner does not support source language" in websocket.sent[0]
+        assert json.loads(websocket.sent[0])["fatal"] is True
 
     async def test_receive_start_rejects_unknown_field(self) -> None:
         class FakeWebSocket:
@@ -1128,9 +1289,9 @@ class TestRealtimeServerTranslationOrdering:
 
         assert payload is None
         assert websocket.closed_code == 1003
-        assert 'Unsupported start command field' in websocket.sent[0]
-        assert 'unsupported' in websocket.sent[0]
-        assert json.loads(websocket.sent[0])['fatal'] is True
+        assert "Unsupported start command field" in websocket.sent[0]
+        assert "unsupported" in websocket.sent[0]
+        assert json.loads(websocket.sent[0])["fatal"] is True
 
     async def test_sender_times_out_when_client_stops_consuming_output(self) -> None:
         class HangingSendWebSocket:
@@ -1152,7 +1313,9 @@ class TestRealtimeServerTranslationOrdering:
         assert websocket.send_started.is_set()
         assert queue.qsize() == 0
 
-    async def test_queue_event_applies_backpressure_until_live_sender_drains(self) -> None:
+    async def test_queue_event_applies_backpressure_until_live_sender_drains(
+        self,
+    ) -> None:
         # A full queue must not be fatal: ASR already consumed the audio, so dropping the
         # event would skip published transcript text. The producer blocks until the live
         # sender frees a slot.
@@ -1167,7 +1330,9 @@ class TestRealtimeServerTranslationOrdering:
         sender_task = asyncio.create_task(drain_then_idle())
         try:
             await asyncio.wait_for(
-                _queue_event(queue, {"type": "transcript_update"}, sender_task=sender_task),
+                _queue_event(
+                    queue, {"type": "transcript_update"}, sender_task=sender_task
+                ),
                 timeout=1.0,
             )
             assert queue.qsize() == 1
@@ -1189,7 +1354,9 @@ class TestRealtimeServerTranslationOrdering:
         assert sender_task.done()
 
         with pytest.raises(WebSocketSendTimeout):
-            await _queue_event(queue, {"type": "transcript_update"}, sender_task=sender_task)
+            await _queue_event(
+                queue, {"type": "transcript_update"}, sender_task=sender_task
+            )
 
     async def test_queue_event_raises_when_sender_dies_while_waiting(self) -> None:
         queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue(maxsize=1)
@@ -1202,7 +1369,9 @@ class TestRealtimeServerTranslationOrdering:
         sender_task = asyncio.create_task(fail_later())
         with pytest.raises(WebSocketSendTimeout):
             await asyncio.wait_for(
-                _queue_event(queue, {"type": "transcript_update"}, sender_task=sender_task),
+                _queue_event(
+                    queue, {"type": "transcript_update"}, sender_task=sender_task
+                ),
                 timeout=1.0,
             )
 
@@ -1229,7 +1398,9 @@ class TestRealtimeServerTranslationOrdering:
 
         assert websocket.receive_cancelled
 
-    async def test_close_websocket_times_out_when_client_stops_consuming_output(self) -> None:
+    async def test_close_websocket_times_out_when_client_stops_consuming_output(
+        self,
+    ) -> None:
         class HangingCloseWebSocket:
             def __init__(self) -> None:
                 self.close_started = asyncio.Event()
@@ -1245,16 +1416,23 @@ class TestRealtimeServerTranslationOrdering:
 
         assert websocket.close_started.is_set()
 
-    async def test_pending_old_preview_is_not_queued_after_new_source_revision(self) -> None:
+    async def test_pending_old_preview_is_not_queued_after_new_source_revision(
+        self,
+    ) -> None:
         queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue()
 
         class FakeTranslation:
             async def accept_source_event(self, event: dict[str, object]) -> None:
                 self.check_source_event(event)
-                await queue.put({"type": "translation_preview", "source_revision": 1, "text": "old"})
+                await queue.put(
+                    {"type": "translation_preview", "source_revision": 1, "text": "old"}
+                )
 
             def check_source_event(self, event: dict[str, object]) -> None:
-                if event.get("type") != "transcript_update" or event.get("revision") != 2:
+                if (
+                    event.get("type") != "transcript_update"
+                    or event.get("revision") != 2
+                ):
                     raise AssertionError(f"unexpected source event: {event!r}")
 
         await _publish_session_events(
@@ -1272,21 +1450,29 @@ class TestRealtimeServerTranslationOrdering:
 
         first = await queue.get()
         second = await queue.get()
-        assert first['type'] == 'translation_preview'
-        assert first['source_revision'] == 1
-        assert second['type'] == 'transcript_update'
-        assert second['revision'] == 2
+        assert first["type"] == "translation_preview"
+        assert first["source_revision"] == 1
+        assert second["type"] == "transcript_update"
+        assert second["revision"] == 2
 
-    async def test_finish_cancels_preview_before_publishing_finish_source_update(self) -> None:
+    async def test_finish_cancels_preview_before_publishing_finish_source_update(
+        self,
+    ) -> None:
         queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue()
 
         class FakeTranslation:
             async def cancel_preview(self) -> None:
-                await queue.put({"type": "translation_preview", "source_revision": 1, "text": "old"})
+                await queue.put(
+                    {"type": "translation_preview", "source_revision": 1, "text": "old"}
+                )
 
-            async def finish(self, transcript_updates: list[dict[str, object]]) -> list[dict[str, object]]:
+            async def finish(
+                self, transcript_updates: list[dict[str, object]]
+            ) -> list[dict[str, object]]:
                 if [event.get("revision") for event in transcript_updates] != [2]:
-                    raise AssertionError(f"unexpected finish updates: {transcript_updates!r}")
+                    raise AssertionError(
+                        f"unexpected finish updates: {transcript_updates!r}"
+                    )
                 return [
                     {
                         "type": "translation_stable",
@@ -1333,17 +1519,24 @@ class TestRealtimeServerTranslationOrdering:
             ],
         )
 
-        events = [await queue.get(), await queue.get(), await queue.get(), await queue.get()]
-        assert [event['type'] for event in events] == [
-            'translation_preview',
-            'transcript_update',
-            'translation_stable',
-            'transcript_final',
+        events = [
+            await queue.get(),
+            await queue.get(),
+            await queue.get(),
+            await queue.get(),
         ]
-        assert events[0]['source_revision'] == 1
-        assert events[1]['revision'] == 2
+        assert [event["type"] for event in events] == [
+            "translation_preview",
+            "transcript_update",
+            "translation_stable",
+            "transcript_final",
+        ]
+        assert events[0]["source_revision"] == 1
+        assert events[1]["revision"] == 2
 
-    async def test_publish_finish_emits_timing_patch_before_terminal_final(self) -> None:
+    async def test_publish_finish_emits_timing_patch_before_terminal_final(
+        self,
+    ) -> None:
         # transcript_final is terminal; any transcript_timing_update for a stable segment
         # must reach the client before it.
         queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue()
@@ -1385,7 +1578,11 @@ class TestSpeechGate:
             vad=FakeVadAdapter(
                 [
                     VadDecision(speech_active=False),
-                    VadDecision(speech_started=True, speech_active=True, speech_start_sample=16_000),
+                    VadDecision(
+                        speech_started=True,
+                        speech_active=True,
+                        speech_start_sample=16_000,
+                    ),
                 ]
             ),
             config=SpeechGateConfig(pre_roll_ms=400),
@@ -1395,7 +1592,7 @@ class TestSpeechGate:
         events = gate.accept(np.ones(16_000, dtype=np.float32) * 0.2)
 
         assert len(events) == 1
-        assert events[0].type == 'speech_start'
+        assert events[0].type == "speech_start"
         assert events[0].start_sample == 9_600
         assert events[0].end_sample == 32_000
         assert events[0].audio.shape[0] == 22_400
@@ -1418,17 +1615,21 @@ class TestSpeechGate:
 
         events = gate.accept(np.ones(16_000, dtype=np.float32) * 0.2)
 
-        assert [event.type for event in events] == ['speech_start', 'speech_end']
+        assert [event.type for event in events] == ["speech_start", "speech_end"]
         assert events[0].start_sample == 0
         assert events[0].end_sample == 10_000
         assert events[1].start_sample == 10_000
         assert not gate.speech_active
 
-    def test_speech_restart_in_same_chunk_does_not_duplicate_previous_turn_audio(self) -> None:
+    def test_speech_restart_in_same_chunk_does_not_duplicate_previous_turn_audio(
+        self,
+    ) -> None:
         gate = SpeechGate(
             vad=FakeVadAdapter(
                 [
-                    VadDecision(speech_started=True, speech_active=True, speech_start_sample=0),
+                    VadDecision(
+                        speech_started=True, speech_active=True, speech_start_sample=0
+                    ),
                     VadDecision(
                         speech_started=True,
                         speech_ended=True,
@@ -1444,7 +1645,11 @@ class TestSpeechGate:
 
         events = gate.accept(np.ones(16_000, dtype=np.float32) * 0.2)
 
-        assert [event.type for event in events] == ['speech_audio', 'speech_end', 'speech_start']
+        assert [event.type for event in events] == [
+            "speech_audio",
+            "speech_end",
+            "speech_start",
+        ]
         assert events[0].end_sample == 20_000
         assert events[2].start_sample == 21_600
         assert events[2].start_sample >= events[1].end_sample
@@ -1468,7 +1673,9 @@ class TestRealtimeASRSession:
         timeline = _SourceTimeline()
 
         timeline.append(16_000, source_start_sample=0)
-        timeline.append(8_000, source_start_sample=40_000)  # 24_000-sample source-clock gap
+        timeline.append(
+            8_000, source_start_sample=40_000
+        )  # 24_000-sample source-clock gap
 
         # Inside the pre-gap span both edges map straight through.
         assert timeline.source_start_sample(8_000) == 8_000
@@ -1496,12 +1703,16 @@ class TestRealtimeASRSession:
         events.extend(session.ingest_audio(speech))
 
         assert stable_appends(events) == []
-        assert partial_texts(events)[-1] == '前两秒第三秒'
+        assert partial_texts(events)[-1] == "前两秒第三秒"
         assert_transcript_update_invariants(events)
 
-    def test_force_align_timestamp_mode_emits_pending_stable_segment_and_hidden_timing_job(self) -> None:
+    def test_force_align_timestamp_mode_emits_pending_stable_segment_and_hidden_timing_job(
+        self,
+    ) -> None:
         model = FakeStreamingModel(outputs=["第一秒", "第一秒第二秒"])
-        session = make_session(model, live_stability_delay_ms=0, force_align_timestamps=True)
+        session = make_session(
+            model, live_stability_delay_ms=0, force_align_timestamps=True
+        )
         speech = np.ones(16_000, dtype=np.float32) * 0.2
 
         events = session.ingest_audio(speech) + session.ingest_audio(speech)
@@ -1509,12 +1720,12 @@ class TestRealtimeASRSession:
         jobs = session.consume_stable_timing_jobs_for_events(events)
 
         assert len(stable) == 1
-        assert stable[0]['start_ms'] is None
-        assert stable[0]['end_ms'] is None
-        assert stable[0]['timing_status'] == 'pending'
+        assert stable[0]["start_ms"] is None
+        assert stable[0]["end_ms"] is None
+        assert stable[0]["timing_status"] == "pending"
         assert len(jobs) == 1
-        assert jobs[0].source_segment_id == stable[0]['id']
-        assert jobs[0].source_text == '第一秒'
+        assert jobs[0].source_segment_id == stable[0]["id"]
+        assert jobs[0].source_text == "第一秒"
         assert (jobs[0].start_sample, jobs[0].end_sample) == (0, 16000)
         assert session.consume_stable_timing_jobs_for_events(events) == []
 
@@ -1524,7 +1735,7 @@ class TestRealtimeASRSession:
 
         events = session.ingest_audio(np.zeros(16_000, dtype=np.float32))
 
-        assert partial_texts(events) == ['低能量语音。']
+        assert partial_texts(events) == ["低能量语音。"]
         assert model.init_count == 1
         assert model.stream_calls == 1
         assert model.stream_audio_lengths == [16000]
@@ -1545,12 +1756,14 @@ class TestRealtimeASRSession:
         events = session.ingest_audio(speech) + session.ingest_audio(speech)
 
         stable = stable_appends(events)
-        assert [segment['text'] for segment in stable] == ['第一秒']
-        assert stable[0]['start_ms'] == 2000
-        assert stable[0]['end_ms'] == 3000
+        assert [segment["text"] for segment in stable] == ["第一秒"]
+        assert stable[0]["start_ms"] == 2000
+        assert stable[0]["end_ms"] == 3000
         assert_transcript_update_invariants(events)
 
-    def test_noncontiguous_source_audio_maps_timestamps_without_model_silence(self) -> None:
+    def test_noncontiguous_source_audio_maps_timestamps_without_model_silence(
+        self,
+    ) -> None:
         model = FakeStreamingModel(outputs=["第一秒", "第一秒第二秒"])
         session = RealtimeASRSession(
             model,
@@ -1566,12 +1779,12 @@ class TestRealtimeASRSession:
 
         stable = stable_appends(first_events + resume_events)
         updates = transcript_updates(resume_events)
-        assert [segment['text'] for segment in stable] == ['第一秒']
-        assert stable[0]['start_ms'] == 0
-        assert stable[0]['end_ms'] == 1000
-        assert updates[-1]['partial']['text'] == '第二秒'  # type: ignore[index]
-        assert updates[-1]['partial']['start_ms'] == 2000  # type: ignore[index]
-        assert updates[-1]['partial']['end_ms'] == 3000  # type: ignore[index]
+        assert [segment["text"] for segment in stable] == ["第一秒"]
+        assert stable[0]["start_ms"] == 0
+        assert stable[0]["end_ms"] == 1000
+        assert updates[-1]["partial"]["text"] == "第二秒"  # type: ignore[index]
+        assert updates[-1]["partial"]["start_ms"] == 2000  # type: ignore[index]
+        assert updates[-1]["partial"]["end_ms"] == 3000  # type: ignore[index]
         assert model.stream_audio_lengths == [16_000, 16_000]
         assert_transcript_update_invariants(first_events + resume_events)
 
@@ -1651,9 +1864,21 @@ class TestRealtimeConnectionSession:
                 vad=FakeVadAdapter(
                     [
                         VadDecision(speech_active=False),
-                        VadDecision(speech_started=True, speech_active=True, speech_start_sample=16_000),
-                        VadDecision(speech_ended=True, speech_active=False, speech_end_sample=32_000),
-                        VadDecision(speech_started=True, speech_active=True, speech_start_sample=48_000),
+                        VadDecision(
+                            speech_started=True,
+                            speech_active=True,
+                            speech_start_sample=16_000,
+                        ),
+                        VadDecision(
+                            speech_ended=True,
+                            speech_active=False,
+                            speech_end_sample=32_000,
+                        ),
+                        VadDecision(
+                            speech_started=True,
+                            speech_active=True,
+                            speech_start_sample=48_000,
+                        ),
                     ]
                 ),
                 config=SpeechGateConfig(pre_roll_ms=0),
@@ -1665,7 +1890,7 @@ class TestRealtimeConnectionSession:
         events.extend(session.ingest_audio(np.ones(16_000, dtype=np.float32) * 0.2))
         events.extend(session.ingest_audio(np.zeros(16_000, dtype=np.float32)))
 
-        assert [segment['text'] for segment in stable_appends(events)] == ['开头']
+        assert [segment["text"] for segment in stable_appends(events)] == ["开头"]
         assert model.finish_calls == 1
         assert model.init_count == 1
         assert session.active_asr is None
@@ -1689,9 +1914,21 @@ class TestRealtimeConnectionSession:
             speech_gate=SpeechGate(
                 vad=FakeVadAdapter(
                     [
-                        VadDecision(speech_started=True, speech_active=True, speech_start_sample=0),
-                        VadDecision(speech_ended=True, speech_active=False, speech_end_sample=16_000),
-                        VadDecision(speech_started=True, speech_active=True, speech_start_sample=32_000),
+                        VadDecision(
+                            speech_started=True,
+                            speech_active=True,
+                            speech_start_sample=0,
+                        ),
+                        VadDecision(
+                            speech_ended=True,
+                            speech_active=False,
+                            speech_end_sample=16_000,
+                        ),
+                        VadDecision(
+                            speech_started=True,
+                            speech_active=True,
+                            speech_start_sample=32_000,
+                        ),
                     ]
                 ),
                 config=SpeechGateConfig(pre_roll_ms=0),
@@ -1705,12 +1942,12 @@ class TestRealtimeConnectionSession:
         assert stable_appends(first_events) == []
         stable = stable_appends(pause_events)
         updates = transcript_updates(resume_events)
-        assert [segment['text'] for segment in stable] == ['第一秒']
-        assert stable[0]['start_ms'] == 0
-        assert stable[0]['end_ms'] == 1000
-        assert updates[-1]['partial']['text'] == '第二秒'  # type: ignore[index]
-        assert updates[-1]['partial']['start_ms'] == 2000  # type: ignore[index]
-        assert updates[-1]['partial']['end_ms'] == 3000  # type: ignore[index]
+        assert [segment["text"] for segment in stable] == ["第一秒"]
+        assert stable[0]["start_ms"] == 0
+        assert stable[0]["end_ms"] == 1000
+        assert updates[-1]["partial"]["text"] == "第二秒"  # type: ignore[index]
+        assert updates[-1]["partial"]["start_ms"] == 2000  # type: ignore[index]
+        assert updates[-1]["partial"]["end_ms"] == 3000  # type: ignore[index]
         assert model.finish_calls == 1
         assert model.init_count == 2
         assert model.stream_audio_lengths == [16000, 16000]
@@ -1724,8 +1961,16 @@ class TestRealtimeConnectionSession:
             speech_gate=SpeechGate(
                 vad=FakeVadAdapter(
                     [
-                        VadDecision(speech_started=True, speech_active=True, speech_start_sample=0),
-                        VadDecision(speech_ended=True, speech_active=False, speech_end_sample=16_000),
+                        VadDecision(
+                            speech_started=True,
+                            speech_active=True,
+                            speech_start_sample=0,
+                        ),
+                        VadDecision(
+                            speech_ended=True,
+                            speech_active=False,
+                            speech_end_sample=16_000,
+                        ),
                     ]
                 ),
             ),
@@ -1735,7 +1980,7 @@ class TestRealtimeConnectionSession:
         events.extend(session.ingest_audio(np.ones(16_000, dtype=np.float32) * 0.2))
         events.extend(session.ingest_audio(np.zeros(16_000, dtype=np.float32)))
 
-        assert [segment['text'] for segment in stable_appends(events)] == ['开头']
+        assert [segment["text"] for segment in stable_appends(events)] == ["开头"]
         assert model.finish_calls == 1
         assert model.init_count == 1
         assert model.stream_audio_lengths == [16000]
@@ -1743,7 +1988,9 @@ class TestRealtimeConnectionSession:
         assert_transcript_update_invariants(events)
 
     def test_punctuation_does_not_stabilize_while_speech_continues(self) -> None:
-        model = FakeStreamingModel(outputs=["第一句。第二", "第一句。第二句。第三", "第一句。第二句。第三句"])
+        model = FakeStreamingModel(
+            outputs=["第一句。第二", "第一句。第二句。第三", "第一句。第二句。第三句"]
+        )
         session = make_session(model)
         speech = np.ones(16_000, dtype=np.float32) * 0.2
 
@@ -1753,7 +2000,7 @@ class TestRealtimeConnectionSession:
 
         events = events1 + events2 + events3
         assert stable_appends(events) == []
-        assert partial_texts(events)[-1] == '第一句。第二句。第三句'
+        assert partial_texts(events)[-1] == "第一句。第二句。第三句"
         assert model.init_count == 1
         assert_transcript_update_invariants(events)
 
@@ -1768,16 +2015,16 @@ class TestRealtimeConnectionSession:
 
         events = session.ingest_audio(speech)
 
-        assert partial_texts(events) == ['半秒']
+        assert partial_texts(events) == ["半秒"]
         assert model.stream_calls == 1
         assert model.stream_audio_lengths == [8000]
-        assert model.init_kwargs[0]['chunk_size_sec'] == 0.5
-        assert model.init_kwargs[0]['unfixed_chunk_num'] == 4
-        assert model.init_kwargs[0]['unfixed_token_num'] == 5
-        assert model.init_kwargs[0]['max_window_sec'] == 20.0
-        assert model.init_kwargs[0]['max_prefix_tokens'] == 64
-        assert model.init_kwargs[0]['spec_decode']
-        assert model.init_kwargs[0]['language'] == 'Chinese'
+        assert model.init_kwargs[0]["chunk_size_sec"] == 0.5
+        assert model.init_kwargs[0]["unfixed_chunk_num"] == 4
+        assert model.init_kwargs[0]["unfixed_token_num"] == 5
+        assert model.init_kwargs[0]["max_window_sec"] == 20.0
+        assert model.init_kwargs[0]["max_prefix_tokens"] == 64
+        assert model.init_kwargs[0]["spec_decode"]
+        assert model.init_kwargs[0]["language"] == "Chinese"
 
     def test_rewritten_partial_text_is_not_stabilized_by_punctuation(self) -> None:
         model = FakeStreamingModel(
@@ -1796,10 +2043,12 @@ class TestRealtimeConnectionSession:
             events.extend(session.ingest_audio(speech))
 
         assert stable_appends(events) == []
-        assert partial_texts(events)[-1] == '第一句话，有补充。下一段，'
+        assert partial_texts(events)[-1] == "第一句话，有补充。下一段，"
         assert_transcript_update_invariants(events)
 
-    def test_continuous_audio_advances_stable_cursor_without_resetting_asr(self) -> None:
+    def test_continuous_audio_advances_stable_cursor_without_resetting_asr(
+        self,
+    ) -> None:
         model = FakeStreamingModel(
             outputs=["第一秒", "前两秒", "前两秒第三秒"],
         )
@@ -1819,18 +2068,20 @@ class TestRealtimeConnectionSession:
             if isinstance(event.get("partial"), dict)
         ]
         assert len(stable) == 1
-        assert stable[0]['text'] == '前两秒'
-        assert stable[0]['start_ms'] == 0
-        assert stable[0]['end_ms'] == 2000
-        assert non_empty_partials[-1]['text'] == '第三秒'
-        assert non_empty_partials[-1]['start_ms'] == 2000
-        assert non_empty_partials[-1]['end_ms'] == 3000
+        assert stable[0]["text"] == "前两秒"
+        assert stable[0]["start_ms"] == 0
+        assert stable[0]["end_ms"] == 2000
+        assert non_empty_partials[-1]["text"] == "第三秒"
+        assert non_empty_partials[-1]["start_ms"] == 2000
+        assert non_empty_partials[-1]["end_ms"] == 3000
         assert model.init_count == 1
         assert model.finish_calls == 0
         assert model.stream_audio_lengths == [16000, 16000, 16000]
         assert_transcript_update_invariants(events)
 
-    def test_live_stability_delay_waits_for_repeated_prefix_before_stabilizing(self) -> None:
+    def test_live_stability_delay_waits_for_repeated_prefix_before_stabilizing(
+        self,
+    ) -> None:
         model = FakeStreamingModel(outputs=["第一秒", "前两秒"])
         session = make_session(model, live_stability_delay_ms=2_000)
         speech = np.ones(16_000, dtype=np.float32) * 0.2
@@ -1840,7 +2091,7 @@ class TestRealtimeConnectionSession:
         events.extend(session.ingest_audio(speech))
 
         assert stable_appends(events) == []
-        assert partial_texts(events)[-1] == '前两秒'
+        assert partial_texts(events)[-1] == "前两秒"
         assert_transcript_update_invariants(events)
 
     def test_zero_live_stability_delay_still_requires_repeated_prefix(self) -> None:
@@ -1853,8 +2104,8 @@ class TestRealtimeConnectionSession:
         events.extend(session.ingest_audio(speech))
 
         stable = stable_appends(events)
-        assert [segment['text'] for segment in stable] == ['第一秒']
-        assert partial_texts(events)[-1] == '第二秒'
+        assert [segment["text"] for segment in stable] == ["第一秒"]
+        assert partial_texts(events)[-1] == "第二秒"
         assert_transcript_update_invariants(events)
 
     def test_repeated_tail_text_after_stable_prefix_is_not_dropped(self) -> None:
@@ -1868,11 +2119,13 @@ class TestRealtimeConnectionSession:
         events.extend(session.ingest_audio(speech))
 
         stable = stable_appends(events)
-        assert [segment['text'] for segment in stable] == ['哈哈', '哈哈']
-        assert partial_texts(events)[-1] == '哈'
+        assert [segment["text"] for segment in stable] == ["哈哈", "哈哈"]
+        assert partial_texts(events)[-1] == "哈"
         assert_transcript_update_invariants(events)
 
-    def test_unaligned_live_window_still_updates_partial_without_stabilizing_it(self) -> None:
+    def test_unaligned_live_window_still_updates_partial_without_stabilizing_it(
+        self,
+    ) -> None:
         model = FakeStreamingModel(outputs=["旧段", "旧段", "新内容", "新内容继续"])
         session = make_session(model, live_stability_delay_ms=0)
         speech = np.ones(16_000, dtype=np.float32) * 0.2
@@ -1883,8 +2136,8 @@ class TestRealtimeConnectionSession:
         events.extend(session.ingest_audio(speech))
         events.extend(session.ingest_audio(speech))
 
-        assert [segment['text'] for segment in stable_appends(events)] == ['旧段']
-        assert partial_texts(events)[-1] == '新内容继续'
+        assert [segment["text"] for segment in stable_appends(events)] == ["旧段"]
+        assert partial_texts(events)[-1] == "新内容继续"
         assert_transcript_update_invariants(events)
 
     def test_tail_only_window_keeps_updating_current_partial(self) -> None:
@@ -1898,8 +2151,8 @@ class TestRealtimeConnectionSession:
         events.extend(session.ingest_audio(speech))
         events.extend(session.ingest_audio(speech))
 
-        assert [segment['text'] for segment in stable_appends(events)] == ['旧段']
-        assert partial_texts(events)[-1] == '新内容'
+        assert [segment["text"] for segment in stable_appends(events)] == ["旧段"]
+        assert partial_texts(events)[-1] == "新内容"
         assert_transcript_update_invariants(events)
 
     def test_finish_stabilizes_confirmed_tail_only_partial(self) -> None:
@@ -1915,9 +2168,13 @@ class TestRealtimeConnectionSession:
             events.extend(session.ingest_audio(speech))
         events.extend(session.finish())
 
-        final_events = [event for event in events if event.get("type") == "transcript_final"]
-        final_text = "".join(segment["text"] for segment in final_events[-1]["segments"])
-        assert final_text == '旧段新内容'
+        final_events = [
+            event for event in events if event.get("type") == "transcript_final"
+        ]
+        final_text = "".join(
+            segment["text"] for segment in final_events[-1]["segments"]
+        )
+        assert final_text == "旧段新内容"
         assert_transcript_update_invariants(events)
 
     def test_finish_stabilizes_tail_only_window_after_stable_cursor(self) -> None:
@@ -1933,8 +2190,13 @@ class TestRealtimeConnectionSession:
         events.extend(session.ingest_audio(speech))
         events.extend(session.finish())
 
-        final_events = [event for event in events if event.get("type") == "transcript_final"]
-        assert [segment['text'] for segment in final_events[-1]['segments']] == ['前段', '后段']
+        final_events = [
+            event for event in events if event.get("type") == "transcript_final"
+        ]
+        assert [segment["text"] for segment in final_events[-1]["segments"]] == [
+            "前段",
+            "后段",
+        ]
         assert_transcript_update_invariants(events)
 
     def test_window_roll_preserves_text_across_multiple_boundaries(self) -> None:
@@ -1965,14 +2227,20 @@ class TestRealtimeConnectionSession:
         running = ""
         for segment in stable_appends(events):
             running += str(segment["text"])
-            assert spoken.startswith(running), f"stable text diverged from utterance: {running!r}"
+            assert spoken.startswith(running), (
+                f"stable text diverged from utterance: {running!r}"
+            )
 
         events.extend(session.finish())
 
-        final = [event for event in events if event.get("type") == "transcript_final"][-1]
+        final = [event for event in events if event.get("type") == "transcript_final"][
+            -1
+        ]
         final_text = "".join(segment["text"] for segment in final["segments"])
         assert final_text == spoken
-        assert len(final["segments"]) >= 2  # text genuinely survived across the roll boundaries
+        assert (
+            len(final["segments"]) >= 2
+        )  # text genuinely survived across the roll boundaries
         assert_transcript_update_invariants(events)
 
     def test_stable_prefix_does_not_split_ascii_word(self) -> None:
@@ -1985,8 +2253,8 @@ class TestRealtimeConnectionSession:
         events.extend(session.ingest_audio(speech))
 
         stable = stable_appends(events)
-        assert [segment['text'] for segment in stable] == ['hello']
-        assert partial_texts(events)[-1] == 'world today'
+        assert [segment["text"] for segment in stable] == ["hello"]
+        assert partial_texts(events)[-1] == "world today"
         assert_transcript_update_invariants(events)
 
     def test_long_stable_text_is_committed_as_one_transcript_segment(self) -> None:
@@ -2001,10 +2269,10 @@ class TestRealtimeConnectionSession:
 
         stable = stable_appends(events)
         assert len(stable) == 1
-        assert stable[0]['text'] == stable_text
-        assert stable[0]['start_ms'] == 0
-        assert stable[-1]['end_ms'] == 1000
-        assert partial_texts(events)[-1] == '后续'
+        assert stable[0]["text"] == stable_text
+        assert stable[0]["start_ms"] == 0
+        assert stable[-1]["end_ms"] == 1000
+        assert partial_texts(events)[-1] == "后续"
         assert_transcript_update_invariants(events)
 
     def test_long_ascii_stable_text_preserves_spaces(self) -> None:
@@ -2019,11 +2287,13 @@ class TestRealtimeConnectionSession:
 
         stable = stable_appends(events)
         assert len(stable) == 1
-        assert stable[0]['text'] == stable_text
-        assert partial_texts(events)[-1] == 'next'
+        assert stable[0]["text"] == stable_text
+        assert partial_texts(events)[-1] == "next"
         assert_transcript_update_invariants(events)
 
-    def test_flush_after_stable_cursor_stabilizes_only_tail_without_resetting_asr(self) -> None:
+    def test_flush_after_stable_cursor_stabilizes_only_tail_without_resetting_asr(
+        self,
+    ) -> None:
         model = FakeStreamingModel(
             outputs=["第一秒", "前两秒", "前两秒第三秒"],
             finish_text="前两秒第三秒",
@@ -2038,8 +2308,11 @@ class TestRealtimeConnectionSession:
         events.extend(session.flush())
 
         stable = stable_appends(events)
-        assert [segment['text'] for segment in stable] == ['前两秒', '第三秒']
-        assert [(segment['start_ms'], segment['end_ms']) for segment in stable] == [(0, 2000), (2000, 3000)]
+        assert [segment["text"] for segment in stable] == ["前两秒", "第三秒"]
+        assert [(segment["start_ms"], segment["end_ms"]) for segment in stable] == [
+            (0, 2000),
+            (2000, 3000),
+        ]
         assert model.init_count == 1
         assert model.finish_calls == 1
         assert_transcript_update_invariants(events)
@@ -2061,8 +2334,8 @@ class TestRealtimeConnectionSession:
             events.extend(session.ingest_audio(speech))
 
         stable = stable_appends(events)
-        assert [segment['text'] for segment in stable] == ['第一秒', '第二秒']
-        assert partial_texts(events)[-1] == '第三秒'
+        assert [segment["text"] for segment in stable] == ["第一秒", "第二秒"]
+        assert partial_texts(events)[-1] == "第三秒"
         assert_transcript_update_invariants(events)
 
     def test_finish_with_unaligned_asr_promotes_last_visible_partial(self) -> None:
@@ -2079,12 +2352,22 @@ class TestRealtimeConnectionSession:
         events.extend(session.finish())
 
         updates = transcript_updates(events)
-        final_events = [event for event in events if event.get("type") == "transcript_final"]
-        assert [segment['text'] for segment in stable_appends(events)] == ['第一秒', '第二秒', '第三秒']
-        assert updates[-1]['stable_appends'][0]['text'] == '第三秒'
-        assert updates[-1]['partial'] is None
-        assert final_events[-1]['stable_count'] == 3
-        assert [segment['text'] for segment in final_events[-1]['segments']] == ['第一秒', '第二秒', '第三秒']
+        final_events = [
+            event for event in events if event.get("type") == "transcript_final"
+        ]
+        assert [segment["text"] for segment in stable_appends(events)] == [
+            "第一秒",
+            "第二秒",
+            "第三秒",
+        ]
+        assert updates[-1]["stable_appends"][0]["text"] == "第三秒"
+        assert updates[-1]["partial"] is None
+        assert final_events[-1]["stable_count"] == 3
+        assert [segment["text"] for segment in final_events[-1]["segments"]] == [
+            "第一秒",
+            "第二秒",
+            "第三秒",
+        ]
         assert_transcript_update_invariants(events)
 
     def test_finish_with_unaligned_tail_update_promotes_longer_final_tail(self) -> None:
@@ -2100,9 +2383,19 @@ class TestRealtimeConnectionSession:
             events.extend(session.ingest_audio(speech))
         events.extend(session.finish())
 
-        final_events = [event for event in events if event.get("type") == "transcript_final"]
-        assert [segment['text'] for segment in stable_appends(events)] == ['第一秒', '第二秒', '第三秒尾巴']
-        assert [segment['text'] for segment in final_events[-1]['segments']] == ['第一秒', '第二秒', '第三秒尾巴']
+        final_events = [
+            event for event in events if event.get("type") == "transcript_final"
+        ]
+        assert [segment["text"] for segment in stable_appends(events)] == [
+            "第一秒",
+            "第二秒",
+            "第三秒尾巴",
+        ]
+        assert [segment["text"] for segment in final_events[-1]["segments"]] == [
+            "第一秒",
+            "第二秒",
+            "第三秒尾巴",
+        ]
         assert_transcript_update_invariants(events)
 
     def test_flush_stabilizes_tail_without_resetting_streaming_state(self) -> None:
@@ -2114,8 +2407,8 @@ class TestRealtimeConnectionSession:
         flush_events = session.flush()
         resume_events = session.ingest_audio(speech)
 
-        assert [segment['text'] for segment in stable_appends(flush_events)] == ['尾句']
-        assert partial_texts(resume_events) == ['后续']
+        assert [segment["text"] for segment in stable_appends(flush_events)] == ["尾句"]
+        assert partial_texts(resume_events) == ["后续"]
         assert model.finish_calls == 1
         assert model.init_count == 1
 
@@ -2129,14 +2422,14 @@ class TestRealtimeConnectionSession:
         resume_events = session.ingest_audio(speech)
 
         stable = stable_appends(switch_events)
-        assert [segment['text'] for segment in stable] == ['hello']
-        assert stable[0]['language'] == 'Chinese'
-        assert session.config.language == 'English'
-        assert partial_texts(resume_events) == ['world']
+        assert [segment["text"] for segment in stable] == ["hello"]
+        assert stable[0]["language"] == "Chinese"
+        assert session.config.language == "English"
+        assert partial_texts(resume_events) == ["world"]
         assert model.finish_calls == 1
         assert model.init_count == 2
-        assert model.init_kwargs[0]['language'] == 'Chinese'
-        assert model.init_kwargs[1]['language'] == 'English'
+        assert model.init_kwargs[0]["language"] == "Chinese"
+        assert model.init_kwargs[1]["language"] == "English"
         assert_transcript_update_invariants(switch_events + resume_events)
 
     def test_set_language_none_returns_future_asr_to_auto_language(self) -> None:
@@ -2149,9 +2442,11 @@ class TestRealtimeConnectionSession:
         session.ingest_audio(speech)
 
         assert session.config.language is None
-        assert model.init_kwargs[1]['language'] is None
+        assert model.init_kwargs[1]["language"] is None
 
-    def test_forced_flush_stabilizes_one_speech_segment_without_punctuation_split(self) -> None:
+    def test_forced_flush_stabilizes_one_speech_segment_without_punctuation_split(
+        self,
+    ) -> None:
         model = FakeStreamingModel(outputs=[""], finish_text="第一句。第二句。尾巴")
         session = make_session(model)
         speech = np.ones(16_000, dtype=np.float32) * 0.2
@@ -2159,7 +2454,9 @@ class TestRealtimeConnectionSession:
         session.ingest_audio(speech)
         events = session.flush()
 
-        assert [segment['text'] for segment in stable_appends(events)] == ['第一句。第二句。尾巴']
+        assert [segment["text"] for segment in stable_appends(events)] == [
+            "第一句。第二句。尾巴"
+        ]
 
     def test_finish_feeds_received_tail_even_below_asr_cadence(self) -> None:
         model = FakeStreamingModel(outputs=["前段", "前段后段"], finish_text="前段后段")
@@ -2172,10 +2469,12 @@ class TestRealtimeConnectionSession:
         events = session.finish()
 
         assert model.stream_audio_lengths == [16000, 3840]
-        assert [segment['text'] for segment in stable_appends(events)] == ['前段后段']
+        assert [segment["text"] for segment in stable_appends(events)] == ["前段后段"]
 
     def test_low_energy_audio_between_speech_is_not_dropped(self) -> None:
-        model = FakeStreamingModel(outputs=["前半", "前半低能量后半"], finish_text="前半低能量后半")
+        model = FakeStreamingModel(
+            outputs=["前半", "前半低能量后半"], finish_text="前半低能量后半"
+        )
         session = make_session(model)
         speech = np.ones(16_000, dtype=np.float32) * 0.2
         low_energy = np.zeros(16_000, dtype=np.float32)
@@ -2183,7 +2482,7 @@ class TestRealtimeConnectionSession:
         session.ingest_audio(speech)
         events = session.ingest_audio(low_energy)
 
-        assert partial_texts(events) == ['前半低能量后半']
+        assert partial_texts(events) == ["前半低能量后半"]
         assert model.stream_audio_lengths == [16000, 16000]
 
     def test_short_pause_is_promoted_when_speech_resumes(self) -> None:
@@ -2197,11 +2496,13 @@ class TestRealtimeConnectionSession:
         pause_events = session.ingest_audio(short_pause)
         resume_events = session.ingest_audio(speech_two)
 
-        assert partial_texts(pause_events + resume_events) == ['前半后半']
+        assert partial_texts(pause_events + resume_events) == ["前半后半"]
         assert model.stream_audio_lengths == [16000, 16000]
 
     def test_large_transport_frame_is_split_before_asr_cadence(self) -> None:
-        model = FakeStreamingModel(outputs=["第一段", "第一段第二段"], finish_text="第一段第二段尾段")
+        model = FakeStreamingModel(
+            outputs=["第一段", "第一段第二段"], finish_text="第一段第二段尾段"
+        )
         session = make_session(model)
         payload = np.concatenate(
             [
@@ -2215,7 +2516,9 @@ class TestRealtimeConnectionSession:
         events = session.ingest_audio(payload)
         flush_events = session.flush()
 
-        assert [segment['text'] for segment in stable_appends(events + flush_events)] == ['第一段第二段尾段']
+        assert [
+            segment["text"] for segment in stable_appends(events + flush_events)
+        ] == ["第一段第二段尾段"]
         assert model.init_count == 1
         assert model.stream_audio_lengths == [16000, 16000, 8000]
 
@@ -2227,12 +2530,14 @@ class TestRealtimeConnectionSession:
         session.ingest_audio(speech)
         events = session.finish()
 
-        final_events = [event for event in events if event["type"] == "transcript_final"]
+        final_events = [
+            event for event in events if event["type"] == "transcript_final"
+        ]
         assert len(final_events) == 1
-        assert final_events[0]['stable_count'] == 1
-        assert final_events[0]['segments'][0]['text'] == '尾句'
-        assert 'final' not in {event['type'] for event in events}
-        assert not {'partial', 'committed'} & {str(event['type']) for event in events}
+        assert final_events[0]["stable_count"] == 1
+        assert final_events[0]["segments"][0]["text"] == "尾句"
+        assert "final" not in {event["type"] for event in events}
+        assert not {"partial", "committed"} & {str(event["type"]) for event in events}
         assert_transcript_update_invariants(events)
 
 
@@ -2268,7 +2573,10 @@ class TestSileroVadAdapter:
         with pytest.raises(ValueError):
             SileroVadConfig(threshold=0.5, negative_threshold=0.0)
         # A valid hysteresis gap is accepted.
-        assert SileroVadConfig(threshold=0.5, negative_threshold=0.3).negative_threshold == 0.3
+        assert (
+            SileroVadConfig(threshold=0.5, negative_threshold=0.3).negative_threshold
+            == 0.3
+        )
 
     def test_buffers_until_silero_chunk_is_complete(self) -> None:
         model = FakeVadModel([0.8])

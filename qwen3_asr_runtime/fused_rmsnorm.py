@@ -7,6 +7,7 @@ reduction.
 
 Enable with TransformersASRBackend.from_pretrained(..., fused_rmsnorm=True).
 """
+
 from __future__ import annotations
 
 import torch
@@ -32,7 +33,11 @@ def patch_model_rmsnorms(model) -> int:
         # Match by class name substring so we catch both Qwen3ASRTextRMSNorm
         # (audio encoder) and Qwen3ASRThinkerTextRMSNorm (text decoder) without
         # importing the model file here.
-        if "RMSNorm" in cls_name and hasattr(m, "weight") and hasattr(m, "variance_epsilon"):
+        if (
+            "RMSNorm" in cls_name
+            and hasattr(m, "weight")
+            and hasattr(m, "variance_epsilon")
+        ):
             m.forward = fused_rmsnorm_forward.__get__(m, type(m))
             count += 1
     return count

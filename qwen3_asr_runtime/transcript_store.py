@@ -59,7 +59,9 @@ class TranscriptStore:
     snapshot of the newest ASR text that may still be rewritten.
     """
 
-    def __init__(self, transcript_id: str = "default", *, keep_segments: bool = True) -> None:
+    def __init__(
+        self, transcript_id: str = "default", *, keep_segments: bool = True
+    ) -> None:
         self.state = TranscriptState(id=str(transcript_id))
         self.keep_segments = bool(keep_segments)
         self._next_segment_index = 1
@@ -105,7 +107,9 @@ class TranscriptStore:
             raise ValueError("segment text must not be empty")
 
         if (start_ms is None) != (end_ms is None):
-            raise ValueError("segment timing must include both start_ms and end_ms, or neither")
+            raise ValueError(
+                "segment timing must include both start_ms and end_ms, or neither"
+            )
         if start_ms is None:
             start = None
             end = None
@@ -135,7 +139,9 @@ class TranscriptStore:
 
     @_synchronized
     def replace_partial(self, segment: PartialSegment | None) -> bool:
-        normalized = segment if segment is not None and str(segment.text or "").strip() else None
+        normalized = (
+            segment if segment is not None and str(segment.text or "").strip() else None
+        )
         if normalized == self.state.partial:
             return False
         self.state.partial = normalized
@@ -164,8 +170,12 @@ class TranscriptStore:
             "revision": self.state.revision,
             "stable_base": int(stable_base),
             "stable_count": self.stable_count,
-            "stable_appends": [self._stable_segment_payload(segment) for segment in stable_appends],
-            "partial": asdict(self.state.partial) if self.state.partial is not None else None,
+            "stable_appends": [
+                self._stable_segment_payload(segment) for segment in stable_appends
+            ],
+            "partial": asdict(self.state.partial)
+            if self.state.partial is not None
+            else None,
         }
 
     @_synchronized
@@ -213,7 +223,10 @@ class TranscriptStore:
             "stable_count": self.stable_count,
         }
         if self.keep_segments:
-            payload["segments"] = [self._stable_segment_payload(segment) for segment in self.state.stable_segments]
+            payload["segments"] = [
+                self._stable_segment_payload(segment)
+                for segment in self.state.stable_segments
+            ]
         return payload
 
     def _find_stable_segment(self, source_segment_id: str) -> StableSegment | None:
@@ -230,7 +243,9 @@ class TranscriptStore:
         for segment in self.state.stable_segments:
             if segment.index <= after_index:
                 continue
-            if segment.start_ms is not None and (best is None or segment.start_ms < best):
+            if segment.start_ms is not None and (
+                best is None or segment.start_ms < best
+            ):
                 best = int(segment.start_ms)
         return best
 

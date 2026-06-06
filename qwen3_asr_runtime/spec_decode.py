@@ -16,6 +16,7 @@ token at a time) by bf16 ε. That drift propagates through the text decoder's
 occasional homophone or punctuation swap vs a plain decode. Validate quality
 with a local CER sweep before enabling new presets by default.
 """
+
 from __future__ import annotations
 
 from typing import Any, List, Optional, Sequence
@@ -30,11 +31,11 @@ from .decode_runtime import _resolve_eos_token_ids
 def spec_decode_generate(
     thinker: Any,
     *,
-    input_ids: torch.Tensor,            # [1, prompt_len] (prompt only)
+    input_ids: torch.Tensor,  # [1, prompt_len] (prompt only)
     input_features: Optional[torch.Tensor],
-    attention_mask: torch.Tensor,       # [1, prompt_len]
+    attention_mask: torch.Tensor,  # [1, prompt_len]
     feature_attention_mask: Optional[torch.Tensor],
-    draft_ids: Sequence[int],           # token ids to verify; must be non-empty
+    draft_ids: Sequence[int],  # token ids to verify; must be non-empty
     max_new_tokens: int,
     eos_token_id: Any = None,
     stats: Optional[dict[str, int]] = None,
@@ -70,8 +71,7 @@ def spec_decode_generate(
     draft_t = torch.tensor([draft], dtype=input_ids.dtype, device=device)
     ext_input_ids = torch.cat([input_ids, draft_t], dim=1)
     ext_attention_mask = torch.cat(
-        [attention_mask,
-         torch.ones((1, K), dtype=attention_mask.dtype, device=device)],
+        [attention_mask, torch.ones((1, K), dtype=attention_mask.dtype, device=device)],
         dim=1,
     )
     ext_len = prompt_len + K
@@ -93,8 +93,8 @@ def spec_decode_generate(
     # Positions of interest: [prompt_len - 1 .. ext_len - 1]. These give the
     # model's argmax for "next token at position prompt_len..ext_len" i.e. the
     # K+1 candidates over (draft[0], draft[1], ..., draft[K-1], next-after-K).
-    verify_logits = out.logits[0, :, :]                         # [K+1, V]
-    verify_argmax = verify_logits.argmax(dim=-1)                # [K+1]
+    verify_logits = out.logits[0, :, :]  # [K+1, V]
+    verify_argmax = verify_logits.argmax(dim=-1)  # [K+1]
     preds = verify_argmax.tolist()
 
     # Compare preds[0..K-1] against draft[0..K-1].
@@ -127,7 +127,9 @@ def spec_decode_generate(
     # Rope deltas produced during prefill above. Use them for the decode loop.
     rope_deltas = thinker.rope_deltas
     if rope_deltas is None:
-        raise RuntimeError("thinker.rope_deltas missing after prefill; cannot continue decode.")
+        raise RuntimeError(
+            "thinker.rope_deltas missing after prefill; cannot continue decode."
+        )
 
     # Crop cache to the point right after the accepted prefix. That position
     # is (prompt_len + accepted). The bonus/reject token (next_id) has not
@@ -138,7 +140,9 @@ def spec_decode_generate(
     # Build running attention_mask that matches the kept cache length plus
     # however many decode tokens we've generated. For the decode loop we grow
     # it one slot per step.
-    running_mask = torch.ones((1, effective_len), dtype=attention_mask.dtype, device=device)
+    running_mask = torch.ones(
+        (1, effective_len), dtype=attention_mask.dtype, device=device
+    )
 
     # Decode loop -- same structure as a plain HF causal LM generate.
     cur_len = effective_len  # cache length seen so far (not counting next_id)
@@ -175,7 +179,9 @@ def _build_output(input_ids: torch.Tensor, generated: Sequence[int]) -> torch.Te
     out = torch.empty(1, total, dtype=input_ids.dtype, device=input_ids.device)
     out[:, :prompt_len] = input_ids
     if generated:
-        out[0, prompt_len:] = torch.tensor(list(generated), dtype=input_ids.dtype, device=input_ids.device)
+        out[0, prompt_len:] = torch.tensor(
+            list(generated), dtype=input_ids.dtype, device=input_ids.device
+        )
     return out
 
 

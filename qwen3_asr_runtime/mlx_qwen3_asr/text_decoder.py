@@ -11,6 +11,7 @@ MRoPE grid: get_rope_index assigns the same position to all three rope
 dimensions, so the interleaved MRoPE reduces to standard RoPE. Output parity
 against the upstream transformers model is verified by tools/parity_mlx_vs_hf.py.
 """
+
 from __future__ import annotations
 
 from typing import List, Optional
@@ -29,12 +30,16 @@ class TextAttention(nn.Module):
         self.head_dim = cfg.head_dim
         self.n_heads = cfg.num_attention_heads
         self.n_kv = cfg.num_key_value_heads
-        self.scale = self.head_dim ** -0.5
+        self.scale = self.head_dim**-0.5
         bias = cfg.attention_bias
-        self.q_proj = nn.Linear(cfg.hidden_size, self.n_heads * self.head_dim, bias=bias)
+        self.q_proj = nn.Linear(
+            cfg.hidden_size, self.n_heads * self.head_dim, bias=bias
+        )
         self.k_proj = nn.Linear(cfg.hidden_size, self.n_kv * self.head_dim, bias=bias)
         self.v_proj = nn.Linear(cfg.hidden_size, self.n_kv * self.head_dim, bias=bias)
-        self.o_proj = nn.Linear(self.n_heads * self.head_dim, cfg.hidden_size, bias=bias)
+        self.o_proj = nn.Linear(
+            self.n_heads * self.head_dim, cfg.hidden_size, bias=bias
+        )
         self.q_norm = RMSNorm(self.head_dim, eps=cfg.rms_norm_eps)
         self.k_norm = RMSNorm(self.head_dim, eps=cfg.rms_norm_eps)
         # ASR MRoPE collapses to standard RoPE (identical position per grid dim).
@@ -42,9 +47,17 @@ class TextAttention(nn.Module):
 
     def __call__(self, x: mx.array, cache: Optional[KVCache]):
         b, length, _ = x.shape
-        q = self.q_norm(self.q_proj(x).reshape(b, length, self.n_heads, self.head_dim)).transpose(0, 2, 1, 3)
-        k = self.k_norm(self.k_proj(x).reshape(b, length, self.n_kv, self.head_dim)).transpose(0, 2, 1, 3)
-        v = self.v_proj(x).reshape(b, length, self.n_kv, self.head_dim).transpose(0, 2, 1, 3)
+        q = self.q_norm(
+            self.q_proj(x).reshape(b, length, self.n_heads, self.head_dim)
+        ).transpose(0, 2, 1, 3)
+        k = self.k_norm(
+            self.k_proj(x).reshape(b, length, self.n_kv, self.head_dim)
+        ).transpose(0, 2, 1, 3)
+        v = (
+            self.v_proj(x)
+            .reshape(b, length, self.n_kv, self.head_dim)
+            .transpose(0, 2, 1, 3)
+        )
 
         offset = cache.offset if cache is not None else 0
         q = self.rope(q, offset=offset)

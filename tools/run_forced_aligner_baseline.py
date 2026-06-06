@@ -24,22 +24,40 @@ from qwen3_asr_runtime.utils import SAMPLE_RATE, normalize_audios
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a reproducible Qwen3 forced-aligner baseline.")
-    parser.add_argument("--implementation", required=True, choices=["local", "official"])
-    parser.add_argument("--official-repo", default="Qwen3-ASR", help="Path to the upstream Qwen3-ASR checkout.")
-    parser.add_argument("--model", required=True, help="Forced aligner checkpoint path or repo id.")
+    parser = argparse.ArgumentParser(
+        description="Run a reproducible Qwen3 forced-aligner baseline."
+    )
+    parser.add_argument(
+        "--implementation", required=True, choices=["local", "official"]
+    )
+    parser.add_argument(
+        "--official-repo",
+        default="Qwen3-ASR",
+        help="Path to the upstream Qwen3-ASR checkout.",
+    )
+    parser.add_argument(
+        "--model", required=True, help="Forced aligner checkpoint path or repo id."
+    )
     parser.add_argument("--audio", required=True, help="Local audio file.")
-    parser.add_argument("--srt", required=True, help="Reference SRT used to build alignment windows.")
+    parser.add_argument(
+        "--srt", required=True, help="Reference SRT used to build alignment windows."
+    )
     parser.add_argument("--language", default="Chinese")
     parser.add_argument("--max-audio-sec", type=float, default=600.0)
     parser.add_argument("--window-sec", type=float, default=90.0)
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--device-map", default="cuda:0")
-    parser.add_argument("--dtype", default="bfloat16", choices=["float32", "float16", "bfloat16"])
+    parser.add_argument(
+        "--dtype", default="bfloat16", choices=["float32", "float16", "bfloat16"]
+    )
     parser.add_argument("--attn-implementation", default="flash_attention_2")
     parser.add_argument("--output-json", required=True)
-    parser.add_argument("--compare-to", default=None, help="Optional official/local JSON to compare against.")
+    parser.add_argument(
+        "--compare-to",
+        default=None,
+        help="Optional official/local JSON to compare against.",
+    )
     return parser.parse_args()
 
 
@@ -61,7 +79,9 @@ def _sha256(path: str) -> str:
 
 def _git(path: Path, *args: str) -> Optional[str]:
     try:
-        out = subprocess.check_output(["git", "-C", str(path), *args], text=True, stderr=subprocess.DEVNULL)
+        out = subprocess.check_output(
+            ["git", "-C", str(path), *args], text=True, stderr=subprocess.DEVNULL
+        )
     except Exception:
         return None
     return out.strip()
@@ -91,11 +111,15 @@ def _load_srt(path: str, *, max_audio_sec: float) -> List[dict[str, Any]]:
         end = _parse_srt_time(end_raw)
         if start >= max_audio_sec:
             continue
-        entries.append({"start": start, "end": min(end, max_audio_sec), "text": "".join(raw[2:])})
+        entries.append(
+            {"start": start, "end": min(end, max_audio_sec), "text": "".join(raw[2:])}
+        )
     return entries
 
 
-def _window_groups(entries: List[dict[str, Any]], *, window_sec: float) -> Iterable[List[dict[str, Any]]]:
+def _window_groups(
+    entries: List[dict[str, Any]], *, window_sec: float
+) -> Iterable[List[dict[str, Any]]]:
     group: List[dict[str, Any]] = []
     group_start = 0.0
     for entry in entries:
@@ -154,7 +178,12 @@ def _token_count(aligner: Any, text: str, language: str) -> int:
     return len(aligner.aligner_processor.encode_timestamp(text, language)[0])
 
 
-def _run_once(aligner: Any, wav: np.ndarray, entries: List[dict[str, Any]], args: argparse.Namespace) -> dict[str, Any]:
+def _run_once(
+    aligner: Any,
+    wav: np.ndarray,
+    entries: List[dict[str, Any]],
+    args: argparse.Namespace,
+) -> dict[str, Any]:
     windows = []
     sentences: list[dict[str, Any]] = []
     for index, group in enumerate(_window_groups(entries, window_sec=args.window_sec)):
@@ -162,9 +191,13 @@ def _run_once(aligner: Any, wav: np.ndarray, entries: List[dict[str, Any]], args
         end = float(group[-1]["end"])
         crop = wav[int(start * SAMPLE_RATE) : int(end * SAMPLE_RATE)]
         text = " ".join(str(entry["text"]) for entry in group)
-        result = aligner.align(audio=(crop, SAMPLE_RATE), text=text, language=args.language)[0]
+        result = aligner.align(
+            audio=(crop, SAMPLE_RATE), text=text, language=args.language
+        )[0]
         items = _result_items(result)
-        windows.append({"index": index, "start": start, "end": end, "text": text, "items": items})
+        windows.append(
+            {"index": index, "start": start, "end": end, "text": text, "items": items}
+        )
 
         cursor = 0
         for entry in group:
@@ -229,7 +262,9 @@ def _metadata(args: argparse.Namespace) -> dict[str, Any]:
             "torch": torch.__version__,
             "cuda_available": torch.cuda.is_available(),
             "cuda": torch.version.cuda,
-            "device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+            "device_name": torch.cuda.get_device_name(0)
+            if torch.cuda.is_available()
+            else None,
         },
     }
 
@@ -244,7 +279,9 @@ def _assert_same(expected: dict[str, Any], actual: dict[str, Any]) -> dict[str, 
                         f"EXPECTED: {_short_repr(left)}\n"
                         f"ACTUAL  : {_short_repr(right)}"
                     )
-            raise AssertionError(f"{key} length mismatch: expected={len(expected[key])} actual={len(actual[key])}")
+            raise AssertionError(
+                f"{key} length mismatch: expected={len(expected[key])} actual={len(actual[key])}"
+            )
     return {
         "status": "matched",
         "windows": len(actual["windows"]),
@@ -298,10 +335,25 @@ def main() -> None:
 
     output = Path(args.output_json)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps({k: payload[k] for k in ("implementation", "entries", "load_sec", "time_sec")}, ensure_ascii=False, indent=2))
+    output.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print(
+        json.dumps(
+            {
+                k: payload[k]
+                for k in ("implementation", "entries", "load_sec", "time_sec")
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     if "comparison" in payload:
-        print(json.dumps({"comparison": payload["comparison"]}, ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                {"comparison": payload["comparison"]}, ensure_ascii=False, indent=2
+            )
+        )
 
 
 if __name__ == "__main__":

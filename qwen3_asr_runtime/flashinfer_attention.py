@@ -13,6 +13,7 @@ one-layer output matched SDPA within BF16 noise, but the multi-layer
 accumulated behavior on real Qwen3-ASR inputs diverged dramatically (CER
 jumped from ~10% to >370%). That path is intentionally disabled.
 """
+
 from __future__ import annotations
 
 import math
@@ -66,6 +67,7 @@ def _have_flashinfer() -> bool:
     if _FLASHINFER_AVAILABLE is None:
         try:
             import flashinfer  # noqa: F401
+
             _FLASHINFER_AVAILABLE = True
         except Exception:
             _FLASHINFER_AVAILABLE = False
@@ -84,17 +86,25 @@ def _sdpa_fallback(
     **kwargs: Any,
 ):
     from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
     return sdpa_attention_forward(
-        module, query, key, value, attention_mask,
-        dropout=dropout, scaling=scaling, is_causal=is_causal, **kwargs,
+        module,
+        query,
+        key,
+        value,
+        attention_mask,
+        dropout=dropout,
+        scaling=scaling,
+        is_causal=is_causal,
+        **kwargs,
     )
 
 
 def flashinfer_attention_forward(
     module: Any,
-    query: torch.Tensor,          # [B, Hq, Lq, D]
-    key: torch.Tensor,            # [B, Hkv, Lkv, D]
-    value: torch.Tensor,          # [B, Hkv, Lkv, D]
+    query: torch.Tensor,  # [B, Hq, Lq, D]
+    key: torch.Tensor,  # [B, Hkv, Lkv, D]
+    value: torch.Tensor,  # [B, Hkv, Lkv, D]
     attention_mask: Optional[torch.Tensor],
     dropout: float = 0.0,
     scaling: Optional[float] = None,
@@ -112,16 +122,25 @@ def flashinfer_attention_forward(
         or dropout != 0.0
         or query.device.type != "cuda"
     ):
-        return _sdpa_fallback(module, query, key, value, attention_mask,
-                              dropout, scaling, is_causal, **kwargs)
+        return _sdpa_fallback(
+            module,
+            query,
+            key,
+            value,
+            attention_mask,
+            dropout,
+            scaling,
+            is_causal,
+            **kwargs,
+        )
 
     # StaticCache stores k/v as HND: [num_kv_heads, kv_len, head_dim].
     # Pass that layout directly so decode avoids a per-layer transpose+copy.
     import flashinfer
 
-    q = query.squeeze(0).squeeze(1).contiguous()                 # [Hq, D]
-    k = key.squeeze(0)                                           # [Hkv, Lkv, D]
-    v = value.squeeze(0)                                         # [Hkv, Lkv, D]
+    q = query.squeeze(0).squeeze(1).contiguous()  # [Hq, D]
+    k = key.squeeze(0)  # [Hkv, Lkv, D]
+    v = value.squeeze(0)  # [Hkv, Lkv, D]
     if not k.is_contiguous():
         k = k.contiguous()
     if not v.is_contiguous():
@@ -133,14 +152,16 @@ def flashinfer_attention_forward(
 
     # window_left: not set here (full attention)
     out = flashinfer.single_decode_with_kv_cache(
-        q, k, v,
+        q,
+        k,
+        v,
         kv_layout="HND",
         sm_scale=sm_scale,
         use_tensor_cores=False,
     )
     # out shape: [qo_len=1-impled? or Hq, D] -> single_decode returns [Hq, D]
     # We need [B, Hq, Lq, D] to match the upstream attention contract.
-    out = out.view(1, 1, Hq, D).transpose(1, 2).contiguous()      # [B=1, Hq, Lq=1, D]
+    out = out.view(1, 1, Hq, D).transpose(1, 2).contiguous()  # [B=1, Hq, Lq=1, D]
     return out, None
 
 
@@ -160,6 +181,7 @@ def register_flashinfer(name: str = "flashinfer") -> bool:
             "flashinfer=True requires the `ninja` executable; install dependencies with `uv sync --python 3.12`."
         )
     from transformers.modeling_utils import AttentionInterface
+
     AttentionInterface.register(name, flashinfer_attention_forward)
     return True
 

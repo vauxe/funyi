@@ -18,6 +18,7 @@ Example:
         --reference-model <bf16 forced-aligner> \
         --wav local_data/clip.wav --text "..." --language Chinese
 """
+
 from __future__ import annotations
 
 import argparse
@@ -45,30 +46,59 @@ def _load_clip(path: str, seconds: float) -> np.ndarray:
 
 def _items_to_list(result) -> list[dict]:
     return [
-        {"text": it.text, "start_time": float(it.start_time), "end_time": float(it.end_time)}
+        {
+            "text": it.text,
+            "start_time": float(it.start_time),
+            "end_time": float(it.end_time),
+        }
         for it in result.items
     ]
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="mlx-community/Qwen3-ForcedAligner-0.6B-4bit", help="MLX (4bit) aligner checkpoint")
+    ap.add_argument(
+        "--model",
+        default="mlx-community/Qwen3-ForcedAligner-0.6B-4bit",
+        help="MLX (4bit) aligner checkpoint",
+    )
     ap.add_argument("--dtype", default="bfloat16", help="MLX compute dtype")
     ap.add_argument("--wav", required=True, help="audio clip")
     ap.add_argument("--text", required=True, help="transcript to align")
     ap.add_argument("--language", default="Chinese")
-    ap.add_argument("--seconds", type=float, default=0.0, help="trim clip to N seconds (0 = full)")
-    ap.add_argument("--reference-model", default=None, help="bf16 torch forced-aligner for the live reference")
-    ap.add_argument("--reference-json", default=None, help="JSON list of reference items to gate against")
-    ap.add_argument("--max-drift", type=float, default=0.25, help="gate: max |Δstart|/|Δend| in seconds")
-    ap.add_argument("--no-gate", action="store_true", help="run MLX aligner only; print items + monotonicity")
+    ap.add_argument(
+        "--seconds", type=float, default=0.0, help="trim clip to N seconds (0 = full)"
+    )
+    ap.add_argument(
+        "--reference-model",
+        default=None,
+        help="bf16 torch forced-aligner for the live reference",
+    )
+    ap.add_argument(
+        "--reference-json",
+        default=None,
+        help="JSON list of reference items to gate against",
+    )
+    ap.add_argument(
+        "--max-drift",
+        type=float,
+        default=0.25,
+        help="gate: max |Δstart|/|Δend| in seconds",
+    )
+    ap.add_argument(
+        "--no-gate",
+        action="store_true",
+        help="run MLX aligner only; print items + monotonicity",
+    )
     args = ap.parse_args()
 
     from qwen3_asr_runtime.mlx_forced_aligner import MLXForcedAlignerBackend
 
     wav = _load_clip(args.wav, args.seconds)
     aligner = MLXForcedAlignerBackend.from_pretrained(args.model, dtype=args.dtype)
-    mlx_items = _items_to_list(aligner.align((wav, SAMPLE_RATE), args.text, args.language)[0])
+    mlx_items = _items_to_list(
+        aligner.align((wav, SAMPLE_RATE), args.text, args.language)[0]
+    )
 
     print(f"\n=== MLX aligner: {len(mlx_items)} item(s) ===")
     for it in mlx_items:
@@ -81,7 +111,11 @@ def main() -> int:
     print(f"  monotonic = {monotonic}")
 
     if args.no_gate or (args.reference_model is None and args.reference_json is None):
-        print("\ngate skipped (no reference)" if not args.no_gate else "\ngate skipped (--no-gate)")
+        print(
+            "\ngate skipped (no reference)"
+            if not args.no_gate
+            else "\ngate skipped (--no-gate)"
+        )
         return 0 if monotonic else 1
 
     if args.reference_json:
@@ -90,11 +124,15 @@ def main() -> int:
         import torch  # noqa: F401
         from qwen3_asr_runtime.forced_aligner import Qwen3ForcedAlignerBackend
 
-        print(f"\n[live reference] loading torch {args.reference_model} on CPU (float32) ...")
+        print(
+            f"\n[live reference] loading torch {args.reference_model} on CPU (float32) ..."
+        )
         ref = Qwen3ForcedAlignerBackend.from_pretrained(
             args.reference_model, device_map="cpu", dtype=torch.float32
         )
-        ref_items = _items_to_list(ref.align((wav, SAMPLE_RATE), args.text, args.language)[0])
+        ref_items = _items_to_list(
+            ref.align((wav, SAMPLE_RATE), args.text, args.language)[0]
+        )
 
     if len(mlx_items) != len(ref_items):
         print(f"\nWORD COUNT MISMATCH: MLX={len(mlx_items)} vs ref={len(ref_items)}")
@@ -103,11 +141,18 @@ def main() -> int:
 
     max_drift = 0.0
     for m, r in zip(mlx_items, ref_items):
-        d = max(abs(m["start_time"] - float(r["start_time"])), abs(m["end_time"] - float(r["end_time"])))
+        d = max(
+            abs(m["start_time"] - float(r["start_time"])),
+            abs(m["end_time"] - float(r["end_time"])),
+        )
         max_drift = max(max_drift, d)
     print(f"\nmax timestamp drift = {max_drift:.3f}s over {len(mlx_items)} item(s)")
     ok = monotonic and max_drift <= args.max_drift
-    print("GATE:", "PASS" if ok else "FAIL", f"(word count match, drift threshold {args.max_drift}s)")
+    print(
+        "GATE:",
+        "PASS" if ok else "FAIL",
+        f"(word count match, drift threshold {args.max_drift}s)",
+    )
     return 0 if ok else 1
 
 

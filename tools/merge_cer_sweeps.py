@@ -9,6 +9,7 @@ Usage:
               artifacts/cer_graph.json=graph \
       --output artifacts/cer_merged.json
 """
+
 from __future__ import annotations
 
 import argparse
@@ -32,13 +33,18 @@ def _same_float(left: Any, right: Any) -> bool:
     return abs(float(left) - float(right)) <= 1e-6
 
 
-def _validate_compatible_row(existing: Dict[str, Any], row: Dict[str, Any], *, label: str, file: str) -> None:
+def _validate_compatible_row(
+    existing: Dict[str, Any], row: Dict[str, Any], *, label: str, file: str
+) -> None:
     mismatches = {}
     for key in ("start_sec", "duration_sec"):
         if not _same_float(existing.get(key), row.get(key)):
             mismatches[key] = {"existing": existing.get(key), "incoming": row.get(key)}
     incoming_ref_empty = row.get("ref_empty", row.get("ref_chars") == 0)
-    for key, incoming in (("ref_chars", row.get("ref_chars")), ("ref_empty", incoming_ref_empty)):
+    for key, incoming in (
+        ("ref_chars", row.get("ref_chars")),
+        ("ref_empty", incoming_ref_empty),
+    ):
         if existing.get(key) != incoming:
             mismatches[key] = {"existing": existing.get(key), "incoming": incoming}
     if mismatches:
@@ -50,12 +56,16 @@ def _validate_compatible_row(existing: Dict[str, Any], row: Dict[str, Any], *, l
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--input", nargs="+", required=True,
-                   help="PATH=LABEL pairs, e.g. artifacts/cer_base.json=base")
+    p.add_argument(
+        "--input",
+        nargs="+",
+        required=True,
+        help="PATH=LABEL pairs, e.g. artifacts/cer_base.json=base",
+    )
     p.add_argument("--output", required=True)
     args = p.parse_args()
 
-    path_map: Dict[str, str] = {}   # label -> file
+    path_map: Dict[str, str] = {}  # label -> file
     for spec in args.input:
         file, label = spec.rsplit("=", 1)
         path_map[label] = file
@@ -93,7 +103,12 @@ def main() -> None:
                 (only_key,) = list(row["paths"].keys())
                 per_window[key]["paths"][label] = row["paths"][only_key]
 
-    rows = [per_window[k] for k in sorted(per_window, key=lambda item: (item[0], -1 if item[1] is None else item[1]))]
+    rows = [
+        per_window[k]
+        for k in sorted(
+            per_window, key=lambda item: (item[0], -1 if item[1] is None else item[1])
+        )
+    ]
 
     non_empty = [r for r in rows if not r.get("ref_empty")]
     # Fill delta_vs_base where possible
@@ -113,12 +128,24 @@ def main() -> None:
 
     summary: Dict[str, Any] = {}
     for label in labels:
-        cer_vals = [r["paths"][label]["cer"] for r in non_empty
-                    if label in r["paths"] and r["paths"][label].get("cer") is not None]
-        wall_vals = [r["paths"][label]["wall_sec"] for r in non_empty
-                     if label in r["paths"] and r["paths"][label].get("wall_sec", 0) > 0]
+        cer_vals = [
+            r["paths"][label]["cer"]
+            for r in non_empty
+            if label in r["paths"] and r["paths"][label].get("cer") is not None
+        ]
+        wall_vals = [
+            r["paths"][label]["wall_sec"]
+            for r in non_empty
+            if label in r["paths"] and r["paths"][label].get("wall_sec", 0) > 0
+        ]
         entry = {
-            "n_windows": len({int(r["idx"]) for r in non_empty if label in r["paths"] and r["paths"][label].get("cer") is not None}),
+            "n_windows": len(
+                {
+                    int(r["idx"])
+                    for r in non_empty
+                    if label in r["paths"] and r["paths"][label].get("cer") is not None
+                }
+            ),
             "n_rows": len(cer_vals),
             "cer_mean": round(mean(cer_vals), 4) if cer_vals else None,
             "cer_p50": round(median(cer_vals), 4) if cer_vals else None,

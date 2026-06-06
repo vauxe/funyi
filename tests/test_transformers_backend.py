@@ -5,7 +5,9 @@ import torch
 
 from qwen3_asr_runtime.backends.transformers import TransformersASRBackend
 from qwen3_asr_runtime.decode_runtime import CudaGraphCaptureRequired
-from qwen3_asr_runtime.hf_qwen3_asr.modeling_qwen3_asr import Qwen3ASRForConditionalGeneration
+from qwen3_asr_runtime.hf_qwen3_asr.modeling_qwen3_asr import (
+    Qwen3ASRForConditionalGeneration,
+)
 from qwen3_asr_runtime.model import Qwen3ASRModel
 
 
@@ -99,35 +101,53 @@ class _RecordingThinker:
 
 
 class TestTransformersBackendAttention:
-    def test_flashinfer_routes_thinker_configs_through_flashinfer_dispatcher(self) -> None:
+    def test_flashinfer_routes_thinker_configs_through_flashinfer_dispatcher(
+        self,
+    ) -> None:
         model = _fake_model()
 
         with (
-            patch("qwen3_asr_runtime.backends.transformers.register_flashinfer", return_value=True),
-            patch.object(TransformersASRBackend, "_default_attn_implementation", return_value="flash_attention_2"),
+            patch(
+                "qwen3_asr_runtime.backends.transformers.register_flashinfer",
+                return_value=True,
+            ),
+            patch.object(
+                TransformersASRBackend,
+                "_default_attn_implementation",
+                return_value="flash_attention_2",
+            ),
             patch(
                 "qwen3_asr_runtime.backends.transformers.AutoModel.from_pretrained",
                 return_value=model,
             ) as load_model,
-            patch("qwen3_asr_runtime.backends.transformers.AutoProcessor.from_pretrained", return_value=object()),
+            patch(
+                "qwen3_asr_runtime.backends.transformers.AutoProcessor.from_pretrained",
+                return_value=object(),
+            ),
         ):
             TransformersASRBackend.from_pretrained("dummy-model", flashinfer=True)
 
-        assert load_model.call_args.kwargs['attn_implementation'] == 'flashinfer'
-        assert model.thinker.config._attn_implementation == 'flashinfer'
-        assert model.thinker.model.config._attn_implementation == 'flashinfer'
-        assert model.thinker.audio_tower.config._attn_implementation == 'flashinfer'
+        assert load_model.call_args.kwargs["attn_implementation"] == "flashinfer"
+        assert model.thinker.config._attn_implementation == "flashinfer"
+        assert model.thinker.model.config._attn_implementation == "flashinfer"
+        assert model.thinker.audio_tower.config._attn_implementation == "flashinfer"
 
     def test_flashinfer_overrides_explicit_attention_backend(self) -> None:
         model = _fake_model()
 
         with (
-            patch("qwen3_asr_runtime.backends.transformers.register_flashinfer", return_value=True),
+            patch(
+                "qwen3_asr_runtime.backends.transformers.register_flashinfer",
+                return_value=True,
+            ),
             patch(
                 "qwen3_asr_runtime.backends.transformers.AutoModel.from_pretrained",
                 return_value=model,
             ) as load_model,
-            patch("qwen3_asr_runtime.backends.transformers.AutoProcessor.from_pretrained", return_value=object()),
+            patch(
+                "qwen3_asr_runtime.backends.transformers.AutoProcessor.from_pretrained",
+                return_value=object(),
+            ),
         ):
             TransformersASRBackend.from_pretrained(
                 "dummy-model",
@@ -135,15 +155,17 @@ class TestTransformersBackendAttention:
                 attn_implementation="flash_attention_2",
             )
 
-        assert load_model.call_args.kwargs['attn_implementation'] == 'flashinfer'
-        assert model.thinker.model.config._attn_implementation == 'flashinfer'
-        assert model.thinker.audio_tower.config._attn_implementation == 'flashinfer'
+        assert load_model.call_args.kwargs["attn_implementation"] == "flashinfer"
+        assert model.thinker.model.config._attn_implementation == "flashinfer"
+        assert model.thinker.audio_tower.config._attn_implementation == "flashinfer"
 
 
 class TestTransformersBackendGeneration:
     def test_infer_with_prompts_passes_tokenizer_pad_token_to_hf_generate(self) -> None:
         model = _RecordingGenerateModel()
-        backend = TransformersASRBackend(model=model, processor=_FakeGenerateProcessor(pad_token_id=4321))
+        backend = TransformersASRBackend(
+            model=model, processor=_FakeGenerateProcessor(pad_token_id=4321)
+        )
 
         assert backend.infer_with_prompts(
             ["prompt"],
@@ -158,7 +180,9 @@ class TestTransformersBackendGeneration:
 
     def test_cuda_graph_capture_fallback_passes_pad_token_to_hf_generate(self) -> None:
         model = _RecordingGenerateModel()
-        backend = TransformersASRBackend(model=model, processor=_FakeGenerateProcessor(pad_token_id=3141))
+        backend = TransformersASRBackend(
+            model=model, processor=_FakeGenerateProcessor(pad_token_id=3141)
+        )
         backend._cuda_graph_decoder = _FailingCudaGraphDecoder()
 
         assert backend.infer_with_prompts(
@@ -172,33 +196,53 @@ class TestTransformersBackendGeneration:
         assert model.generate_kwargs["max_new_tokens"] == 9
         assert model.generate_kwargs["logits_to_keep"] == 1
 
-    def test_resolves_pad_token_from_generation_config_when_tokenizer_has_none(self) -> None:
+    def test_resolves_pad_token_from_generation_config_when_tokenizer_has_none(
+        self,
+    ) -> None:
         model = SimpleNamespace(generation_config=SimpleNamespace(pad_token_id=9876))
         processor = SimpleNamespace(tokenizer=SimpleNamespace(pad_token_id=None))
 
-        assert TransformersASRBackend._resolve_generation_token_kwargs(model, processor) == {
+        assert TransformersASRBackend._resolve_generation_token_kwargs(
+            model, processor
+        ) == {
             "pad_token_id": 9876,
         }
 
     def test_resolves_pad_token_from_first_eos_when_no_pad_token_exists(self) -> None:
-        model = SimpleNamespace(generation_config=SimpleNamespace(pad_token_id=None, eos_token_id=[4444, 5555]))
-        processor = SimpleNamespace(tokenizer=SimpleNamespace(pad_token_id=None, eos_token_id=None))
+        model = SimpleNamespace(
+            generation_config=SimpleNamespace(
+                pad_token_id=None, eos_token_id=[4444, 5555]
+            )
+        )
+        processor = SimpleNamespace(
+            tokenizer=SimpleNamespace(pad_token_id=None, eos_token_id=None)
+        )
 
-        assert TransformersASRBackend._resolve_generation_token_kwargs(model, processor) == {
+        assert TransformersASRBackend._resolve_generation_token_kwargs(
+            model, processor
+        ) == {
             "pad_token_id": 4444,
         }
 
-    def test_resolves_pad_token_from_upstream_eos_default_when_no_token_config_exists(self) -> None:
+    def test_resolves_pad_token_from_upstream_eos_default_when_no_token_config_exists(
+        self,
+    ) -> None:
         model = SimpleNamespace()
-        processor = SimpleNamespace(tokenizer=SimpleNamespace(pad_token_id=None, eos_token_id=None))
+        processor = SimpleNamespace(
+            tokenizer=SimpleNamespace(pad_token_id=None, eos_token_id=None)
+        )
 
-        assert TransformersASRBackend._resolve_generation_token_kwargs(model, processor) == {
+        assert TransformersASRBackend._resolve_generation_token_kwargs(
+            model, processor
+        ) == {
             "pad_token_id": 151645,
         }
 
     def test_infer_with_prompts_resolves_pad_token_at_generate_time(self) -> None:
         model = _RecordingGenerateModel()
-        model.generation_config = SimpleNamespace(pad_token_id=None, eos_token_id=[4444, 5555])
+        model.generation_config = SimpleNamespace(
+            pad_token_id=None, eos_token_id=[4444, 5555]
+        )
         processor = _FakeGenerateProcessor(pad_token_id=None)
         backend = TransformersASRBackend(model=model, processor=processor)
 
@@ -213,7 +257,9 @@ class TestTransformersBackendGeneration:
         assert model.generate_kwargs is not None
         assert model.generate_kwargs["pad_token_id"] == 2222
 
-    def test_infer_with_prompts_prefers_model_config_pad_before_thinker_pad(self) -> None:
+    def test_infer_with_prompts_prefers_model_config_pad_before_thinker_pad(
+        self,
+    ) -> None:
         model = _RecordingGenerateModel()
         model.generation_config = SimpleNamespace(pad_token_id=None)
         model.config = SimpleNamespace(pad_token_id=1111)
@@ -221,7 +267,9 @@ class TestTransformersBackendGeneration:
             generation_config=SimpleNamespace(pad_token_id=2222),
             config=SimpleNamespace(pad_token_id=3333),
         )
-        backend = TransformersASRBackend(model=model, processor=_FakeGenerateProcessor(pad_token_id=None))
+        backend = TransformersASRBackend(
+            model=model, processor=_FakeGenerateProcessor(pad_token_id=None)
+        )
 
         assert backend.infer_with_prompts(
             ["prompt"],
@@ -237,19 +285,27 @@ class TestTransformersBackendGeneration:
             generation_config=SimpleNamespace(pad_token_id=None, eos_token_id=None),
             config=SimpleNamespace(pad_token_id=None, eos_token_id=[1111, 1212]),
             thinker=SimpleNamespace(
-                generation_config=SimpleNamespace(pad_token_id=None, eos_token_id=[2222, 2323]),
+                generation_config=SimpleNamespace(
+                    pad_token_id=None, eos_token_id=[2222, 2323]
+                ),
                 config=SimpleNamespace(pad_token_id=None, eos_token_id=[3333, 3434]),
             ),
         )
-        processor = SimpleNamespace(tokenizer=SimpleNamespace(pad_token_id=None, eos_token_id=None))
+        processor = SimpleNamespace(
+            tokenizer=SimpleNamespace(pad_token_id=None, eos_token_id=None)
+        )
 
-        assert TransformersASRBackend._resolve_generation_token_kwargs(model, processor) == {
+        assert TransformersASRBackend._resolve_generation_token_kwargs(
+            model, processor
+        ) == {
             "pad_token_id": 1111,
         }
 
     def test_streaming_transcribe_passes_pad_token_to_hf_generate(self) -> None:
         backend_model = _RecordingGenerateModel()
-        model = Qwen3ASRModel(model=backend_model, processor=_FakeGenerateProcessor(pad_token_id=1357))
+        model = Qwen3ASRModel(
+            model=backend_model, processor=_FakeGenerateProcessor(pad_token_id=1357)
+        )
         state = model.init_streaming_state(chunk_size_sec=1.0)
 
         model.streaming_transcribe(torch.ones(16_000).numpy(), state)
@@ -273,7 +329,9 @@ class TestTransformersBackendGeneration:
         assert thinker.generate_kwargs is not None
         assert thinker.generate_kwargs["pad_token_id"] == 2468
 
-    def test_qwen3_asr_generate_uses_call_generation_config_pad_before_eos_fallback(self) -> None:
+    def test_qwen3_asr_generate_uses_call_generation_config_pad_before_eos_fallback(
+        self,
+    ) -> None:
         thinker = _RecordingThinker()
         model = SimpleNamespace(
             thinker=thinker,
@@ -291,7 +349,9 @@ class TestTransformersBackendGeneration:
         assert thinker.generate_kwargs is not None
         assert thinker.generate_kwargs["pad_token_id"] == 7777
 
-    def test_qwen3_asr_generate_uses_call_generation_config_eos_for_pad_fallback(self) -> None:
+    def test_qwen3_asr_generate_uses_call_generation_config_eos_for_pad_fallback(
+        self,
+    ) -> None:
         thinker = _RecordingThinker()
         model = SimpleNamespace(
             thinker=thinker,
@@ -302,7 +362,9 @@ class TestTransformersBackendGeneration:
         Qwen3ASRForConditionalGeneration.generate(
             model,
             input_ids=torch.tensor([[1]], dtype=torch.long),
-            generation_config=SimpleNamespace(pad_token_id=None, eos_token_id=[7777, 8888]),
+            generation_config=SimpleNamespace(
+                pad_token_id=None, eos_token_id=[7777, 8888]
+            ),
         )
 
         assert thinker.generate_kwargs is not None
@@ -326,7 +388,9 @@ class TestTransformersBackendGeneration:
         assert thinker.generate_kwargs["pad_token_id"] == 151645
         assert thinker.generate_kwargs["eos_token_id"] == [151645, 151643]
 
-    def test_qwen3_asr_generate_falls_back_to_first_eos_token_as_pad_token(self) -> None:
+    def test_qwen3_asr_generate_falls_back_to_first_eos_token_as_pad_token(
+        self,
+    ) -> None:
         thinker = _RecordingThinker()
         model = SimpleNamespace(
             thinker=thinker,

@@ -27,8 +27,8 @@ import soundfile as sf
 from .language_support import QWEN3_ASR_MODEL_CARD_LANGUAGES
 
 AudioLike = Union[
-    str,                      # wav path / URL / base64
-    Tuple[np.ndarray, int],   # (waveform, sr)
+    str,  # wav path / URL / base64
+    Tuple[np.ndarray, int],  # (waveform, sr)
 ]
 MaybeList = Union[Any, List[Any]]
 
@@ -78,11 +78,13 @@ def validate_language(language: str) -> None:
         ValueError: If unsupported.
     """
     if language not in SUPPORTED_LANGUAGES:
-        raise ValueError(f"Unsupported language: {language}. Supported: {SUPPORTED_LANGUAGES}")
+        raise ValueError(
+            f"Unsupported language: {language}. Supported: {SUPPORTED_LANGUAGES}"
+        )
 
 
 def ensure_list(x: MaybeList) -> List[Any]:
-        return x if isinstance(x, list) else [x]
+    return x if isinstance(x, list) else [x]
 
 
 def is_url(s: str) -> bool:
@@ -176,7 +178,9 @@ def normalize_audio_input(a: AudioLike) -> np.ndarray:
 
     audio = to_mono(np.asarray(audio))
     if sr != SAMPLE_RATE:
-        audio = librosa.resample(audio, orig_sr=sr, target_sr=SAMPLE_RATE).astype(np.float32)
+        audio = librosa.resample(audio, orig_sr=sr, target_sr=SAMPLE_RATE).astype(
+            np.float32
+        )
     audio = float_range_normalize(audio)
     return audio
 
@@ -216,6 +220,7 @@ class AudioChunk:
         sr: Sampling rate.
         offset_sec: Start offset of this chunk in the original audio, in seconds.
     """
+
     orig_index: int
     chunk_index: int
     wav: np.ndarray
@@ -277,7 +282,9 @@ def split_audio_into_chunks(
             seg = wav[left:right]
             seg_abs = np.abs(seg)
 
-            window_sums = np.convolve(seg_abs, np.ones(win, dtype=np.float32), mode="valid")
+            window_sums = np.convolve(
+                seg_abs, np.ones(win, dtype=np.float32), mode="valid"
+            )
 
             min_pos = int(np.argmin(window_sums))
 
@@ -305,7 +312,9 @@ def split_audio_into_chunks(
     for c, off in chunks:
         if c.shape[0] < min_len:
             pad = min_len - int(c.shape[0])
-            c = np.pad(c, (0, pad), mode="constant", constant_values=0.0).astype(np.float32)
+            c = np.pad(c, (0, pad), mode="constant", constant_values=0.0).astype(
+                np.float32
+            )
         padded.append((c, off))
     chunks = padded
 
@@ -326,16 +335,16 @@ def detect_and_fix_repetitions(text, threshold=20):
                 res.append(s[i])
                 i += count
             else:
-                res.append(s[i:i+count])
+                res.append(s[i : i + count])
                 i += count
-        return ''.join(res)
+        return "".join(res)
 
     def fix_pattern_repeats(s, thresh, max_len=20):
         n = len(s)
         min_repeat_chars = thresh * 2
         if n < min_repeat_chars:
             return s
-            
+
         i = 0
         result = []
         while i <= n - min_repeat_chars:
@@ -343,19 +352,21 @@ def detect_and_fix_repetitions(text, threshold=20):
             for k in range(1, max_len + 1):
                 if i + k * thresh > n:
                     break
-                    
-                pattern = s[i:i+k]
+
+                pattern = s[i : i + k]
                 valid = True
                 for rep in range(1, thresh):
                     start_idx = i + rep * k
-                    if s[start_idx:start_idx+k] != pattern:
+                    if s[start_idx : start_idx + k] != pattern:
                         valid = False
                         break
-                
+
                 if valid:
                     total_rep = thresh
                     end_index = i + thresh * k
-                    while end_index + k <= n and s[end_index:end_index+k] == pattern:
+                    while (
+                        end_index + k <= n and s[end_index : end_index + k] == pattern
+                    ):
                         total_rep += 1
                         end_index += k
                     result.append(pattern)
@@ -363,7 +374,7 @@ def detect_and_fix_repetitions(text, threshold=20):
                     i = n
                     found = True
                     break
-            
+
             if found:
                 break
             else:
@@ -372,8 +383,8 @@ def detect_and_fix_repetitions(text, threshold=20):
 
         if not found:
             result.append(s[i:])
-        return ''.join(result)
-    
+        return "".join(result)
+
     text_raw = text
     text = fix_char_repeats(text_raw, threshold)
     text = fix_pattern_repeats(text, threshold)
@@ -442,7 +453,7 @@ def parse_asr_output(
             continue
         low = line.lower()
         if low.startswith(_LANG_PREFIX):
-            val = line[len(_LANG_PREFIX):].strip()
+            val = line[len(_LANG_PREFIX) :].strip()
             if val:
                 lang = normalize_language_name(val)
             break

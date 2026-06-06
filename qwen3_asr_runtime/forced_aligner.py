@@ -28,7 +28,9 @@ from .utils import (
 )
 
 
-FORCED_ALIGNER_SUPPORTED_LANGUAGES: List[str] = list(QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES)
+FORCED_ALIGNER_SUPPORTED_LANGUAGES: List[str] = list(
+    QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES
+)
 
 
 @dataclass(frozen=True)
@@ -76,7 +78,9 @@ class _TranscriptWindow:
 
 class Qwen3ForceAlignTextProcessor:
     def __init__(self) -> None:
-        ko_dict_path = os.path.join(os.path.dirname(__file__), "assets", "korean_dict_jieba.dict")
+        ko_dict_path = os.path.join(
+            os.path.dirname(__file__), "assets", "korean_dict_jieba.dict"
+        )
         ko_scores: dict[str, float] = {}
         with open(ko_dict_path, "r", encoding="utf-8") as f:
             for line in f:
@@ -132,10 +136,18 @@ class Qwen3ForceAlignTextProcessor:
         return tokens
 
     def tokenize_japanese(self, text: str) -> List[str]:
-        return [cleaned for word in nagisa.tagging(text).words if (cleaned := self.clean_token(word))]
+        return [
+            cleaned
+            for word in nagisa.tagging(text).words
+            if (cleaned := self.clean_token(word))
+        ]
 
     def tokenize_korean(self, ko_tokenizer: Any, text: str) -> List[str]:
-        return [cleaned for word in ko_tokenizer.tokenize(text) if (cleaned := self.clean_token(word))]
+        return [
+            cleaned
+            for word in ko_tokenizer.tokenize(text)
+            if (cleaned := self.clean_token(word))
+        ]
 
     def split_segment_with_chinese(self, seg: str) -> List[str]:
         tokens: List[str] = []
@@ -253,13 +265,17 @@ class Qwen3ForceAlignTextProcessor:
         return best
 
     @classmethod
-    def _fenwick_update(cls, tree: List[tuple[int, int]], idx: int, candidate: tuple[int, int]) -> None:
+    def _fenwick_update(
+        cls, tree: List[tuple[int, int]], idx: int, candidate: tuple[int, int]
+    ) -> None:
         while idx < len(tree):
             tree[idx] = cls._better_lis_candidate(tree[idx], candidate)
             idx += idx & -idx
 
     @staticmethod
-    def _better_lis_candidate(left: tuple[int, int], right: tuple[int, int]) -> tuple[int, int]:
+    def _better_lis_candidate(
+        left: tuple[int, int], right: tuple[int, int]
+    ) -> tuple[int, int]:
         if left[0] != right[0]:
             return left if left[0] > right[0] else right
         if left[1] == -1:
@@ -285,7 +301,9 @@ class Qwen3ForceAlignTextProcessor:
         input_text = "<|audio_start|><|audio_pad|><|audio_end|>" + input_text
         return word_list, input_text
 
-    def parse_timestamp(self, word_list: Sequence[str], timestamp: Any) -> List[Dict[str, Any]]:
+    def parse_timestamp(
+        self, word_list: Sequence[str], timestamp: Any
+    ) -> List[Dict[str, Any]]:
         timestamp_fixed = self.fix_timestamp(timestamp)
         timestamp_output = []
         for i, word in enumerate(word_list):
@@ -313,7 +331,9 @@ class ForcedAlignerCommon:
         text: Union[str, List[str]],
         language: Union[str, List[str]],
     ) -> List[ForcedAlignResult]:
-        return self._align_normalized(normalize_audios(audio), text=text, language=language)
+        return self._align_normalized(
+            normalize_audios(audio), text=text, language=language
+        )
 
     def align_sentence(
         self,
@@ -330,7 +350,9 @@ class ForcedAlignerCommon:
             end_time=result.items[-1].end_time,
         )
 
-    def _to_structured_items(self, timestamp_output: List[Dict[str, Any]]) -> ForcedAlignResult:
+    def _to_structured_items(
+        self, timestamp_output: List[Dict[str, Any]]
+    ) -> ForcedAlignResult:
         return ForcedAlignResult(
             items=[
                 ForcedAlignItem(
@@ -385,21 +407,37 @@ class ForcedAlignerCommon:
                     offset=start,
                     text=" ".join(segment.text for _, segment in group),
                     entries=[
-                        (idx, segment, len(self.aligner_processor.encode_timestamp(segment.text, language)[0]))
+                        (
+                            idx,
+                            segment,
+                            len(
+                                self.aligner_processor.encode_timestamp(
+                                    segment.text, language
+                                )[0]
+                            ),
+                        )
                         for idx, segment in group
                     ],
                 )
             )
 
         for window in windows:
-            result = self._align_normalized([window.audio], text=window.text, language=language)[0]
+            result = self._align_normalized(
+                [window.audio], text=window.text, language=language
+            )[0]
             cursor = 0
             for original_idx, segment, token_count in window.entries:
                 if token_count > 0 and cursor + token_count <= len(result.items):
                     outputs[original_idx] = ForcedAlignSentence(
                         text=segment.text,
-                        start_time=round(window.offset + result.items[cursor].start_time, 3),
-                        end_time=round(window.offset + result.items[cursor + token_count - 1].end_time, 3),
+                        start_time=round(
+                            window.offset + result.items[cursor].start_time, 3
+                        ),
+                        end_time=round(
+                            window.offset
+                            + result.items[cursor + token_count - 1].end_time,
+                            3,
+                        ),
                     )
                 cursor += token_count
         return outputs
@@ -410,7 +448,9 @@ class ForcedAlignerCommon:
         *,
         window_sec: float,
     ) -> Iterable[List[tuple[int, ForcedAlignTextSegment]]]:
-        ordered = sorted(enumerate(segments), key=lambda item: (item[1].start_time, item[1].end_time))
+        ordered = sorted(
+            enumerate(segments), key=lambda item: (item[1].start_time, item[1].end_time)
+        )
         group: List[tuple[int, ForcedAlignTextSegment]] = []
         group_start = 0.0
         for item in ordered:
@@ -451,7 +491,9 @@ class Qwen3ForcedAlignerBackend(ForcedAlignerCommon):
         self.timestamp_segment_time = float(model.config.timestamp_segment_time)
 
     @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path: str, **kwargs: Any) -> "Qwen3ForcedAlignerBackend":
+    def from_pretrained(
+        cls, pretrained_model_name_or_path: str, **kwargs: Any
+    ) -> "Qwen3ForcedAlignerBackend":
         register_qwen3_asr_auto_classes()
         fused_rmsnorm = bool(kwargs.pop("fused_rmsnorm", False))
         if "fused_linears" in kwargs:
@@ -484,7 +526,13 @@ class Qwen3ForcedAlignerBackend(ForcedAlignerCommon):
 
         processor_kwargs = {
             key: kwargs[key]
-            for key in ("cache_dir", "local_files_only", "revision", "token", "trust_remote_code")
+            for key in (
+                "cache_dir",
+                "local_files_only",
+                "revision",
+                "token",
+                "trust_remote_code",
+            )
             if key in kwargs
         }
         processor = AutoProcessor.from_pretrained(
@@ -492,7 +540,11 @@ class Qwen3ForcedAlignerBackend(ForcedAlignerCommon):
             fix_mistral_regex=True,
             **processor_kwargs,
         )
-        return cls(model=model, processor=processor, aligner_processor=Qwen3ForceAlignTextProcessor())
+        return cls(
+            model=model,
+            processor=processor,
+            aligner_processor=Qwen3ForceAlignTextProcessor(),
+        )
 
     @torch.inference_mode()
     def _align_normalized(
@@ -516,7 +568,9 @@ class Qwen3ForcedAlignerBackend(ForcedAlignerCommon):
         word_lists = []
         aligner_input_texts = []
         for t, lang in zip(texts, languages):
-            word_list, aligner_input_text = self.aligner_processor.encode_timestamp(t, lang)
+            word_list, aligner_input_text = self.aligner_processor.encode_timestamp(
+                t, lang
+            )
             word_lists.append(word_list)
             aligner_input_texts.append(aligner_input_text)
 
@@ -537,8 +591,12 @@ class Qwen3ForcedAlignerBackend(ForcedAlignerCommon):
         results: List[ForcedAlignResult] = []
         for row, word_list in enumerate(word_lists):
             masked_output_id = logits[row, timestamp_mask[row], :].argmax(dim=-1)
-            timestamp_ms = (masked_output_id * self.timestamp_segment_time).to("cpu").numpy()
-            timestamp_output = self.aligner_processor.parse_timestamp(word_list, timestamp_ms)
+            timestamp_ms = (
+                (masked_output_id * self.timestamp_segment_time).to("cpu").numpy()
+            )
+            timestamp_output = self.aligner_processor.parse_timestamp(
+                word_list, timestamp_ms
+            )
             for it in timestamp_output:
                 it["start_time"] = round(it["start_time"] / 1000.0, 3)
                 it["end_time"] = round(it["end_time"] / 1000.0, 3)
@@ -574,7 +632,9 @@ class Qwen3ForcedAlignerBackend(ForcedAlignerCommon):
 
     @staticmethod
     def _drop_single_full_attention_mask(inputs: Any) -> None:
-        attention_mask = inputs.get("attention_mask") if hasattr(inputs, "get") else None
+        attention_mask = (
+            inputs.get("attention_mask") if hasattr(inputs, "get") else None
+        )
         if (
             torch.is_tensor(attention_mask)
             and attention_mask.shape[0] == 1
@@ -584,7 +644,9 @@ class Qwen3ForcedAlignerBackend(ForcedAlignerCommon):
 
     @staticmethod
     def _drop_single_full_feature_mask(inputs: Any) -> None:
-        feature_attention_mask = inputs.get("feature_attention_mask") if hasattr(inputs, "get") else None
+        feature_attention_mask = (
+            inputs.get("feature_attention_mask") if hasattr(inputs, "get") else None
+        )
         if (
             torch.is_tensor(feature_attention_mask)
             and feature_attention_mask.shape[0] == 1

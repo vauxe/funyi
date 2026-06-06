@@ -25,8 +25,18 @@ from .offline_units import (
     layout_source_cues,
     timed_tokens_from_aligned_items,
 )
-from .transcription_document import TranscriptDocument, TranscriptSegment, TranscriptTranslationUnit
-from .utils import MIN_ASR_INPUT_SECONDS, SAMPLE_RATE, float_range_normalize, merge_languages, normalize_audios
+from .transcription_document import (
+    TranscriptDocument,
+    TranscriptSegment,
+    TranscriptTranslationUnit,
+)
+from .utils import (
+    MIN_ASR_INPUT_SECONDS,
+    SAMPLE_RATE,
+    float_range_normalize,
+    merge_languages,
+    normalize_audios,
+)
 
 _DEFAULT_OFFLINE_CHUNK_SEC = 120.0
 _DEFAULT_TIMESTAMP_TIMEOUT_SEC = 30.0
@@ -115,7 +125,9 @@ async def transcribe_file(
     document_language = merge_languages(languages)
     if opts.target_language:
         if translation_actor is None:
-            raise ValueError("Translation requested but no translation model is loaded.")
+            raise ValueError(
+                "Translation requested but no translation model is loaded."
+            )
         segments, document_translation_units = await _translate_units(
             segments,
             translation_units,
@@ -194,9 +206,17 @@ async def _iter_source_unit_batches(
     provisional_unit: SourceUnit | None = None
     audio_tail = np.empty(0, dtype=np.float32)
     refeed_enabled = _validate_chunk_sec(chunk_sec) >= _REFEED_MIN_CHUNK_SEC
-    max_refeed_samples = int(round(_MAX_REFEED_SEC * SAMPLE_RATE)) if refeed_enabled else 0
+    max_refeed_samples = (
+        int(round(_MAX_REFEED_SEC * SAMPLE_RATE)) if refeed_enabled else 0
+    )
     total_samples = 0
-    for chunk, offset_sec, chunk_samples, is_final_window, source_total_samples in _iter_source_audio_chunks(
+    for (
+        chunk,
+        offset_sec,
+        chunk_samples,
+        is_final_window,
+        source_total_samples,
+    ) in _iter_source_audio_chunks(
         audio_source,
         chunk_sec=chunk_sec,
     ):
@@ -250,7 +270,9 @@ async def _iter_source_unit_batches(
             )
         if is_final_window:
             units.extend(unit_builder.flush())
-        audio_tail = _append_audio_tail(audio_tail, main_audio, max_samples=max_refeed_samples)
+        audio_tail = _append_audio_tail(
+            audio_tail, main_audio, max_samples=max_refeed_samples
+        )
         yield _SourceUnitBatch(tuple(units), language, source_total_samples)
 
     flush_language = ""
@@ -275,7 +297,9 @@ def _iter_source_audio_chunks(
     path = _local_file_path(audio_source)
     if path is None:
         wav = np.asarray(normalize_audios(audio_source)[0], dtype=np.float32)
-        yield from _iter_pcm_window_chunks(iter((wav,)), chunk_sec=chunk_sec, total_samples=int(wav.shape[0]))
+        yield from _iter_pcm_window_chunks(
+            iter((wav,)), chunk_sec=chunk_sec, total_samples=int(wav.shape[0])
+        )
         return
     if _soundfile_readable(path):
         yield from _iter_file_audio_chunks(path, chunk_sec=chunk_sec)
@@ -283,7 +307,9 @@ def _iter_source_audio_chunks(
     # Video containers and other media libsndfile cannot open (mp4, mkv, mov,
     # webm, m4a, ...) are decoded to 16 kHz mono by ffmpeg and streamed straight
     # from its stdout, so no temporary file or whole-file buffer is needed.
-    yield from _iter_pcm_window_chunks(_iter_ffmpeg_pcm_blocks(path), chunk_sec=chunk_sec)
+    yield from _iter_pcm_window_chunks(
+        _iter_ffmpeg_pcm_blocks(path), chunk_sec=chunk_sec
+    )
 
 
 def _iter_pcm_window_chunks(
@@ -312,13 +338,21 @@ def _iter_pcm_window_chunks(
                 break
             block = np.asarray(block, dtype=np.float32)
             if block.shape[0]:
-                buffer = block if buffer.shape[0] == 0 else np.concatenate((buffer, block))
+                buffer = (
+                    block if buffer.shape[0] == 0 else np.concatenate((buffer, block))
+                )
         if buffer.shape[0] == 0:
             break
         is_final_window = blocks_done and buffer.shape[0] <= chunk_samples
-        actual_samples = buffer.shape[0] if is_final_window else min(chunk_samples, buffer.shape[0])
+        actual_samples = (
+            buffer.shape[0] if is_final_window else min(chunk_samples, buffer.shape[0])
+        )
         window = buffer[:actual_samples].astype(np.float32, copy=False)
-        emitted_total = total_samples if total_samples is not None else offset_samples + actual_samples
+        emitted_total = (
+            total_samples
+            if total_samples is not None
+            else offset_samples + actual_samples
+        )
         yield (
             _pad_short_chunk(window),
             offset_samples / float(SAMPLE_RATE),
@@ -343,7 +377,9 @@ def _iter_file_audio_chunks(
         if total_samples <= 0:
             return
         sample_rate = int(librosa.get_samplerate(str(path)))
-        native_frame_samples = max(1, int(round(chunk_samples * sample_rate / SAMPLE_RATE)))
+        native_frame_samples = max(
+            1, int(round(chunk_samples * sample_rate / SAMPLE_RATE))
+        )
         offset_samples = 0
         for block in librosa.stream(
             str(path),
@@ -359,7 +395,9 @@ def _iter_file_audio_chunks(
                 break
             audio = np.asarray(block, dtype=np.float32)
             if sample_rate != SAMPLE_RATE:
-                audio = librosa.resample(audio, orig_sr=sample_rate, target_sr=SAMPLE_RATE).astype(np.float32)
+                audio = librosa.resample(
+                    audio, orig_sr=sample_rate, target_sr=SAMPLE_RATE
+                ).astype(np.float32)
             audio = _fit_audio_samples(float_range_normalize(audio), actual_samples)
             is_final_window = offset_samples + actual_samples >= total_samples
             yield (
@@ -380,7 +418,9 @@ def _iter_file_audio_chunks(
         ValueError,
         EOFError,
     ) as exc:
-        raise OfflineTranscriptionInputError(f"Unsupported or unreadable media file: {path.name}") from exc
+        raise OfflineTranscriptionInputError(
+            f"Unsupported or unreadable media file: {path.name}"
+        ) from exc
 
 
 def _soundfile_readable(path: Path) -> bool:
@@ -391,27 +431,45 @@ def _soundfile_readable(path: Path) -> bool:
     return True
 
 
-def _iter_ffmpeg_pcm_blocks(path: Path, *, block_sec: float = 30.0) -> Iterator[np.ndarray]:
+def _iter_ffmpeg_pcm_blocks(
+    path: Path, *, block_sec: float = 30.0
+) -> Iterator[np.ndarray]:
     """Stream media decoded to 16 kHz mono float32 directly from ffmpeg's stdout."""
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
         raise OfflineTranscriptionInputError(
             "ffmpeg is required to decode this media file but was not found on PATH."
         )
-    block_bytes = max(1, int(round(block_sec * SAMPLE_RATE))) * 4  # float32 little-endian samples
+    block_bytes = (
+        max(1, int(round(block_sec * SAMPLE_RATE))) * 4
+    )  # float32 little-endian samples
     try:
         process = subprocess.Popen(
             [
-                ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error",
-                "-i", str(path),
-                "-vn", "-ac", "1", "-ar", str(SAMPLE_RATE), "-f", "f32le", "pipe:1",
+                ffmpeg,
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                str(path),
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                str(SAMPLE_RATE),
+                "-f",
+                "f32le",
+                "pipe:1",
             ],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
     except OSError as exc:
-        raise OfflineTranscriptionInputError(f"Unsupported or unreadable media file: {path.name}") from exc
+        raise OfflineTranscriptionInputError(
+            f"Unsupported or unreadable media file: {path.name}"
+        ) from exc
     stdout = process.stdout
     assert stdout is not None
     try:
@@ -426,7 +484,9 @@ def _iter_ffmpeg_pcm_blocks(path: Path, *, block_sec: float = 30.0) -> Iterator[
                 yield np.frombuffer(carry[:usable], dtype="<f4").astype(np.float32)
                 carry = carry[usable:]
         if process.wait() != 0:
-            raise OfflineTranscriptionInputError(f"Unsupported or unreadable media file: {path.name}")
+            raise OfflineTranscriptionInputError(
+                f"Unsupported or unreadable media file: {path.name}"
+            )
     finally:
         if process.poll() is None:
             process.kill()
@@ -442,7 +502,9 @@ def _chunk_sample_count(chunk_sec: float) -> int:
 def _audio_duration_samples(path: Path) -> int:
     try:
         info = sf.info(str(path))
-        return max(0, int(round(float(info.frames) * SAMPLE_RATE / float(info.samplerate))))
+        return max(
+            0, int(round(float(info.frames) * SAMPLE_RATE / float(info.samplerate)))
+        )
     except sf.SoundFileError:
         duration_sec = librosa.get_duration(path=str(path))
         return max(0, int(round(float(duration_sec) * SAMPLE_RATE)))
@@ -452,9 +514,12 @@ def _fit_audio_samples(audio: np.ndarray, samples: int) -> np.ndarray:
     target_samples = max(0, int(samples))
     if int(audio.shape[0]) >= target_samples:
         return audio[:target_samples].astype(np.float32, copy=False)
-    return np.pad(audio, (0, target_samples - int(audio.shape[0])), mode="constant", constant_values=0.0).astype(
-        np.float32
-    )
+    return np.pad(
+        audio,
+        (0, target_samples - int(audio.shape[0])),
+        mode="constant",
+        constant_values=0.0,
+    ).astype(np.float32)
 
 
 def _validate_chunk_sec(chunk_sec: float) -> float:
@@ -481,9 +546,12 @@ def _pad_short_chunk(chunk: np.ndarray) -> np.ndarray:
     min_samples = int(MIN_ASR_INPUT_SECONDS * SAMPLE_RATE)
     if int(chunk.shape[0]) >= min_samples:
         return chunk
-    return np.pad(chunk, (0, min_samples - int(chunk.shape[0])), mode="constant", constant_values=0.0).astype(
-        np.float32
-    )
+    return np.pad(
+        chunk,
+        (0, min_samples - int(chunk.shape[0])),
+        mode="constant",
+        constant_values=0.0,
+    ).astype(np.float32)
 
 
 def _samples_to_ms(samples: int) -> int:
@@ -507,7 +575,9 @@ def _make_decode_window(
         )
 
     provisional_start_ms = int(provisional_unit.tokens[0].start_ms)
-    needed_samples = max(0, int(round((int(main_start_ms) - provisional_start_ms) * SAMPLE_RATE / 1000)))
+    needed_samples = max(
+        0, int(round((int(main_start_ms) - provisional_start_ms) * SAMPLE_RATE / 1000))
+    )
     if (
         needed_samples <= 0
         or needed_samples > max(0, int(max_refeed_samples))
@@ -520,7 +590,9 @@ def _make_decode_window(
         )
 
     refeed_audio = audio_tail[-needed_samples:]
-    decode_audio = np.concatenate((refeed_audio, main_audio)).astype(np.float32, copy=False)
+    decode_audio = np.concatenate((refeed_audio, main_audio)).astype(
+        np.float32, copy=False
+    )
     decode_start_ms = int(main_start_ms) - _samples_to_ms(needed_samples)
     return _DecodeWindow(
         audio=_pad_short_chunk(decode_audio),
@@ -591,7 +663,9 @@ async def _transcribe_decode_window(
             asr_executor=asr_executor,
         )
         detected_language = fallback_language or detected_language
-    tokens = estimated_timed_tokens_from_text(text, base_ms=int(main_start_ms), duration_ms=int(main_duration_ms))
+    tokens = estimated_timed_tokens_from_text(
+        text, base_ms=int(main_start_ms), duration_ms=int(main_duration_ms)
+    )
     return tokens, detected_language, "estimated"
 
 
@@ -610,7 +684,9 @@ async def _transcribe_text(
         language=language,
         asr_executor=asr_executor,
     )
-    return str(getattr(result, "text", "") or "").strip(), str(getattr(result, "language", "") or language or "")
+    return str(getattr(result, "text", "") or "").strip(), str(
+        getattr(result, "language", "") or language or ""
+    )
 
 
 def _add_window_tokens(
@@ -633,8 +709,12 @@ def _add_window_tokens(
             )
         )
         if timing_status == "aligned":
-            tokens = [token for token in tokens if int(token.start_ms) >= int(main_start_ms)]
-    units.extend(unit_builder.add_tokens(tokens, language=language, timing_status=timing_status))
+            tokens = [
+                token for token in tokens if int(token.start_ms) >= int(main_start_ms)
+            ]
+    units.extend(
+        unit_builder.add_tokens(tokens, language=language, timing_status=timing_status)
+    )
     return units
 
 
@@ -654,11 +734,15 @@ def _should_replace_provisional(
     )
 
 
-def _tokens_cover_provisional(provisional: SourceUnit, tokens: Sequence[TimedToken]) -> bool:
+def _tokens_cover_provisional(
+    provisional: SourceUnit, tokens: Sequence[TimedToken]
+) -> bool:
     provisional_key = _text_key(provisional.text)
     if not provisional_key:
         return False
-    return _text_key("".join(str(token.text or "") for token in tokens)).startswith(provisional_key)
+    return _text_key("".join(str(token.text or "") for token in tokens)).startswith(
+        provisional_key
+    )
 
 
 def _text_key(text: str) -> str:
@@ -677,31 +761,43 @@ def _take_boundary_provisional_unit(
     if (
         pending
         and _tokens_near_boundary(pending, boundary_ms=boundary_ms, hold_ms=hold_ms)
-        and _tokens_fit_refeed_window(pending, boundary_ms=boundary_ms, max_refeed_ms=max_refeed_ms)
+        and _tokens_fit_refeed_window(
+            pending, boundary_ms=boundary_ms, max_refeed_ms=max_refeed_ms
+        )
     ):
         return unit_builder.take_pending_unit()
     if (
         units
-        and _tokens_near_boundary(units[-1].tokens, boundary_ms=boundary_ms, hold_ms=hold_ms)
-        and _tokens_fit_refeed_window(units[-1].tokens, boundary_ms=boundary_ms, max_refeed_ms=max_refeed_ms)
+        and _tokens_near_boundary(
+            units[-1].tokens, boundary_ms=boundary_ms, hold_ms=hold_ms
+        )
+        and _tokens_fit_refeed_window(
+            units[-1].tokens, boundary_ms=boundary_ms, max_refeed_ms=max_refeed_ms
+        )
     ):
         return units.pop()
     return None
 
 
-def _tokens_fit_refeed_window(tokens: Sequence[TimedToken], *, boundary_ms: int, max_refeed_ms: int) -> bool:
+def _tokens_fit_refeed_window(
+    tokens: Sequence[TimedToken], *, boundary_ms: int, max_refeed_ms: int
+) -> bool:
     if not tokens:
         return False
     return int(tokens[0].start_ms) >= int(boundary_ms) - max(1, int(max_refeed_ms))
 
 
-def _tokens_near_boundary(tokens: Sequence[TimedToken], *, boundary_ms: int, hold_ms: int) -> bool:
+def _tokens_near_boundary(
+    tokens: Sequence[TimedToken], *, boundary_ms: int, hold_ms: int
+) -> bool:
     if not tokens:
         return False
     return int(tokens[-1].end_ms) >= int(boundary_ms) - max(1, int(hold_ms))
 
 
-def _append_audio_tail(tail: np.ndarray, audio: np.ndarray, *, max_samples: int) -> np.ndarray:
+def _append_audio_tail(
+    tail: np.ndarray, audio: np.ndarray, *, max_samples: int
+) -> np.ndarray:
     max_samples = max(0, int(max_samples))
     if max_samples <= 0:
         return np.empty(0, dtype=np.float32)
@@ -720,7 +816,9 @@ async def _aligned_timed_tokens(
     timeout_sec: float,
 ) -> list[TimedToken]:
     """Return forced-aligned timed tokens, or an empty list to fall back to estimated timing."""
-    align_language = _forced_align_language(language) if timestamp_actor is not None else None
+    align_language = (
+        _forced_align_language(language) if timestamp_actor is not None else None
+    )
     if align_language is None or not hasattr(timestamp_actor, "align_items"):
         return []
     try:
@@ -738,7 +836,9 @@ async def _aligned_timed_tokens(
         return []
     items = list(getattr(result, "items", []) or [])
     try:
-        return timed_tokens_from_aligned_items(text, items, base_ms=int(base_ms), duration_ms=int(duration_ms))
+        return timed_tokens_from_aligned_items(
+            text, items, base_ms=int(base_ms), duration_ms=int(duration_ms)
+        )
     except (TypeError, ValueError, OverflowError):
         return []
 
@@ -756,7 +856,9 @@ def _append_source_unit(
     )
     if not unit_segments:
         return [], None
-    unit_segments = _fit_segments_after_previous(unit_segments, previous_end_ms=segments[-1].end_ms if segments else None)
+    unit_segments = _fit_segments_after_previous(
+        unit_segments, previous_end_ms=segments[-1].end_ms if segments else None
+    )
     segments.extend(unit_segments)
     if translation_units is not None:
         translation_units.append(unit_translation)
@@ -786,7 +888,9 @@ def _fit_segments_after_previous(
             end = start + _MIN_TRANSCRIPT_SEGMENT_MS
         fitted_segment = replace(segment, start_ms=start, end_ms=end)
         fitted.append(fitted_segment)
-        cursor = int(fitted_segment.end_ms) if fitted_segment.end_ms is not None else cursor
+        cursor = (
+            int(fitted_segment.end_ms) if fitted_segment.end_ms is not None else cursor
+        )
     return fitted
 
 
@@ -805,9 +909,16 @@ def _append_source_unit_events(
     unit: SourceUnit,
 ) -> list[OfflineTranscriptionStreamEvent]:
     unit_segments, unit_translation = _append_source_unit(segments, unit)
-    events = [OfflineTranscriptionStreamEvent(kind="segment", segment=segment) for segment in unit_segments]
+    events = [
+        OfflineTranscriptionStreamEvent(kind="segment", segment=segment)
+        for segment in unit_segments
+    ]
     if unit_translation is not None:
-        events.append(OfflineTranscriptionStreamEvent(kind="translation_unit", translation_unit=unit_translation))
+        events.append(
+            OfflineTranscriptionStreamEvent(
+                kind="translation_unit", translation_unit=unit_translation
+            )
+        )
     return events
 
 
@@ -930,9 +1041,17 @@ async def _translate_units(
             timeout_sec=None,
         )
         for offset, unit in enumerate(language_units):
-            text, error = outputs[offset] if offset < len(outputs) else (None, "missing translation output")
+            text, error = (
+                outputs[offset]
+                if offset < len(outputs)
+                else (None, "missing translation output")
+            )
             document_unit = apply_unit_translation(
-                translated, unit, target_language=target_language, text=text, error=error
+                translated,
+                unit,
+                target_language=target_language,
+                text=text,
+                error=error,
             )
             if document_unit is not None:
                 document_units.append(document_unit)

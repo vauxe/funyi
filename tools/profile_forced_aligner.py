@@ -22,7 +22,9 @@ from tools.run_forced_aligner_baseline import _dtype, _load_srt, _window_groups
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Profile Qwen3 forced-aligner stages on local validation data.")
+    parser = argparse.ArgumentParser(
+        description="Profile Qwen3 forced-aligner stages on local validation data."
+    )
     parser.add_argument("--model", required=True)
     parser.add_argument("--audio", required=True)
     parser.add_argument("--srt", required=True)
@@ -30,7 +32,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-audio-sec", type=float, default=600.0)
     parser.add_argument("--window-sec", type=float, default=90.0)
     parser.add_argument("--device-map", default="cuda:0")
-    parser.add_argument("--dtype", default="bfloat16", choices=["float32", "float16", "bfloat16"])
+    parser.add_argument(
+        "--dtype", default="bfloat16", choices=["float32", "float16", "bfloat16"]
+    )
     parser.add_argument("--attn-implementation", default="flash_attention_2")
     parser.add_argument("--limit-windows", type=int, default=0)
     parser.add_argument("--output-json", default=None)
@@ -93,22 +97,32 @@ def _profile_window(
     row["word_count"] = len(words)
 
     inputs, row["processor_sec"] = _elapsed(
-        lambda: aligner.processor(text=[prompt], audio=[audio], return_tensors="pt", padding=True)
+        lambda: aligner.processor(
+            text=[prompt], audio=[audio], return_tensors="pt", padding=True
+        )
     )
     row["seq_len"] = int(inputs["input_ids"].shape[1])
-    row["timestamp_positions"] = int((inputs["input_ids"] == aligner.timestamp_token_id).sum().item())
+    row["timestamp_positions"] = int(
+        (inputs["input_ids"] == aligner.timestamp_token_id).sum().item()
+    )
     row["input_features_shape"] = list(inputs["input_features"].shape)
     aligner._drop_single_full_attention_mask(inputs)
     aligner._drop_single_full_feature_mask(inputs)
 
-    inputs, row["move_inputs_sec"] = _elapsed(lambda: aligner._move_inputs_like_official(inputs))
+    inputs, row["move_inputs_sec"] = _elapsed(
+        lambda: aligner._move_inputs_like_official(inputs)
+    )
     timestamp_mask = inputs["input_ids"][0] == aligner.timestamp_token_id
 
     with _ModuleTimer(aligner.model.thinker, "get_audio_features") as audio_timer:
         with _ModuleTimer(aligner.model.thinker, "get_rope_index") as rope_timer:
             with _ModuleTimer(aligner.model.thinker.model, "forward") as text_timer:
-                with _ModuleTimer(aligner.model.thinker.lm_head, "forward") as lm_head_timer:
-                    outputs, row["thinker_sec"] = _elapsed(lambda: aligner.model.thinker(**inputs))
+                with _ModuleTimer(
+                    aligner.model.thinker.lm_head, "forward"
+                ) as lm_head_timer:
+                    outputs, row["thinker_sec"] = _elapsed(
+                        lambda: aligner.model.thinker(**inputs)
+                    )
 
     row["audio_encoder_sec"] = round(sum(audio_timer.times), 6)
     row["rope_index_sec"] = round(sum(rope_timer.times), 6)
@@ -118,9 +132,13 @@ def _profile_window(
     row["logits_shape"] = list(logits.shape)
 
     timestamp_logits = logits[0, timestamp_mask, :]
-    output_ids, row["timestamp_argmax_sec"] = _elapsed(lambda: timestamp_logits.argmax(dim=-1))
+    output_ids, row["timestamp_argmax_sec"] = _elapsed(
+        lambda: timestamp_logits.argmax(dim=-1)
+    )
     timestamp_ms = (output_ids * aligner.timestamp_segment_time).to("cpu").numpy()
-    _, row["parse_sec"] = _elapsed(lambda: aligner.aligner_processor.parse_timestamp(words, timestamp_ms))
+    _, row["parse_sec"] = _elapsed(
+        lambda: aligner.aligner_processor.parse_timestamp(words, timestamp_ms)
+    )
     return row
 
 
@@ -147,7 +165,14 @@ def main() -> None:
         audio = wav[int(start * SAMPLE_RATE) : int(end * SAMPLE_RATE)]
         text = " ".join(str(entry["text"]) for entry in group)
         row = _profile_window(aligner, audio, text, args.language)
-        row.update({"window": index, "start": start, "end": end, "duration": round(end - start, 3)})
+        row.update(
+            {
+                "window": index,
+                "start": start,
+                "end": end,
+                "duration": round(end - start, 3),
+            }
+        )
         rows.append(row)
 
     keys = [
@@ -167,7 +192,9 @@ def main() -> None:
         "rows": rows,
     }
     if args.output_json:
-        Path(args.output_json).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        Path(args.output_json).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
     print(json.dumps(payload["summary"], ensure_ascii=False, indent=2))
 
 

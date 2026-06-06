@@ -111,7 +111,9 @@ class TailSelector:
                 aligned=True,
             )
         if window_overlaps_stable_cursor:
-            overlap = cls._stable_suffix_decoded_prefix_overlap(stable, candidate_after_window)
+            overlap = cls._stable_suffix_decoded_prefix_overlap(
+                stable, candidate_after_window
+            )
         else:
             overlap = 0
         if overlap > 0:
@@ -229,11 +231,15 @@ class TextStabilizer:
     previous_tail_text: str = ""
     previous_tail_end_sample: int | None = None
 
-    def observe(self, tail_text: str, *, end_sample: int, can_commit: bool) -> StableTextUpdate:
+    def observe(
+        self, tail_text: str, *, end_sample: int, can_commit: bool
+    ) -> StableTextUpdate:
         tail = self.clean_tail_text(tail_text)
         if not can_commit:
             self.set_tail(tail, end_sample=end_sample)
-            return StableTextUpdate(stable_text="", partial_text=tail, stable_end_sample=None)
+            return StableTextUpdate(
+                stable_text="", partial_text=tail, stable_end_sample=None
+            )
 
         stable = self.repeated_tail_prefix(self.previous_tail_text, tail)
         stable_end_sample = self.previous_tail_end_sample if stable else None
@@ -247,7 +253,9 @@ class TextStabilizer:
             )
 
         self.set_tail(tail, end_sample=end_sample)
-        return StableTextUpdate(stable_text="", partial_text=tail, stable_end_sample=None)
+        return StableTextUpdate(
+            stable_text="", partial_text=tail, stable_end_sample=None
+        )
 
     def finalize(self, tail_text: str, *, end_sample: int) -> StableTextUpdate:
         stable = self.clean_tail_text(tail_text)
@@ -261,7 +269,9 @@ class TextStabilizer:
     def set_tail(self, text: str, *, end_sample: int | None) -> None:
         tail = self.clean_tail_text(text)
         self.previous_tail_text = tail
-        self.previous_tail_end_sample = int(end_sample) if tail and end_sample is not None else None
+        self.previous_tail_end_sample = (
+            int(end_sample) if tail and end_sample is not None else None
+        )
 
     @staticmethod
     def clean_tail_text(text: str) -> str:
@@ -273,7 +283,9 @@ class TextStabilizer:
         current_text = TextStabilizer.clean_tail_text(current)
         if not previous_text or not current_text:
             return False
-        return current_text.startswith(previous_text) or previous_text.startswith(current_text)
+        return current_text.startswith(previous_text) or previous_text.startswith(
+            current_text
+        )
 
     @staticmethod
     def repeated_tail_prefix(previous: str, current: str) -> str:
@@ -284,7 +296,9 @@ class TextStabilizer:
         while index < max_len and previous_text[index] == current_text[index]:
             index += 1
         next_char = current_text[index : index + 1]
-        return TextStabilizer.trim_stable_prefix_to_boundary(current_text[:index], next_char)
+        return TextStabilizer.trim_stable_prefix_to_boundary(
+            current_text[:index], next_char
+        )
 
     @staticmethod
     def trim_stable_prefix_to_boundary(prefix: str, next_char: str) -> str:

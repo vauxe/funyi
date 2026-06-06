@@ -7,6 +7,7 @@ is that cuBLAS/CUTLASS may pick a different kernel variant for a larger
 matmul. In practice bf16 deltas on qkv and gate/up fusions are zero on the
 local decode-shape validation set.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -32,15 +33,21 @@ def _fuse_linears(*linears: nn.Linear) -> nn.Linear:
         offset = 0
         for lin in linears:
             n = lin.out_features
-            fused.weight[offset:offset + n].copy_(lin.weight)
+            fused.weight[offset : offset + n].copy_(lin.weight)
             if bias:
-                fused.bias[offset:offset + n].copy_(lin.bias)
+                fused.bias[offset : offset + n].copy_(lin.bias)
             offset += n
     return fused
 
 
-def _make_fused_attention_forward(self_attn: nn.Module, q_size: int, kv_size: int,
-                                    num_q_heads: int, num_kv_heads: int, head_dim: int):
+def _make_fused_attention_forward(
+    self_attn: nn.Module,
+    q_size: int,
+    kv_size: int,
+    num_q_heads: int,
+    num_kv_heads: int,
+    head_dim: int,
+):
     """Build a replacement forward that uses self.qkv_proj instead of q/k/v."""
     config = self_attn.config
     layer_idx = self_attn.layer_idx
@@ -60,8 +67,10 @@ def _make_fused_attention_forward(self_attn: nn.Module, q_size: int, kv_size: in
         # Single fused matmul -> split into Q/K/V
         from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
         from qwen3_asr_runtime.hf_qwen3_asr.modeling_qwen3_asr import (
-            eager_attention_forward, apply_rotary_pos_emb,
+            eager_attention_forward,
+            apply_rotary_pos_emb,
         )
+
         input_shape = hidden_states.shape[:-1]
         qkv = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([q_size, kv_size, kv_size], dim=-1)
@@ -75,7 +84,9 @@ def _make_fused_attention_forward(self_attn: nn.Module, q_size: int, kv_size: in
         value_states = v_view.transpose(1, 2)
 
         cos, sin = position_embeddings
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        query_states, key_states = apply_rotary_pos_emb(
+            query_states, key_states, cos, sin
+        )
 
         if past_key_values is not None:
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
@@ -88,8 +99,14 @@ def _make_fused_attention_forward(self_attn: nn.Module, q_size: int, kv_size: in
             attention_interface = ALL_ATTENTION_FUNCTIONS[config._attn_implementation]
 
         attn_output, attn_weights = attention_interface(
-            self, query_states, key_states, value_states,
-            attention_mask, dropout=0.0, scaling=scaling, **kwargs,
+            self,
+            query_states,
+            key_states,
+            value_states,
+            attention_mask,
+            dropout=0.0,
+            scaling=scaling,
+            **kwargs,
         )
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
@@ -133,7 +150,9 @@ def patch_model_fused_linears(model) -> dict:
             del attn.q_proj
             del attn.k_proj
             del attn.v_proj
-            fwd = _make_fused_attention_forward(attn, q_size, kv_size, num_q_heads, num_kv_heads, head_dim)
+            fwd = _make_fused_attention_forward(
+                attn, q_size, kv_size, num_q_heads, num_kv_heads, head_dim
+            )
             attn.forward = fwd.__get__(attn, type(attn))
             attn_count += 1
 

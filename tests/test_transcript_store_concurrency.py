@@ -11,6 +11,7 @@ control (`test_harness_detects_a_missing_lock`) disables the lock and asserts th
 same instrumentation *does* observe overlap — proving the decisive test would fail
 if the lock were ever removed, rather than passing vacuously under the GIL.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -49,7 +50,9 @@ def _peak_concurrency_during_two_appends(store: TranscriptStore) -> int:
         start.wait()
         store.append_stable_segment(text="x", start_ms=0, end_ms=10, language="English")
 
-    with mock.patch.object(TranscriptStore, "_previous_known_end", slow_previous_known_end):
+    with mock.patch.object(
+        TranscriptStore, "_previous_known_end", slow_previous_known_end
+    ):
         threads = [threading.Thread(target=worker) for _ in range(2)]
         for thread in threads:
             thread.start()
@@ -85,5 +88,7 @@ class TestTranscriptStoreLocking:
                 finished.set()
 
         threading.Thread(target=worker, daemon=True).start()
-        assert finished.wait(timeout=5.0), "reentrant synchronized calls deadlocked (RLock required)"
+        assert finished.wait(timeout=5.0), (
+            "reentrant synchronized calls deadlocked (RLock required)"
+        )
         assert error == []

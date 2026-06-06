@@ -100,7 +100,9 @@ class _SourceTimeline:
         local_start = self._spans[-1].local_end if self._spans else 0
         local_end = local_start + sample_count
         if source_start_sample is None:
-            source_start = self._spans[-1].source_end if self._spans else int(self._origin_sample)
+            source_start = (
+                self._spans[-1].source_end if self._spans else int(self._origin_sample)
+            )
         else:
             source_start = int(source_start_sample)
         if self._spans and source_start < self._spans[-1].source_end:
@@ -116,7 +118,10 @@ class _SourceTimeline:
         source_end = source_start + sample_count
         if self._spans:
             previous = self._spans[-1]
-            if previous.local_end == local_start and previous.source_end == source_start:
+            if (
+                previous.local_end == local_start
+                and previous.source_end == source_start
+            ):
                 self._spans[-1] = _TimelineSpan(
                     local_start=previous.local_start,
                     local_end=local_end,
@@ -160,7 +165,9 @@ class _SourceTimeline:
             if sample < span.local_start:
                 return span.source_start
             if sample == span.local_start:
-                return previous.source_end if previous is not None else span.source_start
+                return (
+                    previous.source_end if previous is not None else span.source_start
+                )
             if span.local_start < sample <= span.local_end:
                 return span.source_start + (sample - span.local_start)
             previous = span
@@ -197,10 +204,16 @@ class RealtimeASRSession:
         self._samples_received = 0
         self._asr_audio = _SampleBuffer()
         self._streaming_kwargs = self._low_latency_streaming_kwargs()
-        self._asr_cadence_samples = self._streaming_chunk_samples(self._streaming_kwargs)
+        self._asr_cadence_samples = self._streaming_chunk_samples(
+            self._streaming_kwargs
+        )
         self._live_stability_delay_samples = max(
             0,
-            int(round(self.config.sample_rate * self.config.live_stability_delay_ms / 1000)),
+            int(
+                round(
+                    self.config.sample_rate * self.config.live_stability_delay_ms / 1000
+                )
+            ),
         )
         self._timing_hints: dict[str, tuple[int, int]] = {}
         self._partial_sample_range: tuple[int, int] | None = None
@@ -223,18 +236,28 @@ class RealtimeASRSession:
         events = self._drain_asr_audio(force=True, emit_live=False)
         if self._asr_state is None:
             if self._set_partial(None, sample_range=None):
-                events.extend(self._emit_transcript_update(stable_base=self.store.stable_count, stable_appends=[]))
+                events.extend(
+                    self._emit_transcript_update(
+                        stable_base=self.store.stable_count, stable_appends=[]
+                    )
+                )
             return events
 
         self._asr_state = self.model.finish_streaming_transcribe(self._asr_state)
-        self._last_asr_end_sample = max(self._last_asr_end_sample, self._samples_received)
+        self._last_asr_end_sample = max(
+            self._last_asr_end_sample, self._samples_received
+        )
         events.extend(self._handle_decoded_text(finalize=True))
         return events
 
     def set_language(self, language: Optional[str]) -> list[dict[str, Any]]:
         events = self.flush()
-        self.config.language = (str(language).strip() or None) if language is not None else None
-        cursor_sample = max(int(self._transcript.sample), int(self._last_asr_end_sample))
+        self.config.language = (
+            (str(language).strip() or None) if language is not None else None
+        )
+        cursor_sample = max(
+            int(self._transcript.sample), int(self._last_asr_end_sample)
+        )
         self._transcript = _TranscriptCursor(sample=cursor_sample)
         self._asr_state = None
         return events
@@ -244,8 +267,13 @@ class RealtimeASRSession:
         events.append(self.store.final_event())
         return events
 
-    def consume_stable_timing_jobs(self, event: dict[str, Any]) -> list[StableTimingJob]:
-        if not self.config.force_align_timestamps or event.get("type") != "transcript_update":
+    def consume_stable_timing_jobs(
+        self, event: dict[str, Any]
+    ) -> list[StableTimingJob]:
+        if (
+            not self.config.force_align_timestamps
+            or event.get("type") != "transcript_update"
+        ):
             return []
 
         jobs: list[StableTimingJob] = []
@@ -262,21 +290,29 @@ class RealtimeASRSession:
                 StableTimingJob(
                     source_segment_id=segment_id,
                     source_text=source_text,
-                    source_language=str(segment.get("language") or self.config.language or ""),
+                    source_language=str(
+                        segment.get("language") or self.config.language or ""
+                    ),
                     start_sample=int(hint[0]),
                     end_sample=int(hint[1]),
                 )
             )
         return jobs
 
-    def consume_stable_timing_jobs_for_events(self, events: list[dict[str, Any]]) -> list[StableTimingJob]:
+    def consume_stable_timing_jobs_for_events(
+        self, events: list[dict[str, Any]]
+    ) -> list[StableTimingJob]:
         jobs: list[StableTimingJob] = []
         for event in events:
             jobs.extend(self.consume_stable_timing_jobs(event))
         return jobs
 
-    def _append_asr_audio(self, audio: np.ndarray, *, source_start_sample: int | None = None) -> None:
-        self._source_timeline.append(int(audio.shape[0]), source_start_sample=source_start_sample)
+    def _append_asr_audio(
+        self, audio: np.ndarray, *, source_start_sample: int | None = None
+    ) -> None:
+        self._source_timeline.append(
+            int(audio.shape[0]), source_start_sample=source_start_sample
+        )
         self._samples_received += int(audio.shape[0])
         self._asr_audio.append(audio)
 
@@ -344,12 +380,16 @@ class RealtimeASRSession:
             current_partial = ""
             if self.store.partial is not None:
                 current_partial = str(getattr(self.store.partial, "text", "") or "")
-            if current_partial and not TextStabilizer.is_tail_update(current_partial, tail_text):
+            if current_partial and not TextStabilizer.is_tail_update(
+                current_partial, tail_text
+            ):
                 return []
             return self._replace_partial_text(tail_text)
 
         if finalize:
-            update = self._transcript.stabilizer.finalize(tail_text, end_sample=self._last_asr_end_sample)
+            update = self._transcript.stabilizer.finalize(
+                tail_text, end_sample=self._last_asr_end_sample
+            )
             return self._append_stable_text(
                 stable_text=update.stable_text,
                 partial_text=update.partial_text,
@@ -396,10 +436,15 @@ class RealtimeASRSession:
             language = str(frame.language or "").strip()
             if language:
                 return language
-        return str(getattr(self._asr_state, "language", "") or self.config.language or "")
+        return str(
+            getattr(self._asr_state, "language", "") or self.config.language or ""
+        )
 
     def _live_stability_delay_elapsed(self) -> bool:
-        return self._last_asr_end_sample - self._transcript.sample >= self._live_stability_delay_samples
+        return (
+            self._last_asr_end_sample - self._transcript.sample
+            >= self._live_stability_delay_samples
+        )
 
     def _append_stable_text(
         self,
@@ -411,7 +456,9 @@ class RealtimeASRSession:
         normalized = TextStabilizer.clean_tail_text(stable_text)
         partial = TextStabilizer.clean_tail_text(partial_text)
         if not normalized:
-            self._transcript.stabilizer.set_tail(partial, end_sample=self._last_asr_end_sample if partial else None)
+            self._transcript.stabilizer.set_tail(
+                partial, end_sample=self._last_asr_end_sample if partial else None
+            )
             return self._replace_partial_text(partial)
 
         stable_base = self.store.stable_count
@@ -428,13 +475,19 @@ class RealtimeASRSession:
             language=language,
             timing_status="pending" if self.config.force_align_timestamps else None,
         )
-        self._remember_timing_hint(segment, start_sample=start_sample, end_sample=end_sample)
+        self._remember_timing_hint(
+            segment, start_sample=start_sample, end_sample=end_sample
+        )
         self._transcript.sample = end_sample
         self._transcript.stable_text_prefix += normalized
-        self._transcript.stabilizer.set_tail(partial, end_sample=self._last_asr_end_sample if partial else None)
+        self._transcript.stabilizer.set_tail(
+            partial, end_sample=self._last_asr_end_sample if partial else None
+        )
         partial_segment, partial_range = self._partial_segment(partial)
         self._set_partial(partial_segment, sample_range=partial_range)
-        return self._emit_transcript_update(stable_base=stable_base, stable_appends=[segment])
+        return self._emit_transcript_update(
+            stable_base=stable_base, stable_appends=[segment]
+        )
 
     def _append_final_unaligned_tail(self, tail_text: str) -> list[dict[str, Any]]:
         partial = self.store.partial
@@ -443,7 +496,11 @@ class RealtimeASRSession:
 
         current = str(partial.text or "")
         tail = TextStabilizer.clean_tail_text(tail_text)
-        if tail and TextStabilizer.is_tail_update(current, tail) and len(tail) >= len(current.strip()):
+        if (
+            tail
+            and TextStabilizer.is_tail_update(current, tail)
+            and len(tail) >= len(current.strip())
+        ):
             return self._append_stable_text(
                 stable_text=tail,
                 partial_text="",
@@ -466,21 +523,29 @@ class RealtimeASRSession:
             language=partial.language,
             timing_status="pending" if self.config.force_align_timestamps else None,
         )
-        self._remember_timing_hint(segment, start_sample=start_sample, end_sample=end_sample)
+        self._remember_timing_hint(
+            segment, start_sample=start_sample, end_sample=end_sample
+        )
         self._transcript.sample = max(
             int(self._transcript.sample),
             end_sample,
         )
-        self._transcript.stable_text_prefix += TextStabilizer.clean_tail_text(partial.text)
+        self._transcript.stable_text_prefix += TextStabilizer.clean_tail_text(
+            partial.text
+        )
         self._transcript.stabilizer.set_tail("", end_sample=None)
         self._set_partial(None, sample_range=None)
-        return self._emit_transcript_update(stable_base=stable_base, stable_appends=[segment])
+        return self._emit_transcript_update(
+            stable_base=stable_base, stable_appends=[segment]
+        )
 
     def _replace_partial_text(self, text: str) -> list[dict[str, Any]]:
         partial, sample_range = self._partial_segment(text)
         return self._replace_partial(partial, sample_range=sample_range)
 
-    def _partial_segment(self, text: str) -> tuple[PartialSegment | None, tuple[int, int] | None]:
+    def _partial_segment(
+        self, text: str
+    ) -> tuple[PartialSegment | None, tuple[int, int] | None]:
         normalized = str(text or "").strip()
         if not normalized:
             return None, None
@@ -519,7 +584,9 @@ class RealtimeASRSession:
         changed = self._set_partial(partial, sample_range=sample_range)
         if not changed:
             return []
-        return self._emit_transcript_update(stable_base=self.store.stable_count, stable_appends=[])
+        return self._emit_transcript_update(
+            stable_base=self.store.stable_count, stable_appends=[]
+        )
 
     def _partial_samples(self, partial: PartialSegment) -> tuple[int, int]:
         if self._partial_sample_range is not None:
@@ -534,10 +601,14 @@ class RealtimeASRSession:
         stable_base: int,
         stable_appends: list[StableSegment],
     ) -> list[dict[str, Any]]:
-        event = self.store.update_event(stable_base=stable_base, stable_appends=stable_appends)
+        event = self.store.update_event(
+            stable_base=stable_base, stable_appends=stable_appends
+        )
         return [event]
 
-    def _remember_timing_hint(self, segment: StableSegment, *, start_sample: int, end_sample: int) -> None:
+    def _remember_timing_hint(
+        self, segment: StableSegment, *, start_sample: int, end_sample: int
+    ) -> None:
         if not self.config.force_align_timestamps:
             return
         source_start = self._source_timeline.source_start_sample(start_sample)
@@ -549,7 +620,9 @@ class RealtimeASRSession:
 
     def _drain_asr_audio(self, *, force: bool, emit_live: bool) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
-        while self._asr_audio.samples >= self._asr_cadence_samples or (force and self._asr_audio.samples > 0):
+        while self._asr_audio.samples >= self._asr_cadence_samples or (
+            force and self._asr_audio.samples > 0
+        ):
             chunk_samples = min(self._asr_cadence_samples, self._asr_audio.samples)
             chunk, start_sample = self._asr_audio.pop(chunk_samples)
             chunk_end_sample = int(start_sample) + chunk_samples
@@ -557,10 +630,14 @@ class RealtimeASRSession:
         return events
 
     def _start_ms(self, sample_index: int) -> int:
-        return self._source_sample_to_ms(self._source_timeline.source_start_sample(sample_index))
+        return self._source_sample_to_ms(
+            self._source_timeline.source_start_sample(sample_index)
+        )
 
     def _end_ms(self, sample_index: int) -> int:
-        return self._source_sample_to_ms(self._source_timeline.source_end_sample(sample_index))
+        return self._source_sample_to_ms(
+            self._source_timeline.source_end_sample(sample_index)
+        )
 
     def _source_sample_to_ms(self, source_sample: int) -> int:
         return int(round(1000 * int(source_sample) / int(self.config.sample_rate)))
@@ -573,16 +650,24 @@ class RealtimeASRSession:
         kwargs = dict(_LOW_LATENCY_STREAMING_KWARGS)
         # The MLX backend has no cuda_graph/flashinfer/spec_decode and is prefill-bound,
         # so it uses its own streaming preset (shorter window, larger chunk, no spec decode).
-        if getattr(self.model, "backend", None) == "mlx" and hasattr(self.model, "mlx_streaming_preset_kwargs"):
+        if getattr(self.model, "backend", None) == "mlx" and hasattr(
+            self.model, "mlx_streaming_preset_kwargs"
+        ):
             kwargs.update(self.model.mlx_streaming_preset_kwargs())
         elif hasattr(self.model, "low_latency_preset_kwargs"):
             kwargs.update(self.model.low_latency_preset_kwargs())
         return kwargs
 
     def _streaming_chunk_samples(self, kwargs: dict[str, Any]) -> int:
-        chunk_size_sec = float(kwargs.get("chunk_size_sec", _LOW_LATENCY_STREAMING_KWARGS["chunk_size_sec"]))
+        chunk_size_sec = float(
+            kwargs.get(
+                "chunk_size_sec", _LOW_LATENCY_STREAMING_KWARGS["chunk_size_sec"]
+            )
+        )
         if chunk_size_sec <= 0:
-            raise ValueError(f"low-latency chunk_size_sec must be > 0, got: {chunk_size_sec}")
+            raise ValueError(
+                f"low-latency chunk_size_sec must be > 0, got: {chunk_size_sec}"
+            )
         return max(1, int(round(self.config.sample_rate * chunk_size_sec)))
 
 
@@ -640,7 +725,9 @@ class RealtimeConnectionSession:
 
     def set_language(self, language: Optional[str]) -> list[dict[str, Any]]:
         events = self._flush_active_asr(close=True)
-        self.config.language = (str(language).strip() or None) if language is not None else None
+        self.config.language = (
+            (str(language).strip() or None) if language is not None else None
+        )
         return events
 
     def finish(self) -> list[dict[str, Any]]:
@@ -648,7 +735,9 @@ class RealtimeConnectionSession:
         events.append(self.store.final_event())
         return events
 
-    def consume_stable_timing_jobs(self, event: dict[str, Any]) -> list[StableTimingJob]:
+    def consume_stable_timing_jobs(
+        self, event: dict[str, Any]
+    ) -> list[StableTimingJob]:
         if event.get("type") != "transcript_update":
             return []
         jobs: list[StableTimingJob] = []
@@ -661,7 +750,9 @@ class RealtimeConnectionSession:
                 jobs.append(job)
         return jobs
 
-    def consume_stable_timing_jobs_for_events(self, events: list[dict[str, Any]]) -> list[StableTimingJob]:
+    def consume_stable_timing_jobs_for_events(
+        self, events: list[dict[str, Any]]
+    ) -> list[StableTimingJob]:
         jobs: list[StableTimingJob] = []
         for event in events:
             jobs.extend(self.consume_stable_timing_jobs(event))
@@ -681,17 +772,23 @@ class RealtimeConnectionSession:
             self._active_asr_end_sample = int(origin_sample)
             self._active_asr_flushed = False
 
-    def _accept_speech_audio(self, speech_event: SpeechGateEvent) -> list[dict[str, Any]]:
+    def _accept_speech_audio(
+        self, speech_event: SpeechGateEvent
+    ) -> list[dict[str, Any]]:
         self._ensure_active_asr(speech_event.start_sample)
         return self._ingest_speech_audio(speech_event)
 
-    def _ingest_speech_audio(self, speech_event: SpeechGateEvent) -> list[dict[str, Any]]:
+    def _ingest_speech_audio(
+        self, speech_event: SpeechGateEvent
+    ) -> list[dict[str, Any]]:
         if self._active_asr is None or speech_event.audio.shape[0] == 0:
             return []
         audio = speech_event.audio
         start_sample = int(speech_event.start_sample)
         represented_end = (
-            start_sample if self._active_asr_end_sample is None else int(self._active_asr_end_sample)
+            start_sample
+            if self._active_asr_end_sample is None
+            else int(self._active_asr_end_sample)
         )
 
         if start_sample < represented_end:
@@ -733,7 +830,9 @@ class RealtimeConnectionSession:
         self._active_asr_end_sample = None
         self._active_asr_flushed = False
 
-    def _remember_timing_jobs(self, turn: RealtimeASRSession, events: list[dict[str, Any]]) -> None:
+    def _remember_timing_jobs(
+        self, turn: RealtimeASRSession, events: list[dict[str, Any]]
+    ) -> None:
         for job in turn.consume_stable_timing_jobs_for_events(events):
             self._timing_jobs[job.source_segment_id] = job
 

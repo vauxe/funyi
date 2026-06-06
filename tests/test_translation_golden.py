@@ -62,12 +62,15 @@ def test_main_writes_pinned_stock_payload(
     dataset = tmp_path / "cases.jsonl"
     output = tmp_path / "golden.json"
     dataset.write_text(
-        json.dumps({"id": "case-1", "text": "hello", "target_language": "Chinese"}) + "\n",
+        json.dumps({"id": "case-1", "text": "hello", "target_language": "Chinese"})
+        + "\n",
         encoding="utf-8",
     )
     calls: dict[str, tuple[str, dict[str, object]]] = {}
 
-    def fake_tokenizer_from_pretrained(model_path: str, **kwargs: object) -> FakeTokenizer:
+    def fake_tokenizer_from_pretrained(
+        model_path: str, **kwargs: object
+    ) -> FakeTokenizer:
         calls["tokenizer"] = (model_path, kwargs)
         return FakeTokenizer()
 
@@ -77,7 +80,11 @@ def test_main_writes_pinned_stock_payload(
 
     import transformers
 
-    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", staticmethod(fake_tokenizer_from_pretrained))
+    monkeypatch.setattr(
+        transformers.AutoTokenizer,
+        "from_pretrained",
+        staticmethod(fake_tokenizer_from_pretrained),
+    )
     monkeypatch.setattr(
         transformers.AutoModelForCausalLM,
         "from_pretrained",

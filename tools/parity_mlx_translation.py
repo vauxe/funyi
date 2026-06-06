@@ -18,6 +18,7 @@ Examples:
         --reference-model tencent/Hy-MT2-1.8B --min-chrf 50
     uv run python tools/parity_mlx_translation.py --reference-json local_goldens/mlx_translation_ref.json
 """
+
 from __future__ import annotations
 
 import argparse
@@ -32,9 +33,24 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 DEFAULT_CASES = [
-    {"id": "en2zh_1", "text": "Hello, world. How are you today?", "target_language": "Chinese", "source_language": "English"},
-    {"id": "zh2en_1", "text": "人工智能正在改变世界。", "target_language": "English", "source_language": "Chinese"},
-    {"id": "en2zh_2", "text": "The meeting is scheduled for 3 PM tomorrow.", "target_language": "Chinese", "source_language": "English"},
+    {
+        "id": "en2zh_1",
+        "text": "Hello, world. How are you today?",
+        "target_language": "Chinese",
+        "source_language": "English",
+    },
+    {
+        "id": "zh2en_1",
+        "text": "人工智能正在改变世界。",
+        "target_language": "English",
+        "source_language": "Chinese",
+    },
+    {
+        "id": "en2zh_2",
+        "text": "The meeting is scheduled for 3 PM tomorrow.",
+        "target_language": "Chinese",
+        "source_language": "English",
+    },
 ]
 
 
@@ -51,14 +67,37 @@ def _load_cases(path: str | None) -> list[dict]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="mlx-community/Hy-MT2-1.8B-4bit", help="MLX (4bit) HY-MT checkpoint")
+    ap.add_argument(
+        "--model",
+        default="mlx-community/Hy-MT2-1.8B-4bit",
+        help="MLX (4bit) HY-MT checkpoint",
+    )
     ap.add_argument("--dtype", default="bfloat16", help="MLX compute dtype")
-    ap.add_argument("--cases-json", default=None, help="JSON/JSONL list of translation cases")
-    ap.add_argument("--reference-json", default=None, help="JSON {case_id: reference_text} to gate against instead of live")
-    ap.add_argument("--reference-model", default="tencent/Hy-MT2-1.8B", help="stock model for the live reference")
+    ap.add_argument(
+        "--cases-json", default=None, help="JSON/JSONL list of translation cases"
+    )
+    ap.add_argument(
+        "--reference-json",
+        default=None,
+        help="JSON {case_id: reference_text} to gate against instead of live",
+    )
+    ap.add_argument(
+        "--reference-model",
+        default="tencent/Hy-MT2-1.8B",
+        help="stock model for the live reference",
+    )
     ap.add_argument("--max-new-tokens", type=int, default=256)
-    ap.add_argument("--min-chrf", type=float, default=50.0, help="gate: mean chrF2(MLX, reference) must be >=")
-    ap.add_argument("--no-gate", action="store_true", help="just print MLX outputs (+ speed); no reference, no gate")
+    ap.add_argument(
+        "--min-chrf",
+        type=float,
+        default=50.0,
+        help="gate: mean chrF2(MLX, reference) must be >=",
+    )
+    ap.add_argument(
+        "--no-gate",
+        action="store_true",
+        help="just print MLX outputs (+ speed); no reference, no gate",
+    )
     args = ap.parse_args()
 
     from qwen3_asr_runtime.mlx_translation import MLXHYMTTranslator
@@ -74,18 +113,26 @@ def main() -> int:
     speeds = []
     for c in cases:
         res = translator.profile_translate(
-            c["text"], target_language=c["target_language"], source_language=c["source_language"],
+            c["text"],
+            target_language=c["target_language"],
+            source_language=c["source_language"],
             max_new_tokens=args.max_new_tokens,
         )
         mlx_outputs[c["id"]] = res.text
-        tps = res.generated_tokens / res.generate_wall_sec if res.generate_wall_sec > 0 else 0.0
+        tps = (
+            res.generated_tokens / res.generate_wall_sec
+            if res.generate_wall_sec > 0
+            else 0.0
+        )
         speeds.append(tps)
         print(f"\n=== {c['id']} [{c['source_language']}->{c['target_language']}] ===")
         print(f"  src : {c['text']!r}")
         print(f"  MLX : {res.text!r}  ({res.generated_tokens} tok @ {tps:.1f} tok/s)")
 
     if args.no_gate:
-        print(f"\nmean decode speed = {mean(speeds):.1f} tok/s over {len(cases)} case(s); gate skipped (--no-gate)")
+        print(
+            f"\nmean decode speed = {mean(speeds):.1f} tok/s over {len(cases)} case(s); gate skipped (--no-gate)"
+        )
         return 0
 
     # Resolve references.
@@ -97,14 +144,22 @@ def main() -> int:
     else:
         from qwen3_asr_runtime.translation import HYMTTranslator
 
-        print(f"\n[live reference] loading stock {args.reference_model} on CPU (no W8A16/fused, do_sample=False) ...")
+        print(
+            f"\n[live reference] loading stock {args.reference_model} on CPU (no W8A16/fused, do_sample=False) ..."
+        )
         ref_t = HYMTTranslator(
-            args.reference_model, device="cpu", w8a16=False, fused_rmsnorm=False,
-            decode_backend="generate", attn_implementation="eager",
+            args.reference_model,
+            device="cpu",
+            w8a16=False,
+            fused_rmsnorm=False,
+            decode_backend="generate",
+            attn_implementation="eager",
         )
         for c in cases:
             references[c["id"]] = ref_t.translate(
-                c["text"], target_language=c["target_language"], source_language=c["source_language"],
+                c["text"],
+                target_language=c["target_language"],
+                source_language=c["source_language"],
                 max_new_tokens=args.max_new_tokens,
             )
 
@@ -118,7 +173,9 @@ def main() -> int:
         print(f"  [{c['id']}] chrF2(MLX, ref) = {score:.2f}   ref={ref!r}")
 
     mean_chrf = mean(chrfs) if chrfs else 0.0
-    print(f"\nmean chrF2 = {mean_chrf:.2f} over {len(chrfs)} case(s) (dtype={args.dtype})")
+    print(
+        f"\nmean chrF2 = {mean_chrf:.2f} over {len(chrfs)} case(s) (dtype={args.dtype})"
+    )
     ok = mean_chrf >= args.min_chrf
     print("GATE:", "PASS" if ok else "FAIL", f"(threshold {args.min_chrf})")
     return 0 if ok else 1

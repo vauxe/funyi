@@ -1,5 +1,6 @@
 # coding=utf-8
 """Compute-dtype resolution shared by the MLX model layers."""
+
 from __future__ import annotations
 
 import mlx.core as mx

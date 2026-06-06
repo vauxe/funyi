@@ -16,12 +16,17 @@ from qwen3_asr_runtime.offline_transcription import (
     OfflineTranscriptionStreamEvent,
     OfflineTranslationUnit,
 )
-from qwen3_asr_runtime.transcription_document import TranscriptDocument, TranscriptSegment
+from qwen3_asr_runtime.transcription_document import (
+    TranscriptDocument,
+    TranscriptSegment,
+)
 from realtime_server import TranslationServiceConfig, build_app
 
 
 class FakeTranslationActor:
-    def __init__(self, outputs: list[str] | None = None, *, delay_sec: float = 0.0) -> None:
+    def __init__(
+        self, outputs: list[str] | None = None, *, delay_sec: float = 0.0
+    ) -> None:
         self.outputs = list(outputs or [])
         self.delay_sec = float(delay_sec)
         self.calls: list[dict[str, object]] = []
@@ -50,7 +55,9 @@ class FakeTranslationActor:
 
 
 @pytest.mark.asyncio
-async def test_offline_transcription_route_streams_upload_and_returns_document(monkeypatch) -> None:
+async def test_offline_transcription_route_streams_upload_and_returns_document(
+    monkeypatch,
+) -> None:
     calls: list[dict[str, object]] = []
 
     async def fake_transcribe_file(
@@ -161,8 +168,12 @@ async def test_offline_transcription_route_rejects_translation_without_model() -
 
 
 @pytest.mark.asyncio
-async def test_offline_transcription_route_sanitizes_backend_value_errors(monkeypatch) -> None:
-    async def fake_transcribe_file(*_args: object, **_kwargs: object) -> TranscriptDocument:
+async def test_offline_transcription_route_sanitizes_backend_value_errors(
+    monkeypatch,
+) -> None:
+    async def fake_transcribe_file(
+        *_args: object, **_kwargs: object
+    ) -> TranscriptDocument:
         raise ValueError("private backend details from /tmp/secret-model-path")
 
     monkeypatch.setattr(realtime_server, "transcribe_file", fake_transcribe_file)
@@ -185,8 +196,12 @@ async def test_offline_transcription_route_sanitizes_backend_value_errors(monkey
 
 
 @pytest.mark.asyncio
-async def test_offline_transcription_route_sanitizes_backend_runtime_errors(monkeypatch) -> None:
-    async def fake_transcribe_file(*_args: object, **_kwargs: object) -> TranscriptDocument:
+async def test_offline_transcription_route_sanitizes_backend_runtime_errors(
+    monkeypatch,
+) -> None:
+    async def fake_transcribe_file(
+        *_args: object, **_kwargs: object
+    ) -> TranscriptDocument:
         raise RuntimeError("private backend details from /tmp/secret-model-path")
 
     monkeypatch.setattr(realtime_server, "transcribe_file", fake_transcribe_file)
@@ -209,7 +224,9 @@ async def test_offline_transcription_route_sanitizes_backend_runtime_errors(monk
 
 
 @pytest.mark.asyncio
-async def test_offline_transcription_stream_route_returns_incremental_events(monkeypatch) -> None:
+async def test_offline_transcription_stream_route_returns_incremental_events(
+    monkeypatch,
+) -> None:
     calls: list[dict[str, object]] = []
 
     async def fake_stream_transcribe_file(
@@ -271,10 +288,14 @@ async def test_offline_transcription_stream_route_returns_incremental_events(mon
         )
         yield OfflineTranscriptionStreamEvent(
             kind="complete",
-            document=TranscriptDocument(duration_ms=2000, language="Chinese", segments=[first, second]),
+            document=TranscriptDocument(
+                duration_ms=2000, language="Chinese", segments=[first, second]
+            ),
         )
 
-    monkeypatch.setattr(realtime_server, "stream_transcribe_file", fake_stream_transcribe_file)
+    monkeypatch.setattr(
+        realtime_server, "stream_transcribe_file", fake_stream_transcribe_file
+    )
     model = object()
     translation_actor = FakeTranslationActor(["hello", "world"], delay_sec=0.01)
     executor = ThreadPoolExecutor(max_workers=1)
@@ -298,7 +319,10 @@ async def test_offline_transcription_stream_route_returns_incremental_events(mon
 
     assert response["status"] == 200
     assert str(response["headers"]["content-type"]).startswith("application/x-ndjson")
-    events = [json.loads(line) for line in bytes(response["body"]).decode("utf-8").splitlines()]
+    events = [
+        json.loads(line)
+        for line in bytes(response["body"]).decode("utf-8").splitlines()
+    ]
     assert [event["type"] for event in events] == [
         "transcript_update",
         "transcript_update",
@@ -375,7 +399,9 @@ async def test_offline_transcription_stream_route_returns_incremental_events(mon
 
 
 @pytest.mark.asyncio
-async def test_offline_transcription_stream_route_times_out_translation_and_finishes(monkeypatch) -> None:
+async def test_offline_transcription_stream_route_times_out_translation_and_finishes(
+    monkeypatch,
+) -> None:
     async def fake_stream_transcribe_file(
         model: object,
         audio_source: str,
@@ -407,10 +433,14 @@ async def test_offline_transcription_stream_route_times_out_translation_and_fini
         )
         yield OfflineTranscriptionStreamEvent(
             kind="complete",
-            document=TranscriptDocument(duration_ms=1000, language="Chinese", segments=[segment]),
+            document=TranscriptDocument(
+                duration_ms=1000, language="Chinese", segments=[segment]
+            ),
         )
 
-    monkeypatch.setattr(realtime_server, "stream_transcribe_file", fake_stream_transcribe_file)
+    monkeypatch.setattr(
+        realtime_server, "stream_transcribe_file", fake_stream_transcribe_file
+    )
     translation_actor = FakeTranslationActor(["hello"], delay_sec=1.0)
     executor = ThreadPoolExecutor(max_workers=1)
     try:
@@ -418,7 +448,9 @@ async def test_offline_transcription_stream_route_times_out_translation_and_fini
             model=object(),
             asr_executor=executor,
             translation_actor=translation_actor,
-            translation_service_config=TranslationServiceConfig(max_new_tokens=123, stable_timeout_ms=1),
+            translation_service_config=TranslationServiceConfig(
+                max_new_tokens=123, stable_timeout_ms=1
+            ),
         )
         response = await asgi_request(
             app,
@@ -432,8 +464,15 @@ async def test_offline_transcription_stream_route_times_out_translation_and_fini
         executor.shutdown(wait=True, cancel_futures=True)
 
     assert response["status"] == 200
-    events = [json.loads(line) for line in bytes(response["body"]).decode("utf-8").splitlines()]
-    assert [event["type"] for event in events] == ["transcript_update", "translation_status", "transcript_final"]
+    events = [
+        json.loads(line)
+        for line in bytes(response["body"]).decode("utf-8").splitlines()
+    ]
+    assert [event["type"] for event in events] == [
+        "transcript_update",
+        "translation_status",
+        "transcript_final",
+    ]
     assert events[1] == {
         "type": "translation_status",
         "scope": "stable",
@@ -448,7 +487,10 @@ async def test_offline_transcription_stream_route_times_out_translation_and_fini
     }
     assert "translation" not in events[2]["document"]["segments"][0]
     assert events[2]["document"]["segments"][0]["translationStatus"] == "timeout"
-    assert events[2]["document"]["segments"][0]["translationMessage"] == "translation failed"
+    assert (
+        events[2]["document"]["segments"][0]["translationMessage"]
+        == "translation failed"
+    )
     assert events[2]["segments"][0]["translation_status"] == "timeout"
     assert events[2]["segments"][0]["translation_message"] == "translation failed"
 
@@ -491,11 +533,17 @@ async def test_offline_transcription_stream_route_translates_source_unit_coverin
         )
         yield OfflineTranscriptionStreamEvent(
             kind="complete",
-            document=TranscriptDocument(duration_ms=4000, language="Chinese", segments=[first, second]),
+            document=TranscriptDocument(
+                duration_ms=4000, language="Chinese", segments=[first, second]
+            ),
         )
 
-    monkeypatch.setattr(realtime_server, "stream_transcribe_file", fake_stream_transcribe_file)
-    translation_actor = FakeTranslationActor(["We discuss subtitle display while preserving translation context."])
+    monkeypatch.setattr(
+        realtime_server, "stream_transcribe_file", fake_stream_transcribe_file
+    )
+    translation_actor = FakeTranslationActor(
+        ["We discuss subtitle display while preserving translation context."]
+    )
     executor = ThreadPoolExecutor(max_workers=1)
     try:
         app = build_app(
@@ -516,7 +564,10 @@ async def test_offline_transcription_stream_route_translates_source_unit_coverin
         executor.shutdown(wait=True, cancel_futures=True)
 
     assert response["status"] == 200
-    events = [json.loads(line) for line in bytes(response["body"]).decode("utf-8").splitlines()]
+    events = [
+        json.loads(line)
+        for line in bytes(response["body"]).decode("utf-8").splitlines()
+    ]
     assert [event["type"] for event in events] == [
         "transcript_update",
         "transcript_update",
@@ -591,7 +642,9 @@ async def test_offline_stream_translation_units_apply_backpressure(monkeypatch) 
             )
         yield OfflineTranscriptionStreamEvent(
             kind="complete",
-            document=TranscriptDocument(duration_ms=20_000, language="English", segments=[]),
+            document=TranscriptDocument(
+                duration_ms=20_000, language="English", segments=[]
+            ),
         )
 
     class BlockingTranslationActor:
@@ -609,7 +662,9 @@ async def test_offline_stream_translation_units_apply_backpressure(monkeypatch) 
             await release_translation.wait()
             return [("translated", None)]
 
-    monkeypatch.setattr(realtime_server, "stream_transcribe_file", fake_stream_transcribe_file)
+    monkeypatch.setattr(
+        realtime_server, "stream_transcribe_file", fake_stream_transcribe_file
+    )
     output_queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue(maxsize=100)
     task = asyncio.create_task(
         realtime_server._produce_offline_stream_payloads(
@@ -630,7 +685,9 @@ async def test_offline_stream_translation_units_apply_backpressure(monkeypatch) 
         while output_queue.qsize() < count:
             await asyncio.sleep(0)
 
-    expected_segments_before_backpressure = realtime_server._SERVICE_TRANSLATION_JOB_QUEUE_MAXSIZE + 2
+    expected_segments_before_backpressure = (
+        realtime_server._SERVICE_TRANSLATION_JOB_QUEUE_MAXSIZE + 2
+    )
     try:
         await asyncio.wait_for(translation_started.wait(), timeout=0.5)
         await asyncio.wait_for(
@@ -649,12 +706,16 @@ async def test_offline_stream_translation_units_apply_backpressure(monkeypatch) 
 
 
 @pytest.mark.asyncio
-async def test_offline_transcription_stream_route_reports_runtime_errors_as_stream_errors(monkeypatch) -> None:
+async def test_offline_transcription_stream_route_reports_runtime_errors_as_stream_errors(
+    monkeypatch,
+) -> None:
     async def fake_stream_transcribe_file(*_args: object, **_kwargs: object):
         raise RuntimeError("gpu exploded with private details")
         yield  # pragma: no cover
 
-    monkeypatch.setattr(realtime_server, "stream_transcribe_file", fake_stream_transcribe_file)
+    monkeypatch.setattr(
+        realtime_server, "stream_transcribe_file", fake_stream_transcribe_file
+    )
     executor = ThreadPoolExecutor(max_workers=1)
     try:
         app = build_app(model=object(), asr_executor=executor)
@@ -670,23 +731,33 @@ async def test_offline_transcription_stream_route_reports_runtime_errors_as_stre
         executor.shutdown(wait=True, cancel_futures=True)
 
     assert response["status"] == 200
-    events = [json.loads(line) for line in bytes(response["body"]).decode("utf-8").splitlines()]
+    events = [
+        json.loads(line)
+        for line in bytes(response["body"]).decode("utf-8").splitlines()
+    ]
     assert events == [
         {
             "type": "error",
-            "error": {"code": "internal_error", "message": "Offline transcription failed."},
+            "error": {
+                "code": "internal_error",
+                "message": "Offline transcription failed.",
+            },
             "fatal": True,
         }
     ]
 
 
 @pytest.mark.asyncio
-async def test_offline_transcription_stream_route_sanitizes_backend_value_errors(monkeypatch) -> None:
+async def test_offline_transcription_stream_route_sanitizes_backend_value_errors(
+    monkeypatch,
+) -> None:
     async def fake_stream_transcribe_file(*_args: object, **_kwargs: object):
         raise ValueError("private backend details from /tmp/secret-model-path")
         yield  # pragma: no cover
 
-    monkeypatch.setattr(realtime_server, "stream_transcribe_file", fake_stream_transcribe_file)
+    monkeypatch.setattr(
+        realtime_server, "stream_transcribe_file", fake_stream_transcribe_file
+    )
     executor = ThreadPoolExecutor(max_workers=1)
     try:
         app = build_app(model=object(), asr_executor=executor)
@@ -702,23 +773,35 @@ async def test_offline_transcription_stream_route_sanitizes_backend_value_errors
         executor.shutdown(wait=True, cancel_futures=True)
 
     assert response["status"] == 200
-    events = [json.loads(line) for line in bytes(response["body"]).decode("utf-8").splitlines()]
+    events = [
+        json.loads(line)
+        for line in bytes(response["body"]).decode("utf-8").splitlines()
+    ]
     assert events == [
         {
             "type": "error",
-            "error": {"code": "internal_error", "message": "Offline transcription failed."},
+            "error": {
+                "code": "internal_error",
+                "message": "Offline transcription failed.",
+            },
             "fatal": True,
         }
     ]
 
 
 @pytest.mark.asyncio
-async def test_offline_transcription_stream_route_reports_typed_input_errors(monkeypatch) -> None:
+async def test_offline_transcription_stream_route_reports_typed_input_errors(
+    monkeypatch,
+) -> None:
     async def fake_stream_transcribe_file(*_args: object, **_kwargs: object):
-        raise OfflineTranscriptionInputError("Unsupported or unreadable audio file: clip.wav")
+        raise OfflineTranscriptionInputError(
+            "Unsupported or unreadable audio file: clip.wav"
+        )
         yield  # pragma: no cover
 
-    monkeypatch.setattr(realtime_server, "stream_transcribe_file", fake_stream_transcribe_file)
+    monkeypatch.setattr(
+        realtime_server, "stream_transcribe_file", fake_stream_transcribe_file
+    )
     executor = ThreadPoolExecutor(max_workers=1)
     try:
         app = build_app(model=object(), asr_executor=executor)
@@ -734,18 +817,26 @@ async def test_offline_transcription_stream_route_reports_typed_input_errors(mon
         executor.shutdown(wait=True, cancel_futures=True)
 
     assert response["status"] == 200
-    events = [json.loads(line) for line in bytes(response["body"]).decode("utf-8").splitlines()]
+    events = [
+        json.loads(line)
+        for line in bytes(response["body"]).decode("utf-8").splitlines()
+    ]
     assert events == [
         {
             "type": "error",
-            "error": {"code": "invalid_request", "message": "Unsupported or unreadable audio file: clip.wav"},
+            "error": {
+                "code": "invalid_request",
+                "message": "Unsupported or unreadable audio file: clip.wav",
+            },
             "fatal": True,
         }
     ]
 
 
 @pytest.mark.asyncio
-async def test_offline_stream_producer_cancellation_does_not_wait_for_full_output_queue(monkeypatch) -> None:
+async def test_offline_stream_producer_cancellation_does_not_wait_for_full_output_queue(
+    monkeypatch,
+) -> None:
     keep_stream_open = asyncio.Event()
 
     async def fake_stream_transcribe_file(*_args: object, **_kwargs: object):
@@ -760,7 +851,9 @@ async def test_offline_stream_producer_cancellation_does_not_wait_for_full_outpu
         yield OfflineTranscriptionStreamEvent(kind="segment", segment=segment)
         await keep_stream_open.wait()
 
-    monkeypatch.setattr(realtime_server, "stream_transcribe_file", fake_stream_transcribe_file)
+    monkeypatch.setattr(
+        realtime_server, "stream_transcribe_file", fake_stream_transcribe_file
+    )
     output_queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue(maxsize=1)
     task = asyncio.create_task(
         realtime_server._produce_offline_stream_payloads(
@@ -786,14 +879,18 @@ async def test_offline_stream_producer_cancellation_does_not_wait_for_full_outpu
 
 
 @pytest.mark.asyncio
-async def test_offline_transcription_stream_upload_cancellation_releases_active_session(monkeypatch) -> None:
+async def test_offline_transcription_stream_upload_cancellation_releases_active_session(
+    monkeypatch,
+) -> None:
     async def fake_stream_transcribe_file(*_args: object, **_kwargs: object):
         yield OfflineTranscriptionStreamEvent(
             kind="complete",
             document=TranscriptDocument(duration_ms=0, language="", segments=[]),
         )
 
-    monkeypatch.setattr(realtime_server, "stream_transcribe_file", fake_stream_transcribe_file)
+    monkeypatch.setattr(
+        realtime_server, "stream_transcribe_file", fake_stream_transcribe_file
+    )
     executor = ThreadPoolExecutor(max_workers=1)
     try:
         app = build_app(model=object(), asr_executor=executor)
@@ -852,7 +949,9 @@ async def test_offline_transcription_stream_upload_cancellation_releases_active_
 
 
 @pytest.mark.asyncio
-async def test_offline_transcription_route_rejects_unreadable_audio_with_json_error() -> None:
+async def test_offline_transcription_route_rejects_unreadable_audio_with_json_error() -> (
+    None
+):
     executor = ThreadPoolExecutor(max_workers=1)
     try:
         app = build_app(model=object(), asr_executor=executor)
@@ -873,7 +972,9 @@ async def test_offline_transcription_route_rejects_unreadable_audio_with_json_er
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("path", ["/api/transcriptions", "/api/transcriptions/stream"])
-async def test_offline_transcription_route_allows_loopback_cors_preflight(path: str) -> None:
+async def test_offline_transcription_route_allows_loopback_cors_preflight(
+    path: str,
+) -> None:
     executor = ThreadPoolExecutor(max_workers=1)
     try:
         app = build_app(model=object(), asr_executor=executor)
@@ -897,7 +998,9 @@ async def test_offline_transcription_route_allows_loopback_cors_preflight(path: 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("path", ["/api/transcriptions", "/api/transcriptions/stream"])
-async def test_offline_transcription_route_rejects_non_loopback_cors_preflight(path: str) -> None:
+async def test_offline_transcription_route_rejects_non_loopback_cors_preflight(
+    path: str,
+) -> None:
     executor = ThreadPoolExecutor(max_workers=1)
     try:
         app = build_app(model=object(), asr_executor=executor)
@@ -917,7 +1020,9 @@ async def test_offline_transcription_route_rejects_non_loopback_cors_preflight(p
     assert "access-control-allow-origin" not in response["headers"]
 
 
-async def asgi_post(app: object, path: str, *, query: str, body: bytes) -> dict[str, object]:
+async def asgi_post(
+    app: object, path: str, *, query: str, body: bytes
+) -> dict[str, object]:
     response = await asgi_request(
         app,
         path,
@@ -926,10 +1031,15 @@ async def asgi_post(app: object, path: str, *, query: str, body: bytes) -> dict[
         body=body,
         headers=[(b"content-type", b"application/octet-stream")],
     )
-    return {"status": response["status"], "json": json.loads(bytes(response["body"]).decode("utf-8"))}
+    return {
+        "status": response["status"],
+        "json": json.loads(bytes(response["body"]).decode("utf-8")),
+    }
 
 
-async def asgi_options(app: object, path: str, *, headers: list[tuple[bytes, bytes]]) -> dict[str, object]:
+async def asgi_options(
+    app: object, path: str, *, headers: list[tuple[bytes, bytes]]
+) -> dict[str, object]:
     return await asgi_request(app, path, method="OPTIONS", headers=headers)
 
 
@@ -981,7 +1091,9 @@ async def asgi_request(
         timeout=2.0,
     )
 
-    status = next(message for message in sent if message["type"] == "http.response.start")["status"]
+    status = next(
+        message for message in sent if message["type"] == "http.response.start"
+    )["status"]
     response_headers = {
         key.decode("latin1").lower(): value.decode("latin1")
         for message in sent
@@ -989,6 +1101,8 @@ async def asgi_request(
         for key, value in message.get("headers", [])
     }
     response_body = b"".join(
-        bytes(message.get("body", b"")) for message in sent if message["type"] == "http.response.body"
+        bytes(message.get("body", b""))
+        for message in sent
+        if message["type"] == "http.response.body"
     )
     return {"status": status, "headers": response_headers, "body": response_body}

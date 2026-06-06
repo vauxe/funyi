@@ -99,6 +99,7 @@ class HYMTTranslator:
             # linears (out=6144) cuts per-token decode ~16%; the cuBLAS prefill
             # GEMM avoids the Triton-GEMM penalty -> ~1.12x end-to-end. chrF-gated.
             from .quant_linears import patch_linears_w8a16
+
             self.w8a16_patch_count = patch_linears_w8a16(
                 self.model, suffixes=("gate_proj", "up_proj"), prefill_gemm="cublas"
             )
@@ -110,6 +111,7 @@ class HYMTTranslator:
             # linears). Not bit-identical -- a bf16 argmax flip can rephrase a
             # low-margin token -- gated by the translation chrF golden like W8A16.
             from .fused_rmsnorm import patch_model_rmsnorms
+
             self.fused_rmsnorm_patch_count = patch_model_rmsnorms(self.model)
 
     def translate(
@@ -260,7 +262,9 @@ class HYMTTranslator:
             )
             for _ in source_texts
         ]
-        indexed_texts = [(index, text) for index, text in enumerate(source_texts) if text]
+        indexed_texts = [
+            (index, text) for index, text in enumerate(source_texts) if text
+        ]
         if not indexed_texts:
             return results
         target = str(target_language or "").strip()
@@ -268,7 +272,9 @@ class HYMTTranslator:
             raise ValueError("target_language must not be empty")
 
         prompts = [
-            build_hymt_prompt(text, target_language=target, source_language=source_language)
+            build_hymt_prompt(
+                text, target_language=target, source_language=source_language
+            )
             for _index, text in indexed_texts
         ]
         encode_started = time.perf_counter()
@@ -292,7 +298,9 @@ class HYMTTranslator:
             raise RuntimeError("translation batch output length mismatch")
         decode_wall_sec = time.perf_counter() - decode_started
         total_wall_sec = time.perf_counter() - total_started
-        prompt_tokens = attention_mask.to(dtype=torch.long).sum(dim=1).detach().cpu().tolist()
+        prompt_tokens = (
+            attention_mask.to(dtype=torch.long).sum(dim=1).detach().cpu().tolist()
+        )
         for row_index, ((source_index, _source_text), output, token_ids) in enumerate(
             zip(indexed_texts, outputs, generated_rows)
         ):
@@ -358,7 +366,9 @@ class HYMTTranslator:
         pad_token_id = getattr(self.tokenizer, "pad_token_id", None)
         if pad_token_id is None:
             pad_token_id = getattr(self.tokenizer, "eos_token_id", 0)
-        input_ids = torch.full((len(rows), max_len), int(pad_token_id), dtype=torch.long)
+        input_ids = torch.full(
+            (len(rows), max_len), int(pad_token_id), dtype=torch.long
+        )
         attention_mask = torch.zeros((len(rows), max_len), dtype=torch.bool)
         for index, row in enumerate(rows):
             length = int(row.shape[-1])
@@ -391,7 +401,9 @@ class HYMTTranslator:
         generate_kwargs = self._build_generate_kwargs(max_new_tokens=max_new_tokens)
         if attention_mask is not None:
             generate_kwargs["attention_mask"] = attention_mask
-        if self.decode_backend == "fixed_mask" and self._can_use_fixed_mask_decode(generate_kwargs):
+        if self.decode_backend == "fixed_mask" and self._can_use_fixed_mask_decode(
+            generate_kwargs
+        ):
             generate_kwargs["custom_generate"] = _hymt_fixed_mask_generate
         outputs = self.model.generate(
             input_ids=input_ids,
@@ -431,7 +443,9 @@ class HYMTTranslator:
         config = self.generation_config
         kwargs: dict[str, Any] = {
             "do_sample": bool(config.do_sample),
-            "max_new_tokens": int(max_new_tokens if max_new_tokens is not None else config.max_new_tokens),
+            "max_new_tokens": int(
+                max_new_tokens if max_new_tokens is not None else config.max_new_tokens
+            ),
             "repetition_penalty": float(config.repetition_penalty),
             "use_cache": True,
         }
@@ -457,7 +471,9 @@ class HYMTTranslator:
             torch.cuda.synchronize(self.input_device)
 
 
-def build_hymt_prompt(text: str, *, target_language: str, source_language: str = "") -> str:
+def build_hymt_prompt(
+    text: str, *, target_language: str, source_language: str = ""
+) -> str:
     source_text = str(text or "").strip()
     target = str(target_language or "").strip()
     if not target:
@@ -472,7 +488,9 @@ def _normalize_model_revision(model_revision: str | None) -> str | None:
     return value or None
 
 
-def _resolve_model_path(model_path: str, *, local_files_only: bool, model_revision: str | None = None) -> str:
+def _resolve_model_path(
+    model_path: str, *, local_files_only: bool, model_revision: str | None = None
+) -> str:
     path = str(model_path)
     model_revision = _normalize_model_revision(model_revision)
     if Path(path).exists():
@@ -487,7 +505,9 @@ def _resolve_model_path(model_path: str, *, local_files_only: bool, model_revisi
 
     from huggingface_hub import snapshot_download
 
-    return str(snapshot_download(repo_id=path, revision=model_revision, local_files_only=True))
+    return str(
+        snapshot_download(repo_id=path, revision=model_revision, local_files_only=True)
+    )
 
 
 def _model_commit_hash(model: Any) -> str | None:
@@ -520,11 +540,15 @@ def _resolved_commit(model: Any, model_path: str) -> str | None:
     return _model_commit_hash(model) or _snapshot_commit_from_path(model_path)
 
 
-def _resolve_dtype(dtype: str | torch.dtype | None, *, device: str) -> Optional[torch.dtype]:
+def _resolve_dtype(
+    dtype: str | torch.dtype | None, *, device: str
+) -> Optional[torch.dtype]:
     if isinstance(dtype, torch.dtype):
         return dtype
     if dtype is None:
-        uses_cuda = str(device).startswith("cuda") or (str(device) == "auto" and torch.cuda.is_available())
+        uses_cuda = str(device).startswith("cuda") or (
+            str(device) == "auto" and torch.cuda.is_available()
+        )
         return torch.bfloat16 if uses_cuda else None
     name = str(dtype).strip().lower()
     if name in {"", "auto"}:
@@ -552,7 +576,12 @@ def _resolve_attn_implementation(attn_implementation: str | None) -> str | None:
 
 
 def _resolve_decode_backend(decode_backend: str | None) -> str:
-    value = str(decode_backend or DEFAULT_HYMT_DECODE_BACKEND).strip().lower().replace("-", "_")
+    value = (
+        str(decode_backend or DEFAULT_HYMT_DECODE_BACKEND)
+        .strip()
+        .lower()
+        .replace("-", "_")
+    )
     if value in {"", "default", "fixed", "fixed_mask"}:
         return "fixed_mask"
     if value in {"generate", "hf", "hf_generate"}:
@@ -577,7 +606,9 @@ def _disable_noop_hymt_dynamic_rope(model: Any) -> bool:
 
     max_cached = _as_int_or_none(getattr(rotary, "max_seq_len_cached", None))
     original_max = _as_int_or_none(getattr(rotary, "original_max_seq_len", None))
-    max_positions = _as_int_or_none(getattr(getattr(rotary, "config", None), "max_position_embeddings", None))
+    max_positions = _as_int_or_none(
+        getattr(getattr(rotary, "config", None), "max_position_embeddings", None)
+    )
     if max_cached is None or original_max is None or max_positions is None:
         return False
     if max_cached != original_max or max_cached != max_positions:
@@ -614,16 +645,22 @@ def _hymt_fixed_mask_generate(
     del streamer
     batch_size, prompt_len = input_ids.shape[:2]
     max_length = int(generation_config.max_length)
-    sequences = torch.empty((batch_size, max_length), dtype=input_ids.dtype, device=input_ids.device)
+    sequences = torch.empty(
+        (batch_size, max_length), dtype=input_ids.dtype, device=input_ids.device
+    )
     sequences[:, :prompt_len] = input_ids
 
-    attention_mask = torch.zeros((batch_size, max_length), dtype=torch.bool, device=input_ids.device)
+    attention_mask = torch.zeros(
+        (batch_size, max_length), dtype=torch.bool, device=input_ids.device
+    )
     source_attention_mask = model_kwargs.get("attention_mask")
     if source_attention_mask is None:
         attention_mask[:, :prompt_len] = True
     else:
         mask_len = int(source_attention_mask.shape[1])
-        attention_mask[:, :mask_len] = source_attention_mask.to(device=input_ids.device, dtype=torch.bool)
+        attention_mask[:, :mask_len] = source_attention_mask.to(
+            device=input_ids.device, dtype=torch.bool
+        )
     past_key_values = model_kwargs.get("past_key_values")
     cache_max_length = _cache_max_length(past_key_values) or max_length
     static_attention_masks = _build_static_sdpa_attention_masks(
@@ -636,12 +673,16 @@ def _hymt_fixed_mask_generate(
         device=input_ids.device,
     )
 
-    cache_positions = torch.arange(max_length, device=input_ids.device, dtype=torch.long)
+    cache_positions = torch.arange(
+        max_length, device=input_ids.device, dtype=torch.long
+    )
     use_cache = bool(model_kwargs.get("use_cache", True))
     logits_to_keep = model_kwargs.get("logits_to_keep", 1)
     pad_token_id = generation_config._pad_token_tensor
     do_sample = bool(generation_config.do_sample)
-    has_eos_stopping_criteria = any(hasattr(criteria, "eos_token_id") for criteria in stopping_criteria)
+    has_eos_stopping_criteria = any(
+        hasattr(criteria, "eos_token_id") for criteria in stopping_criteria
+    )
     fast_stop_eos_ids = (
         _fast_stop_eos_token_ids(stopping_criteria)
         if batch_size == 1 and not synced_gpus
@@ -655,12 +696,16 @@ def _hymt_fixed_mask_generate(
         model_forward = model.get_compiled_call(generation_config.compile_config)
 
     cur_len = int(prompt_len)
-    unfinished_sequences = torch.ones(batch_size, dtype=torch.long, device=input_ids.device)
+    unfinished_sequences = torch.ones(
+        batch_size, dtype=torch.long, device=input_ids.device
+    )
     this_peer_finished = False
     is_prefill = True
     while cur_len < max_length and (
         fast_stop_eos_ids is not None
-        or model._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device)
+        or model._has_unfinished_sequences(
+            this_peer_finished, synced_gpus, device=input_ids.device
+        )
     ):
         current_input_ids = sequences[:, :cur_len]
         if is_prefill:
@@ -692,7 +737,9 @@ def _hymt_fixed_mask_generate(
         if synced_gpus and this_peer_finished:
             continue
 
-        next_token_logits = outputs.logits[:, -1, :].to(copy=True, dtype=torch.float32, device=input_ids.device)
+        next_token_logits = outputs.logits[:, -1, :].to(
+            copy=True, dtype=torch.float32, device=input_ids.device
+        )
         next_token_scores = logits_processor(current_input_ids, next_token_logits)
         if do_sample:
             probs = torch.nn.functional.softmax(next_token_scores, dim=-1)
@@ -700,7 +747,9 @@ def _hymt_fixed_mask_generate(
         else:
             next_tokens = torch.argmax(next_token_scores, dim=-1)
         if has_eos_stopping_criteria and fast_stop_eos_ids is None:
-            next_tokens = next_tokens * unfinished_sequences + pad_token_id * (1 - unfinished_sequences)
+            next_tokens = next_tokens * unfinished_sequences + pad_token_id * (
+                1 - unfinished_sequences
+            )
 
         sequences[:, cur_len] = next_tokens
         if static_attention_masks is None:
@@ -710,7 +759,9 @@ def _hymt_fixed_mask_generate(
             if fast_stop_eos_ids and int(next_tokens.item()) in fast_stop_eos_ids:
                 break
         else:
-            unfinished_sequences = unfinished_sequences & ~stopping_criteria(sequences[:, :cur_len], None)
+            unfinished_sequences = unfinished_sequences & ~stopping_criteria(
+                sequences[:, :cur_len], None
+            )
             this_peer_finished = unfinished_sequences.max() == 0
         del outputs
 
@@ -748,10 +799,17 @@ def _build_static_sdpa_attention_masks(
     source_attention_mask: Any | None,
     device: torch.device,
 ) -> torch.Tensor | None:
-    if batch_size != 1 or getattr(getattr(model, "config", None), "_attn_implementation", None) != "sdpa":
+    if (
+        batch_size != 1
+        or getattr(getattr(model, "config", None), "_attn_implementation", None)
+        != "sdpa"
+    ):
         return None
     if source_attention_mask is not None:
-        if getattr(source_attention_mask, "ndim", None) != 2 or int(source_attention_mask.shape[1]) != prompt_len:
+        if (
+            getattr(source_attention_mask, "ndim", None) != 2
+            or int(source_attention_mask.shape[1]) != prompt_len
+        ):
             return None
         prompt_mask = source_attention_mask.to(device=device, dtype=torch.bool)
         if not bool(prompt_mask.all().item()):
@@ -759,7 +817,9 @@ def _build_static_sdpa_attention_masks(
 
     query_positions = torch.arange(max_length, device=device)
     key_positions = torch.arange(cache_max_length, device=device)
-    return key_positions.view(1, 1, 1, cache_max_length) <= query_positions.view(1, 1, max_length, 1)
+    return key_positions.view(1, 1, 1, cache_max_length) <= query_positions.view(
+        1, 1, max_length, 1
+    )
 
 
 def _attention_mask_for_step(

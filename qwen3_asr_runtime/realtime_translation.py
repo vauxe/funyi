@@ -70,7 +70,9 @@ class _StableUnitBuilder:
     def clear(self) -> None:
         self._pending.clear()
 
-    def stage(self, segment: _StableSourceSegment, *, hold_open: bool) -> list[_StableJob]:
+    def stage(
+        self, segment: _StableSourceSegment, *, hold_open: bool
+    ) -> list[_StableJob]:
         jobs: list[_StableJob] = []
         if self._pending and not self._can_append(segment):
             job = self._pop_pending_job()
@@ -105,7 +107,9 @@ class _StableUnitBuilder:
         self._pending.clear()
         return segments
 
-    def jobs_from_segments(self, segments: list[_StableSourceSegment]) -> list[_StableJob]:
+    def jobs_from_segments(
+        self, segments: list[_StableSourceSegment]
+    ) -> list[_StableJob]:
         builder = _StableUnitBuilder()
         jobs: list[_StableJob] = []
         for segment in segments:
@@ -117,7 +121,10 @@ class _StableUnitBuilder:
         if not self._pending:
             return True
         first = self._pending[0]
-        return segment.source_language == first.source_language and segment.target_language == first.target_language
+        return (
+            segment.source_language == first.source_language
+            and segment.target_language == first.target_language
+        )
 
     def _pending_text(self) -> str:
         return _join_source_texts([segment.source_text for segment in self._pending])
@@ -127,7 +134,9 @@ class _StableUnitBuilder:
         self._pending.clear()
         return job
 
-    def _job_from_segments(self, segments: list[_StableSourceSegment]) -> _StableJob | None:
+    def _job_from_segments(
+        self, segments: list[_StableSourceSegment]
+    ) -> _StableJob | None:
         if not segments:
             return None
         source_text = _join_source_texts([segment.source_text for segment in segments])
@@ -136,7 +145,9 @@ class _StableUnitBuilder:
         return _StableJob(
             source_revision=max(int(segment.source_revision) for segment in segments),
             source_segment_ids=tuple(segment.source_segment_id for segment in segments),
-            source_segment_indices=tuple(int(segment.source_segment_index) for segment in segments),
+            source_segment_indices=tuple(
+                int(segment.source_segment_index) for segment in segments
+            ),
             source_text=source_text,
             source_language=segments[0].source_language,
             target_language=segments[0].target_language,
@@ -186,7 +197,9 @@ class TranslationModelActor:
     ) -> list[Any]:
         warmup = getattr(self.translator, "warmup", None)
         if warmup is None:
-            raise RuntimeError("translation prewarm was requested but this translator does not support warmup")
+            raise RuntimeError(
+                "translation prewarm was requested but this translator does not support warmup"
+            )
         future = self._executor.submit(
             self._call_with_capture_lock,
             partial(
@@ -226,7 +239,9 @@ class TranslationModelActor:
             translated = str(
                 await _wait_future_result(
                     future,
-                    timeout_sec=None if timeout_sec is None else max(0.001, float(timeout_sec)),
+                    timeout_sec=None
+                    if timeout_sec is None
+                    else max(0.001, float(timeout_sec)),
                 )
             ).strip()
             if not translated:
@@ -264,12 +279,16 @@ class TranslationModelActor:
         try:
             raw_outputs = await _wait_future_result(
                 future,
-                timeout_sec=None if timeout_sec is None else max(0.001, float(timeout_sec)),
+                timeout_sec=None
+                if timeout_sec is None
+                else max(0.001, float(timeout_sec)),
             )
             outputs = [str(output).strip() for output in raw_outputs]
             if len(outputs) != len(texts):
                 raise RuntimeError("translation batch output length mismatch")
-            return [(output, None) if output else (None, "failed") for output in outputs]
+            return [
+                (output, None) if output else (None, "failed") for output in outputs
+            ]
         except asyncio.TimeoutError:
             return [(None, "timeout") for _ in texts]
         except Exception:
@@ -422,7 +441,9 @@ class RealtimeTranslationRuntime:
 
         revision = int(event.get("revision") or 0)
         partial = event.get("partial")
-        partial_has_text = isinstance(partial, dict) and bool(str(partial.get("text") or "").strip())
+        partial_has_text = isinstance(partial, dict) and bool(
+            str(partial.get("text") or "").strip()
+        )
         if self.config.stable_enabled:
             for segment in event.get("stable_appends") or []:
                 if isinstance(segment, dict):
@@ -437,14 +458,18 @@ class RealtimeTranslationRuntime:
 
         if self.config.preview_enabled:
             if partial_has_text and isinstance(partial, dict):
-                await self._update_preview(revision, partial, target_language=target_language)
+                await self._update_preview(
+                    revision, partial, target_language=target_language
+                )
             else:
                 await self._cancel_preview()
 
     async def cancel_preview(self) -> None:
         await self._cancel_preview()
 
-    async def finish(self, transcript_updates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    async def finish(
+        self, transcript_updates: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         async with self._lock:
             self._finish_mode = True
             self._preview_generation += 1
@@ -485,7 +510,9 @@ class RealtimeTranslationRuntime:
         target_language: str,
         hold_open: bool,
     ) -> None:
-        source_segment = self._make_stable_source_segment(revision, segment, target_language=target_language)
+        source_segment = self._make_stable_source_segment(
+            revision, segment, target_language=target_language
+        )
         if source_segment is None:
             return
 
@@ -520,7 +547,9 @@ class RealtimeTranslationRuntime:
         async with self._lock:
             if self._finish_mode or self._closed:
                 return
-            source_language = str(partial_segment.get("language") or self.config.source_language or "")
+            source_language = str(
+                partial_segment.get("language") or self.config.source_language or ""
+            )
             prefix = self._stable_units.preview_prefix(
                 source_language=source_language,
                 target_language=target_language,
@@ -615,7 +644,9 @@ class RealtimeTranslationRuntime:
             }
         )
 
-    async def _run_stable_jobs(self, jobs: list[_StableJob], *, publish: bool) -> list[dict[str, Any]]:
+    async def _run_stable_jobs(
+        self, jobs: list[_StableJob], *, publish: bool
+    ) -> list[dict[str, Any]]:
         if not jobs:
             return []
         translations = await self._translate_texts(
@@ -709,7 +740,9 @@ class RealtimeTranslationRuntime:
         if not self._stable_queue:
             return []
         batch = [self._stable_queue.popleft()]
-        while self._stable_queue and self._can_append_to_stable_batch(batch, self._stable_queue[0]):
+        while self._stable_queue and self._can_append_to_stable_batch(
+            batch, self._stable_queue[0]
+        ):
             batch.append(self._stable_queue.popleft())
         return batch
 
@@ -729,7 +762,9 @@ class RealtimeTranslationRuntime:
             batches.append(current)
         return batches
 
-    def _can_append_to_stable_batch(self, batch: list[_StableJob], job: _StableJob) -> bool:
+    def _can_append_to_stable_batch(
+        self, batch: list[_StableJob], job: _StableJob
+    ) -> bool:
         return (
             bool(batch)
             and len(batch) < max(1, int(self.config.stable_batch_size))
@@ -779,11 +814,15 @@ class RealtimeTranslationRuntime:
             source_segment_id=str(segment.get("id") or ""),
             source_segment_index=int(segment.get("index") or 0),
             source_text=source_text,
-            source_language=str(segment.get("language") or self.config.source_language or ""),
+            source_language=str(
+                segment.get("language") or self.config.source_language or ""
+            ),
             target_language=target,
         )
 
-    def _stable_status(self, job: _StableJob, code: str, message: str) -> dict[str, Any]:
+    def _stable_status(
+        self, job: _StableJob, code: str, message: str
+    ) -> dict[str, Any]:
         return {
             "type": "translation_status",
             "scope": "stable",
@@ -817,7 +856,14 @@ def _join_source_texts(texts: list[str]) -> str:
 
 
 def _needs_ascii_word_separator(left: str, right: str) -> bool:
-    return bool(left and right and left.isascii() and right.isascii() and left.isalnum() and right.isalnum())
+    return bool(
+        left
+        and right
+        and left.isascii()
+        and right.isascii()
+        and left.isalnum()
+        and right.isalnum()
+    )
 
 
 def _consume_future(future: Any) -> None:
@@ -829,7 +875,9 @@ def _consume_future(future: Any) -> None:
         pass
 
 
-async def _wait_future_result(future: asyncio.Future[Any], *, timeout_sec: float | None) -> Any:
+async def _wait_future_result(
+    future: asyncio.Future[Any], *, timeout_sec: float | None
+) -> Any:
     # ``future`` is a ``loop.run_in_executor`` future; it is resolved through
     # ``call_soon_threadsafe`` when the worker thread finishes, so awaiting it
     # wakes the event loop immediately. Awaiting directly (instead of polling on
@@ -842,4 +890,8 @@ async def _wait_future_result(future: asyncio.Future[Any], *, timeout_sec: float
     return await asyncio.wait_for(future, float(timeout_sec))
 
 
-__all__ = ["RealtimeTranslationConfig", "RealtimeTranslationRuntime", "TranslationModelActor"]
+__all__ = [
+    "RealtimeTranslationConfig",
+    "RealtimeTranslationRuntime",
+    "TranslationModelActor",
+]

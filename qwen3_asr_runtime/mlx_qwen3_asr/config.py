@@ -4,6 +4,7 @@
 Independent of ``transformers.PretrainedConfig`` so the MLX model layer stays
 torch-free. Holds only the fields the model layer reads; nothing is hardcoded.
 """
+
 from __future__ import annotations
 
 import json
@@ -34,7 +35,9 @@ class MLXTextConfig:
             intermediate_size=int(d["intermediate_size"]),
             num_hidden_layers=int(d["num_hidden_layers"]),
             num_attention_heads=int(d["num_attention_heads"]),
-            num_key_value_heads=int(d.get("num_key_value_heads", d["num_attention_heads"])),
+            num_key_value_heads=int(
+                d.get("num_key_value_heads", d["num_attention_heads"])
+            ),
             head_dim=int(head_dim),
             rms_norm_eps=float(d.get("rms_norm_eps", 1e-6)),
             rope_theta=float(d.get("rope_theta", 1e6)),
@@ -79,7 +82,9 @@ class MLXQwen3ASRConfig:
     audio: MLXAudioConfig
     audio_token_id: int
     eos_token_ids: List[int] = field(default_factory=lambda: [151645, 151643])
-    quantization: Optional[dict] = None  # {"group_size", "bits"} for pre-quantized checkpoints
+    quantization: Optional[dict] = (
+        None  # {"group_size", "bits"} for pre-quantized checkpoints
+    )
     # Forced-aligner variant (thinker model_type "qwen3_forced_aligner"): the head is a
     # classify_num-way timestamp classifier instead of the vocab LM head, and timestamps
     # are decoded as argmax-index * timestamp_segment_time (ms). None for plain ASR.
@@ -92,11 +97,15 @@ class MLXQwen3ASRConfig:
         return self.classify_num is not None
 
     @classmethod
-    def from_dict(cls, raw: dict, generation: Optional[dict] = None) -> "MLXQwen3ASRConfig":
+    def from_dict(
+        cls, raw: dict, generation: Optional[dict] = None
+    ) -> "MLXQwen3ASRConfig":
         thinker = raw.get("thinker_config", raw)
         text = MLXTextConfig.from_dict(thinker["text_config"])
         audio = MLXAudioConfig.from_dict(thinker["audio_config"])
-        audio_token_id = thinker.get("audio_token_id", raw.get("audio_token_id", 151646))
+        audio_token_id = thinker.get(
+            "audio_token_id", raw.get("audio_token_id", 151646)
+        )
 
         eos = [151645, 151643]
         if generation:
@@ -108,7 +117,9 @@ class MLXQwen3ASRConfig:
 
         classify_num = thinker.get("classify_num", raw.get("classify_num"))
         ts_token_id = raw.get("timestamp_token_id", thinker.get("timestamp_token_id"))
-        ts_segment_time = raw.get("timestamp_segment_time", thinker.get("timestamp_segment_time"))
+        ts_segment_time = raw.get(
+            "timestamp_segment_time", thinker.get("timestamp_segment_time")
+        )
 
         return cls(
             text=text,
@@ -118,7 +129,9 @@ class MLXQwen3ASRConfig:
             quantization=raw.get("quantization"),
             classify_num=int(classify_num) if classify_num is not None else None,
             timestamp_token_id=int(ts_token_id) if ts_token_id is not None else None,
-            timestamp_segment_time=float(ts_segment_time) if ts_segment_time is not None else None,
+            timestamp_segment_time=float(ts_segment_time)
+            if ts_segment_time is not None
+            else None,
         )
 
     @classmethod

@@ -14,7 +14,9 @@ from qwen3_asr_runtime.forced_aligner import (
     ForcedAlignTextSegment,
     normalize_forced_align_language,
 )
-from qwen3_asr_runtime.hf_qwen3_asr.configuration_qwen3_asr import Qwen3ASRAudioEncoderConfig
+from qwen3_asr_runtime.hf_qwen3_asr.configuration_qwen3_asr import (
+    Qwen3ASRAudioEncoderConfig,
+)
 from qwen3_asr_runtime.hf_qwen3_asr.modeling_qwen3_asr import Qwen3ASRAudioEncoder
 
 
@@ -48,7 +50,9 @@ def _seeded_timestamp_cases() -> tuple[list[tuple[int, list[int]]], list[str]]:
 TIMESTAMP_SEEDED_CASES, TIMESTAMP_SEEDED_CASE_IDS = _seeded_timestamp_cases()
 
 
-def _seeded_audio_features(config: Qwen3ASRAudioEncoderConfig, case_index: int) -> torch.Tensor:
+def _seeded_audio_features(
+    config: Qwen3ASRAudioEncoderConfig, case_index: int
+) -> torch.Tensor:
     return [
         torch.randn(config.num_mel_bins, feature_len)
         for feature_len in AUDIO_ENCODER_FEATURE_LENS
@@ -73,15 +77,22 @@ def _reference_pack_audio(
         dtype=torch.long,
         device=feature_lens.device,
     )
-    tail_chunk_index = torch.nn.functional.pad(chunk_num, (1, 0), value=-1).cumsum(0)[1:]
+    tail_chunk_index = torch.nn.functional.pad(chunk_num, (1, 0), value=-1).cumsum(0)[
+        1:
+    ]
     chunk_lengths[tail_chunk_index] = feature_lens % chunk_width
     chunk_lengths[chunk_lengths == 0] = chunk_width
 
     chunk_list = input_features.T.split(chunk_lengths.tolist(), dim=0)
-    padded_feature = torch.nn.utils.rnn.pad_sequence(chunk_list, batch_first=True).transpose(1, 2)
+    padded_feature = torch.nn.utils.rnn.pad_sequence(
+        chunk_list, batch_first=True
+    ).transpose(1, 2)
     feature_lens_after_cnn = _reference_feat_extract_output_lengths(chunk_lengths)
     padded_mask_after_cnn = torch.nn.utils.rnn.pad_sequence(
-        [torch.ones(length, dtype=torch.bool, device=padded_feature.device) for length in feature_lens_after_cnn],
+        [
+            torch.ones(length, dtype=torch.bool, device=padded_feature.device)
+            for length in feature_lens_after_cnn
+        ],
         batch_first=True,
     )
     return padded_feature, padded_mask_after_cnn
@@ -204,7 +215,9 @@ class FakeThinker:
         self.calls += 1
         self.use_cache_values.append(use_cache)
         vocab_size = max(8, max(self.timestamp_classes) + 1)
-        logits = torch.full((input_ids.shape[0], input_ids.shape[1], vocab_size), -1000.0)
+        logits = torch.full(
+            (input_ids.shape[0], input_ids.shape[1], vocab_size), -1000.0
+        )
         logits[:, :, 7] = 999.0
         for row in range(input_ids.shape[0]):
             timestamp_positions = torch.nonzero(
@@ -213,14 +226,18 @@ class FakeThinker:
             ).flatten()
             for idx, pos in enumerate(timestamp_positions):
                 logits[row, pos, :] = -1000.0
-                logits[row, pos, self.timestamp_classes[idx % len(self.timestamp_classes)]] = 1000.0
+                logits[
+                    row, pos, self.timestamp_classes[idx % len(self.timestamp_classes)]
+                ] = 1000.0
         return SimpleNamespace(logits=logits)
 
 
 class FakeModel(torch.nn.Module):
     def __init__(self, timestamp_classes: list[int]) -> None:
         super().__init__()
-        self.config = SimpleNamespace(timestamp_token_id=TIMESTAMP_TOKEN_ID, timestamp_segment_time=80)
+        self.config = SimpleNamespace(
+            timestamp_token_id=TIMESTAMP_TOKEN_ID, timestamp_segment_time=80
+        )
         self.thinker = FakeThinker(timestamp_classes)
 
 
@@ -230,9 +247,9 @@ class TestForceAlignTextProcessor:
 
         words, prompt = processor.encode_timestamp("现在AI，可以", "Chinese")
 
-        assert words == ['现', '在', 'AI', '可', '以']
-        assert prompt.startswith('<|audio_start|><|audio_pad|><|audio_end|>')
-        assert prompt.count('<timestamp>') == 10
+        assert words == ["现", "在", "AI", "可", "以"]
+        assert prompt.startswith("<|audio_start|><|audio_pad|><|audio_end|>")
+        assert prompt.count("<timestamp>") == 10
 
     def test_empty_text_keeps_official_timestamp_prompt(self) -> None:
         processor = Qwen3ForceAlignTextProcessor()
@@ -240,14 +257,16 @@ class TestForceAlignTextProcessor:
         words, prompt = processor.encode_timestamp("", "Chinese")
 
         assert words == []
-        assert prompt == '<|audio_start|><|audio_pad|><|audio_end|><timestamp><timestamp>'
+        assert (
+            prompt == "<|audio_start|><|audio_pad|><|audio_end|><timestamp><timestamp>"
+        )
 
     def test_space_language_removes_punctuation_without_losing_words(self) -> None:
         processor = Qwen3ForceAlignTextProcessor()
 
         words, _ = processor.encode_timestamp("hello, world! it's 2026.", "English")
 
-        assert words == ['hello', 'world', "it's", '2026']
+        assert words == ["hello", "world", "it's", "2026"]
 
     def test_timestamp_repair_leaves_monotonic_values_unchanged(self) -> None:
         processor = Qwen3ForceAlignTextProcessor()
@@ -257,12 +276,16 @@ class TestForceAlignTextProcessor:
         assert fixed == [0, 80, 160, 240]
 
     @pytest.mark.parametrize("values", TIMESTAMP_TIE_CASES, ids=TIMESTAMP_TIE_CASE_IDS)
-    def test_timestamp_repair_matches_official_tie_breaking(self, values: list[int]) -> None:
+    def test_timestamp_repair_matches_official_tie_breaking(
+        self, values: list[int]
+    ) -> None:
         processor = Qwen3ForceAlignTextProcessor()
 
         assert processor.fix_timestamp(values) == _official_slow_fix_timestamp(values)
 
-    @pytest.mark.parametrize(("length", "values"), TIMESTAMP_SEEDED_CASES, ids=TIMESTAMP_SEEDED_CASE_IDS)
+    @pytest.mark.parametrize(
+        ("length", "values"), TIMESTAMP_SEEDED_CASES, ids=TIMESTAMP_SEEDED_CASE_IDS
+    )
     def test_timestamp_repair_matches_official_on_seeded_sequences(
         self,
         length: int,
@@ -270,10 +293,12 @@ class TestForceAlignTextProcessor:
     ) -> None:
         processor = Qwen3ForceAlignTextProcessor()
 
-        assert processor.fix_timestamp(values) == _official_slow_fix_timestamp(values), f"length={length!r}"
+        assert processor.fix_timestamp(values) == _official_slow_fix_timestamp(
+            values
+        ), f"length={length!r}"
 
     def test_language_validation_uses_aligner_language_set(self) -> None:
-        assert normalize_forced_align_language('cHINese') == 'Chinese'
+        assert normalize_forced_align_language("cHINese") == "Chinese"
         with pytest.raises(ValueError):
             normalize_forced_align_language("Arabic")
 
@@ -283,11 +308,17 @@ class TestForcedAlignerBackend:
         model = FakeModel(timestamp_classes=[0, 2, 3, 5])
         backend = Qwen3ForcedAlignerBackend(model=model, processor=FakeProcessor())
 
-        result = backend.align(audio=(np.zeros(16000, dtype=np.float32), 16000), text="现在", language="Chinese")[0]
+        result = backend.align(
+            audio=(np.zeros(16000, dtype=np.float32), 16000),
+            text="现在",
+            language="Chinese",
+        )[0]
 
-        assert [(item.text, item.start_time, item.end_time) for item in result.items] == [
-            ('现', 0.0, 0.16),
-            ('在', 0.24, 0.4),
+        assert [
+            (item.text, item.start_time, item.end_time) for item in result.items
+        ] == [
+            ("现", 0.0, 0.16),
+            ("在", 0.24, 0.4),
         ]
         assert model.thinker.calls == 1
         assert model.thinker.use_cache_values == [None]
@@ -296,7 +327,11 @@ class TestForcedAlignerBackend:
         model = FakeModel(timestamp_classes=[0])
         backend = Qwen3ForcedAlignerBackend(model=model, processor=FakeProcessor())
 
-        result = backend.align(audio=(np.zeros(16000, dtype=np.float32), 16000), text="", language="Chinese")[0]
+        result = backend.align(
+            audio=(np.zeros(16000, dtype=np.float32), 16000),
+            text="",
+            language="Chinese",
+        )[0]
 
         assert result.items == []
         assert model.thinker.calls == 1
@@ -305,12 +340,20 @@ class TestForcedAlignerBackend:
         model = FakeModel(timestamp_classes=[0, 20])
         backend = Qwen3ForcedAlignerBackend(model=model, processor=FakeProcessor())
 
-        result = backend.align(audio=(np.zeros(1600, dtype=np.float32), 16000), text="好", language="Chinese")[0]
+        result = backend.align(
+            audio=(np.zeros(1600, dtype=np.float32), 16000),
+            text="好",
+            language="Chinese",
+        )[0]
 
-        assert [(item.text, item.start_time, item.end_time) for item in result.items] == [('好', 0.0, 1.6)]
+        assert [
+            (item.text, item.start_time, item.end_time) for item in result.items
+        ] == [("好", 0.0, 1.6)]
 
     def test_batch_alignment_preserves_output_order(self) -> None:
-        backend = Qwen3ForcedAlignerBackend(model=FakeModel(timestamp_classes=[0, 2, 3, 5]), processor=FakeProcessor())
+        backend = Qwen3ForcedAlignerBackend(
+            model=FakeModel(timestamp_classes=[0, 2, 3, 5]), processor=FakeProcessor()
+        )
 
         results = backend.align(
             audio=[
@@ -322,9 +365,13 @@ class TestForcedAlignerBackend:
             language="Chinese",
         )
 
-        assert [''.join((item.text for item in result.items)) for result in results] == ['现在', '好', '可以']
+        assert [
+            "".join((item.text for item in result.items)) for result in results
+        ] == ["现在", "好", "可以"]
 
-    def test_transcript_window_alignment_preserves_segment_order_and_offsets(self) -> None:
+    def test_transcript_window_alignment_preserves_segment_order_and_offsets(
+        self,
+    ) -> None:
         backend = Qwen3ForcedAlignerBackend(
             model=FakeModel(timestamp_classes=[0, 2, 3, 5, 5, 7]),
             processor=FakeProcessor(),
@@ -342,14 +389,23 @@ class TestForcedAlignerBackend:
             pad_sec=0.0,
         )
 
-        assert [result.text if result else None for result in results] == ['现在', '好', '可以']
-        assert [(result.start_time, result.end_time) if result else None for result in results] == [
+        assert [result.text if result else None for result in results] == [
+            "现在",
+            "好",
+            "可以",
+        ]
+        assert [
+            (result.start_time, result.end_time) if result else None
+            for result in results
+        ] == [
             (1.24, 1.56),
             (1.0, 1.16),
             (6.0, 6.4),
         ]
 
-    def test_transcript_window_alignment_preserves_space_language_boundaries(self) -> None:
+    def test_transcript_window_alignment_preserves_space_language_boundaries(
+        self,
+    ) -> None:
         backend = Qwen3ForcedAlignerBackend(
             model=FakeModel(timestamp_classes=[0, 2, 3, 5]),
             processor=FakeProcessor(),
@@ -365,10 +421,15 @@ class TestForcedAlignerBackend:
             window_sec=4.0,
         )
 
-        assert [result.text if result else None for result in results] == ['hello', 'world']
+        assert [result.text if result else None for result in results] == [
+            "hello",
+            "world",
+        ]
 
     def test_transcript_window_alignment_validates_window_arguments(self) -> None:
-        backend = Qwen3ForcedAlignerBackend(model=FakeModel(timestamp_classes=[0]), processor=FakeProcessor())
+        backend = Qwen3ForcedAlignerBackend(
+            model=FakeModel(timestamp_classes=[0]), processor=FakeProcessor()
+        )
         with pytest.raises(ValueError):
             backend.align_transcript_segments(
                 audio=(np.zeros(16000, dtype=np.float32), 16000),
@@ -393,7 +454,9 @@ class TestForcedAlignerBackend:
             )
 
     def test_batch_inputs_must_have_matching_lengths(self) -> None:
-        backend = Qwen3ForcedAlignerBackend(model=FakeModel(timestamp_classes=[0]), processor=FakeProcessor())
+        backend = Qwen3ForcedAlignerBackend(
+            model=FakeModel(timestamp_classes=[0]), processor=FakeProcessor()
+        )
 
         with pytest.raises(ValueError):
             backend.align(
@@ -406,7 +469,9 @@ class TestForcedAlignerBackend:
             )
 
     def test_batch_feature_move_casts_only_floating_tensors(self) -> None:
-        backend = Qwen3ForcedAlignerBackend(model=FakeModel(timestamp_classes=[0]), processor=FakeProcessor())
+        backend = Qwen3ForcedAlignerBackend(
+            model=FakeModel(timestamp_classes=[0]), processor=FakeProcessor()
+        )
         backend.model.dtype = torch.bfloat16
         inputs = BatchFeature(
             {
@@ -417,33 +482,41 @@ class TestForcedAlignerBackend:
 
         moved = backend._move_inputs_like_official(inputs)
 
-        assert moved['input_ids'].dtype == torch.long
-        assert moved['input_features'].dtype == torch.bfloat16
+        assert moved["input_ids"].dtype == torch.long
+        assert moved["input_features"].dtype == torch.bfloat16
 
     def test_single_full_feature_mask_is_replaced_by_lengths(self) -> None:
-        inputs = BatchFeature({"feature_attention_mask": torch.ones((1, 4), dtype=torch.long)})
+        inputs = BatchFeature(
+            {"feature_attention_mask": torch.ones((1, 4), dtype=torch.long)}
+        )
 
         Qwen3ForcedAlignerBackend._drop_single_full_feature_mask(inputs)
 
-        assert inputs['feature_attention_mask'] is None
-        assert inputs['audio_feature_lengths'].tolist() == [4]
+        assert inputs["feature_attention_mask"] is None
+        assert inputs["audio_feature_lengths"].tolist() == [4]
 
     def test_padded_feature_mask_is_preserved(self) -> None:
-        inputs = BatchFeature({"feature_attention_mask": torch.tensor([[1, 1, 0]], dtype=torch.long)})
+        inputs = BatchFeature(
+            {"feature_attention_mask": torch.tensor([[1, 1, 0]], dtype=torch.long)}
+        )
 
         Qwen3ForcedAlignerBackend._drop_single_full_feature_mask(inputs)
 
-        assert inputs['feature_attention_mask'].tolist() == [[1, 1, 0]]
-        assert 'audio_feature_lengths' not in inputs
+        assert inputs["feature_attention_mask"].tolist() == [[1, 1, 0]]
+        assert "audio_feature_lengths" not in inputs
 
 
 class TestAudioEncoder:
     @pytest.mark.parametrize(
         ("case_index", "feature_len"),
         list(enumerate(AUDIO_ENCODER_FEATURE_LENS)),
-        ids=[f"feature_len_{feature_len}" for feature_len in AUDIO_ENCODER_FEATURE_LENS],
+        ids=[
+            f"feature_len_{feature_len}" for feature_len in AUDIO_ENCODER_FEATURE_LENS
+        ],
     )
-    def test_single_audio_forward_matches_reference_chunking(self, case_index: int, feature_len: int) -> None:
+    def test_single_audio_forward_matches_reference_chunking(
+        self, case_index: int, feature_len: int
+    ) -> None:
         torch.manual_seed(1234)
         config = Qwen3ASRAudioEncoderConfig(
             num_mel_bins=8,
@@ -467,7 +540,9 @@ class TestAudioEncoder:
         original_pack_audio = encoder._pack_audio
         encoder._pack_audio = MethodType(_reference_pack_audio, encoder)
         try:
-            expected = encoder(input_features, feature_lens=feature_lens).last_hidden_state
+            expected = encoder(
+                input_features, feature_lens=feature_lens
+            ).last_hidden_state
         finally:
             encoder._pack_audio = original_pack_audio
         actual = encoder(input_features, feature_lens=feature_lens).last_hidden_state

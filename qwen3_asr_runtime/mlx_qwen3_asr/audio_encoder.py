@@ -6,6 +6,7 @@ packing, the windowed ``cu_seqlens``, and the block-diagonal (non-causal)
 attention. The chunk-structure arithmetic is done in Python ints (deterministic,
 exactly matching ``_get_feat_extract_output_lengths``) to avoid device syncs.
 """
+
 from __future__ import annotations
 
 import math
@@ -28,9 +29,15 @@ def feat_extract_output_length(input_length: int) -> int:
 def _sinusoids(length: int, channels: int, max_timescale: int = 10000) -> mx.array:
     assert channels % 2 == 0
     log_increment = math.log(max_timescale) / (channels // 2 - 1)
-    inv_timescales = mx.exp(-log_increment * mx.arange(channels // 2).astype(mx.float32))
-    scaled = mx.arange(length).astype(mx.float32).reshape(length, 1) * inv_timescales.reshape(1, -1)
-    return mx.concatenate([mx.sin(scaled), mx.cos(scaled)], axis=1)  # (length, channels)
+    inv_timescales = mx.exp(
+        -log_increment * mx.arange(channels // 2).astype(mx.float32)
+    )
+    scaled = mx.arange(length).astype(mx.float32).reshape(
+        length, 1
+    ) * inv_timescales.reshape(1, -1)
+    return mx.concatenate(
+        [mx.sin(scaled), mx.cos(scaled)], axis=1
+    )  # (length, channels)
 
 
 class _Buffer:
@@ -46,7 +53,7 @@ class AudioAttention(nn.Module):
         self.embed_dim = cfg.d_model
         self.num_heads = cfg.encoder_attention_heads
         self.head_dim = self.embed_dim // self.num_heads
-        self.scaling = self.head_dim ** -0.5
+        self.scaling = self.head_dim**-0.5
         self.q_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=True)
         self.k_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=True)
         self.v_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=True)
@@ -69,7 +76,9 @@ class AudioAttention(nn.Module):
         # tools/parity_mlx_vs_hf.py patches the reference to window for a true comparison.
         # The additive block mask is fed straight to the fused SDPA kernel (fp32
         # accumulation internally) instead of a hand-rolled matmul+softmax+matmul.
-        out = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.scaling, mask=mask)
+        out = mx.fast.scaled_dot_product_attention(
+            q, k, v, scale=self.scaling, mask=mask
+        )
         out = out.transpose(0, 2, 1, 3).reshape(seq_len, -1)
         return self.out_proj(out)
 
@@ -104,10 +113,24 @@ class AudioEncoder(nn.Module):
         self.n_window_infer = cfg.n_window_infer
         self.conv_chunksize = cfg.conv_chunksize
         self.conv2d1 = nn.Conv2d(1, cfg.downsample_hidden_size, 3, stride=2, padding=1)
-        self.conv2d2 = nn.Conv2d(cfg.downsample_hidden_size, cfg.downsample_hidden_size, 3, stride=2, padding=1)
-        self.conv2d3 = nn.Conv2d(cfg.downsample_hidden_size, cfg.downsample_hidden_size, 3, stride=2, padding=1)
+        self.conv2d2 = nn.Conv2d(
+            cfg.downsample_hidden_size,
+            cfg.downsample_hidden_size,
+            3,
+            stride=2,
+            padding=1,
+        )
+        self.conv2d3 = nn.Conv2d(
+            cfg.downsample_hidden_size,
+            cfg.downsample_hidden_size,
+            3,
+            stride=2,
+            padding=1,
+        )
         freq_after = (((cfg.num_mel_bins + 1) // 2 + 1) // 2 + 1) // 2
-        self.conv_out = nn.Linear(cfg.downsample_hidden_size * freq_after, d, bias=False)
+        self.conv_out = nn.Linear(
+            cfg.downsample_hidden_size * freq_after, d, bias=False
+        )
         self.layers = [AudioEncoderLayer(cfg) for _ in range(cfg.encoder_layers)]
         self.ln_post = nn.LayerNorm(d)
         self.proj1 = nn.Linear(d, d)
@@ -122,7 +145,9 @@ class AudioEncoder(nn.Module):
         max_chunk_len = chunk_width if chunk_count > 1 else tail_len
         mel_bins = input_features.shape[0]
 
-        flattened = mx.zeros((chunk_count * max_chunk_len, mel_bins), dtype=input_features.dtype)
+        flattened = mx.zeros(
+            (chunk_count * max_chunk_len, mel_bins), dtype=input_features.dtype
+        )
         valid = mx.swapaxes(input_features[:, :feature_len], 0, 1)  # (feature_len, mel)
         flattened[:feature_len] = valid
         padded = flattened.reshape(chunk_count, max_chunk_len, mel_bins)
@@ -135,7 +160,9 @@ class AudioEncoder(nn.Module):
 
     def __call__(self, input_features: mx.array, feature_len: int) -> mx.array:
         """input_features: (num_mel_bins, feature_len). Returns (N_audio_tokens, output_dim)."""
-        padded, chunk_lengths, feat_after = self._pack_single_audio(input_features, feature_len)
+        padded, chunk_lengths, feat_after = self._pack_single_audio(
+            input_features, feature_len
+        )
         chunk_count = padded.shape[0]
         max_after = max(feat_after)
 
@@ -174,7 +201,9 @@ class AudioEncoder(nn.Module):
             block_lens.append(remainder)
         # Cast once to the compute dtype: mx.fast.scaled_dot_product_attention requires the
         # additive mask to promote to the output dtype (bf16/fp16), and softmax is fp32 inside.
-        mask = self._block_mask(block_lens, hidden_states.shape[0]).astype(hidden_states.dtype)
+        mask = self._block_mask(block_lens, hidden_states.shape[0]).astype(
+            hidden_states.dtype
+        )
 
         for layer in self.layers:
             hidden_states = layer(hidden_states, mask)
@@ -190,8 +219,12 @@ class AudioEncoder(nn.Module):
         block_ids: List[int] = []
         for b, length in enumerate(block_lens):
             block_ids.extend([b] * length)
-        assert len(block_ids) == seq_len, f"block coverage {len(block_ids)} != seq_len {seq_len}"
+        assert len(block_ids) == seq_len, (
+            f"block coverage {len(block_ids)} != seq_len {seq_len}"
+        )
         ids = mx.array(block_ids, dtype=mx.int32)
         same = mx.expand_dims(ids, 1) == mx.expand_dims(ids, 0)  # (S, S)
-        mask = mx.where(same, mx.array(0.0, dtype=mx.float32), mx.array(NEG_INF, dtype=mx.float32))
+        mask = mx.where(
+            same, mx.array(0.0, dtype=mx.float32), mx.array(NEG_INF, dtype=mx.float32)
+        )
         return mask.reshape(1, 1, seq_len, seq_len)

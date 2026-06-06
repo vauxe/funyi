@@ -46,52 +46,101 @@ _CASE_CHRF_DROP_FLAG = 10.0
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run HY-MT translation E2E quality and performance gates.")
+    parser = argparse.ArgumentParser(
+        description="Run HY-MT translation E2E quality and performance gates."
+    )
     parser.add_argument("--dataset", required=True, help="JSONL case file path.")
-    parser.add_argument("--cases", default=None, help="Comma-separated case ids or groups. Default: all.")
-    parser.add_argument("--model", default=DEFAULT_HYMT_MODEL, help="HY-MT model path or Hugging Face id.")
+    parser.add_argument(
+        "--cases",
+        default=None,
+        help="Comma-separated case ids or groups. Default: all.",
+    )
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_HYMT_MODEL,
+        help="HY-MT model path or Hugging Face id.",
+    )
     parser.add_argument(
         "--model-revision",
         default=None,
         help="Pin a Hugging Face model id to an immutable commit for auditable candidate runs.",
     )
     parser.add_argument("--device", default="cuda:0", help="cuda:0, cpu, or auto.")
-    parser.add_argument("--dtype", default=None, choices=["auto", "float32", "float16", "bfloat16"])
+    parser.add_argument(
+        "--dtype", default=None, choices=["auto", "float32", "float16", "bfloat16"]
+    )
     parser.add_argument(
         "--attn-implementation",
         default=DEFAULT_HYMT_ATTN_IMPLEMENTATION,
         help="Transformers attention implementation. Use 'none' to let transformers choose.",
     )
-    parser.add_argument("--decode-backend", default=DEFAULT_HYMT_DECODE_BACKEND, choices=["fixed_mask", "generate"])
-    parser.add_argument("--max-new-tokens", type=int, default=DEFAULT_HYMT_MAX_NEW_TOKENS)
+    parser.add_argument(
+        "--decode-backend",
+        default=DEFAULT_HYMT_DECODE_BACKEND,
+        choices=["fixed_mask", "generate"],
+    )
+    parser.add_argument(
+        "--max-new-tokens", type=int, default=DEFAULT_HYMT_MAX_NEW_TOKENS
+    )
     parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--top-p", type=float, default=0.6)
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--repetition-penalty", type=float, default=1.05)
     decode_group = parser.add_mutually_exclusive_group()
-    decode_group.add_argument("--sample", action="store_true", help="Enable sampling. Default is deterministic greedy decode.")
-    decode_group.add_argument("--greedy", action="store_true", help="Use deterministic greedy decode. This is the default.")
+    decode_group.add_argument(
+        "--sample",
+        action="store_true",
+        help="Enable sampling. Default is deterministic greedy decode.",
+    )
+    decode_group.add_argument(
+        "--greedy",
+        action="store_true",
+        help="Use deterministic greedy decode. This is the default.",
+    )
     parser.add_argument(
         "--extra-generate-kwargs",
         default=None,
         help="Optional JSON object. Omit to use runtime defaults.",
     )
-    parser.add_argument("--warmup", default="1", help="Warmup count, or 'all' to warm up every selected case.")
-    parser.add_argument("--repeats", type=int, default=1, help="Repeat each case and gate the last output.")
-    parser.add_argument("--seed", type=int, default=0, help="Torch RNG seed for repeatable sampling gates.")
+    parser.add_argument(
+        "--warmup",
+        default="1",
+        help="Warmup count, or 'all' to warm up every selected case.",
+    )
+    parser.add_argument(
+        "--repeats",
+        type=int,
+        default=1,
+        help="Repeat each case and gate the last output.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Torch RNG seed for repeatable sampling gates.",
+    )
     parser.add_argument(
         "--seed-mode",
         choices=["case", "run"],
         default="case",
         help="Use per-case seeds by default so output changes do not shift later case RNG.",
     )
-    parser.add_argument("--baseline-json", default=None, help="Optional benchmark/gate JSON to compare speed against.")
+    parser.add_argument(
+        "--baseline-json",
+        default=None,
+        help="Optional benchmark/gate JSON to compare speed against.",
+    )
     parser.add_argument(
         "--quality-baseline-json",
         default=None,
         help="Optional gate JSON used to fail only on new quality issues.",
     )
-    parser.add_argument("--min-speedup", type=float, default=None, help="Minimum total-wall speedup vs baseline JSON.")
+    parser.add_argument(
+        "--min-speedup",
+        type=float,
+        default=None,
+        help="Minimum total-wall speedup vs baseline JSON.",
+    )
     parser.add_argument("--max-total-wall-sec", type=float, default=None)
     parser.add_argument("--max-median-wall-sec", type=float, default=None)
     parser.add_argument("--min-decode-tokens-per-sec", type=float, default=None)
@@ -116,7 +165,9 @@ def _parse_args() -> argparse.Namespace:
         help="Fused F.rms_norm on HY-MT. Defaults to the runtime profile; "
         "use --no-fused-rmsnorm for ablations.",
     )
-    parser.add_argument("--output-json", default=None, help="Optional path to write gate JSON.")
+    parser.add_argument(
+        "--output-json", default=None, help="Optional path to write gate JSON."
+    )
     parser.add_argument(
         "--max-mean-chrf-drop",
         type=float,
@@ -132,7 +183,12 @@ def _parse_args() -> argparse.Namespace:
         help="With --quality-baseline-json, write the worst chrF-drop changed cases here (source/reference/"
         "baseline/candidate side by side) for human review.",
     )
-    parser.add_argument("--worst-n", type=int, default=15, help="How many worst cases to write to --worst-output.")
+    parser.add_argument(
+        "--worst-n",
+        type=int,
+        default=15,
+        help="How many worst cases to write to --worst-output.",
+    )
     return parser.parse_args()
 
 
@@ -153,7 +209,9 @@ def main() -> None:
         "do_sample": do_sample,
     }
     if args.extra_generate_kwargs is not None:
-        config_kwargs["extra_generate_kwargs"] = _parse_json_object(args.extra_generate_kwargs)
+        config_kwargs["extra_generate_kwargs"] = _parse_json_object(
+            args.extra_generate_kwargs
+        )
     generation_config = HYMTGenerationConfig(**config_kwargs)
     load_started = time.perf_counter()
     translator = HYMTTranslator(
@@ -191,7 +249,9 @@ def main() -> None:
     # Warmup consumes sampling RNG; measured outputs should not depend on warmup count.
     torch.manual_seed(int(args.seed))
 
-    if torch.cuda.is_available() and ("cuda" in str(args.device) or args.device == "auto"):
+    if torch.cuda.is_available() and (
+        "cuda" in str(args.device) or args.device == "auto"
+    ):
         torch.cuda.reset_peak_memory_stats()
 
     rows = []
@@ -219,7 +279,9 @@ def main() -> None:
     case_warning_count = sum(1 for row in rows if row["warnings"])
     quality_gate = _quality_gate(
         rows,
-        quality_baseline_json=Path(args.quality_baseline_json) if args.quality_baseline_json else None,
+        quality_baseline_json=Path(args.quality_baseline_json)
+        if args.quality_baseline_json
+        else None,
         fail_on_warnings=args.fail_on_warnings,
         max_mean_chrf_drop=args.max_mean_chrf_drop,
     )
@@ -232,7 +294,11 @@ def main() -> None:
             Path(args.worst_output),
             max(1, int(args.worst_n)),
         )
-    resolved_dtype = args.dtype or ("bfloat16" if args.device.startswith("cuda") or args.device == "auto" else "auto")
+    resolved_dtype = args.dtype or (
+        "bfloat16"
+        if args.device.startswith("cuda") or args.device == "auto"
+        else "auto"
+    )
     generation_block = {
         "do_sample": do_sample,
         "top_k": args.top_k,
@@ -303,9 +369,7 @@ def main() -> None:
         "case_error_count": case_error_count,
         "case_warning_count": case_warning_count,
         "quality_gate": {
-            key: value
-            for key, value in quality_gate.items()
-            if key != "issues"
+            key: value for key, value in quality_gate.items() if key != "issues"
         },
         "cuda_peak_allocated_mb": _cuda_peak_allocated_mb(args.device),
         "cases": rows,
@@ -321,7 +385,9 @@ def main() -> None:
 def _load_cases(path: Path) -> list[dict[str, Any]]:
     cases: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for line_number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for line_number, raw in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -330,7 +396,9 @@ def _load_cases(path: Path) -> list[dict[str, Any]]:
             raise ValueError(f"{path}:{line_number}: case must be a JSON object")
         for field in ("id", "target_language", "text"):
             if not str(item.get(field) or "").strip():
-                raise ValueError(f"{path}:{line_number}: missing required field {field!r}")
+                raise ValueError(
+                    f"{path}:{line_number}: missing required field {field!r}"
+                )
         case_id = str(item["id"])
         if case_id in seen:
             raise ValueError(f"{path}:{line_number}: duplicate case id {case_id!r}")
@@ -339,7 +407,9 @@ def _load_cases(path: Path) -> list[dict[str, Any]]:
     return cases
 
 
-def _select_cases(cases: list[dict[str, Any]], spec: str | None) -> list[dict[str, Any]]:
+def _select_cases(
+    cases: list[dict[str, Any]], spec: str | None
+) -> list[dict[str, Any]]:
     if not spec:
         return cases
     wanted = {item.strip() for item in spec.split(",") if item.strip()}
@@ -395,7 +465,12 @@ def _run_case(
                 "total_wall_sec": result.total_wall_sec,
             }
         )
-    issues = _evaluate_quality(case, output, generated_tokens=int(samples[-1]["generated_tokens"]), max_new_tokens=max_new_tokens)
+    issues = _evaluate_quality(
+        case,
+        output,
+        generated_tokens=int(samples[-1]["generated_tokens"]),
+        max_new_tokens=max_new_tokens,
+    )
     errors = [issue for issue in issues if issue.severity == "error"]
     warnings = [issue for issue in issues if issue.severity == "warning"]
     reference_similarity = _reference_similarity(case, output)
@@ -417,10 +492,16 @@ def _run_case(
         "generated_tokens_median": median_generated_tokens,
         "total_wall_sec_median": round(median_total, 4),
         "generate_wall_sec_median": round(median_generate, 4),
-        "decode_tokens_per_sec": round(median_generated_tokens / median_generate, 2) if median_generate > 0 else 0.0,
+        "decode_tokens_per_sec": round(median_generated_tokens / median_generate, 2)
+        if median_generate > 0
+        else 0.0,
         "errors": [issue.__dict__ for issue in errors],
         "warnings": [issue.__dict__ for issue in warnings],
-        **({"reference_similarity": reference_similarity} if reference_similarity is not None else {}),
+        **(
+            {"reference_similarity": reference_similarity}
+            if reference_similarity is not None
+            else {}
+        ),
     }
 
 
@@ -435,32 +516,56 @@ def _evaluate_quality(
     target_language = str(case["target_language"])
     issues: list[TranslationIssue] = []
     if not output.strip():
-        issues.append(TranslationIssue("error", "empty_output", "translation output is empty"))
+        issues.append(
+            TranslationIssue("error", "empty_output", "translation output is empty")
+        )
         return issues
     if generated_tokens >= max_new_tokens:
-        issues.append(TranslationIssue("error", "max_new_tokens_hit", "generation reached max_new_tokens"))
+        issues.append(
+            TranslationIssue(
+                "error", "max_new_tokens_hit", "generation reached max_new_tokens"
+            )
+        )
     issues.extend(_target_language_issues(output, target_language))
     issues.extend(_length_issues(source, output))
     issues.extend(_format_issues(source, output))
     issues.extend(_must_preserve_issues(case, output))
     issues.extend(_required_output_issues(case, output))
     if _has_repetition_loop(output):
-        issues.append(TranslationIssue("warning", "repetition_loop", "output contains repeated phrase pattern"))
+        issues.append(
+            TranslationIssue(
+                "warning", "repetition_loop", "output contains repeated phrase pattern"
+            )
+        )
     return issues
 
 
-def _target_language_issues(output: str, target_language: str) -> list[TranslationIssue]:
+def _target_language_issues(
+    output: str, target_language: str
+) -> list[TranslationIssue]:
     language = target_language.strip().lower()
     text = output.strip()
     if language in {"english", "en"}:
         if _latin_count(text) < max(3, int(len(text) * 0.12)):
-            return [TranslationIssue("error", "target_language_mismatch", "expected English-like output")]
+            return [
+                TranslationIssue(
+                    "error", "target_language_mismatch", "expected English-like output"
+                )
+            ]
     if language in {"chinese", "zh", "中文"}:
         if _han_count(text) < 2:
-            return [TranslationIssue("error", "target_language_mismatch", "expected Chinese-like output")]
+            return [
+                TranslationIssue(
+                    "error", "target_language_mismatch", "expected Chinese-like output"
+                )
+            ]
     if language in {"japanese", "ja", "日本語"}:
         if _kana_count(text) < 1:
-            return [TranslationIssue("error", "target_language_mismatch", "expected Japanese-like output")]
+            return [
+                TranslationIssue(
+                    "error", "target_language_mismatch", "expected Japanese-like output"
+                )
+            ]
     return []
 
 
@@ -469,11 +574,25 @@ def _length_issues(source: str, output: str) -> list[TranslationIssue]:
         return []
     ratio = len(output.strip()) / max(1, len(source.strip()))
     if ratio < 0.08:
-        return [TranslationIssue("error", "too_short", "output is too short relative to source")]
+        return [
+            TranslationIssue(
+                "error", "too_short", "output is too short relative to source"
+            )
+        ]
     if ratio > 8.0:
-        return [TranslationIssue("error", "too_long", "output is too long relative to source")]
+        return [
+            TranslationIssue(
+                "error", "too_long", "output is too long relative to source"
+            )
+        ]
     if ratio < 0.2 or ratio > 5.0:
-        return [TranslationIssue("warning", "suspicious_length_ratio", "output/source length ratio is unusual")]
+        return [
+            TranslationIssue(
+                "warning",
+                "suspicious_length_ratio",
+                "output/source length ratio is unusual",
+            )
+        ]
     return []
 
 
@@ -484,18 +603,44 @@ def _format_issues(source: str, output: str) -> list[TranslationIssue]:
     for key in ("urls", "srt_timestamps", "html_tags", "code_fences"):
         missing = _missing_required(source_markers[key], output_markers[key])
         if missing:
-            issues.append(TranslationIssue("error", f"missing_{key}", f"missing {len(missing)} structural marker(s)"))
+            issues.append(
+                TranslationIssue(
+                    "error",
+                    f"missing_{key}",
+                    f"missing {len(missing)} structural marker(s)",
+                )
+            )
     for key in ("inline_code", "placeholders"):
         missing = _missing_required(source_markers[key], output_markers[key])
         if missing:
-            issues.append(TranslationIssue("warning", f"missing_{key}", f"missing {len(missing)} inline marker(s)"))
+            issues.append(
+                TranslationIssue(
+                    "warning",
+                    f"missing_{key}",
+                    f"missing {len(missing)} inline marker(s)",
+                )
+            )
     source_table_columns = source_markers["table_columns"]
     output_table_columns = output_markers["table_columns"]
     if len(source_table_columns) >= 2:
         if len(output_table_columns) < 2:
-            issues.append(TranslationIssue("error", "missing_markdown_table", "markdown table structure was not preserved"))
-        elif len(set(source_table_columns)) == 1 and any(count != source_table_columns[0] for count in output_table_columns):
-            issues.append(TranslationIssue("error", "malformed_markdown_table", "markdown table column count changed"))
+            issues.append(
+                TranslationIssue(
+                    "error",
+                    "missing_markdown_table",
+                    "markdown table structure was not preserved",
+                )
+            )
+        elif len(set(source_table_columns)) == 1 and any(
+            count != source_table_columns[0] for count in output_table_columns
+        ):
+            issues.append(
+                TranslationIssue(
+                    "error",
+                    "malformed_markdown_table",
+                    "markdown table column count changed",
+                )
+            )
     return issues
 
 
@@ -507,7 +652,9 @@ def _extract_format_markers(text: str) -> dict[str, Any]:
         "html_tags": [item.lower() for item in re.findall(r"</?[a-zA-Z][^>]*>", text)],
         "code_fences": re.findall(r"```", text),
         "inline_code": re.findall(r"(?<!`)`([^`\n]+)`(?!`)", text),
-        "placeholders": re.findall(r"(\{[^{}\n]+\}|%[sdif]|\$[A-Za-z_][A-Za-z0-9_]*)", text),
+        "placeholders": re.findall(
+            r"(\{[^{}\n]+\}|%[sdif]|\$[A-Za-z_][A-Za-z0-9_]*)", text
+        ),
         "table_pipe_lines": len(table_columns),
         "table_columns": table_columns,
     }
@@ -517,12 +664,18 @@ def _markdown_table_columns(text: str) -> list[int]:
     columns: list[int] = []
     for line in text.splitlines():
         stripped = line.strip()
-        if stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 2:
+        if (
+            stripped.startswith("|")
+            and stripped.endswith("|")
+            and stripped.count("|") >= 2
+        ):
             columns.append(len(stripped.strip("|").split("|")))
     return columns
 
 
-def _required_output_issues(case: dict[str, Any], output: str) -> list[TranslationIssue]:
+def _required_output_issues(
+    case: dict[str, Any], output: str
+) -> list[TranslationIssue]:
     missing = [
         str(item)
         for item in case.get("required_output_substrings", [])
@@ -530,7 +683,13 @@ def _required_output_issues(case: dict[str, Any], output: str) -> list[Translati
     ]
     if not missing:
         return []
-    return [TranslationIssue("error", "missing_required_output", f"missing {len(missing)} required output item(s)")]
+    return [
+        TranslationIssue(
+            "error",
+            "missing_required_output",
+            f"missing {len(missing)} required output item(s)",
+        )
+    ]
 
 
 def _must_preserve_issues(case: dict[str, Any], output: str) -> list[TranslationIssue]:
@@ -541,7 +700,13 @@ def _must_preserve_issues(case: dict[str, Any], output: str) -> list[Translation
     ]
     if not missing:
         return []
-    return [TranslationIssue("warning", "missing_must_preserve", f"missing {len(missing)} preserved item(s)")]
+    return [
+        TranslationIssue(
+            "warning",
+            "missing_must_preserve",
+            f"missing {len(missing)} preserved item(s)",
+        )
+    ]
 
 
 def _contains_preserved_item(output: str, item: str) -> bool:
@@ -575,7 +740,10 @@ def _has_repetition_loop(text: str) -> bool:
             continue
         for index in range(0, len(words) - width * 4 + 1):
             chunk = words[index : index + width]
-            if all(words[index + width * n : index + width * (n + 1)] == chunk for n in range(1, 4)):
+            if all(
+                words[index + width * n : index + width * (n + 1)] == chunk
+                for n in range(1, 4)
+            ):
                 return True
     return False
 
@@ -587,7 +755,9 @@ def _reference_similarity(case: dict[str, Any], output: str) -> float | None:
     return _chrf(reference, output)
 
 
-def _chrf(reference: str, output: str, *, beta: float = 2.0, max_order: int = 6) -> float:
+def _chrf(
+    reference: str, output: str, *, beta: float = 2.0, max_order: int = 6
+) -> float:
     """Character n-gram F-score (chrF2), 0-100.
 
     Language-agnostic and well suited to Chinese/Japanese, where word
@@ -611,8 +781,12 @@ def _chrf(reference: str, output: str, *, beta: float = 2.0, max_order: int = 6)
     beta_sq = beta * beta
     f_scores: list[float] = []
     for order in range(1, max_order + 1):
-        ref_counts = Counter(ref[index : index + order] for index in range(len(ref) - order + 1))
-        hyp_counts = Counter(hyp[index : index + order] for index in range(len(hyp) - order + 1))
+        ref_counts = Counter(
+            ref[index : index + order] for index in range(len(ref) - order + 1)
+        )
+        hyp_counts = Counter(
+            hyp[index : index + order] for index in range(len(hyp) - order + 1)
+        )
         if not ref_counts or not hyp_counts:
             continue
         overlap = sum((ref_counts & hyp_counts).values())
@@ -621,7 +795,9 @@ def _chrf(reference: str, output: str, *, beta: float = 2.0, max_order: int = 6)
             continue
         precision = overlap / sum(hyp_counts.values())
         recall = overlap / sum(ref_counts.values())
-        f_scores.append((1 + beta_sq) * precision * recall / (beta_sq * precision + recall))
+        f_scores.append(
+            (1 + beta_sq) * precision * recall / (beta_sq * precision + recall)
+        )
     if not f_scores:
         return 0.0
     return round(100.0 * sum(f_scores) / len(f_scores), 2)
@@ -652,13 +828,21 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "total_wall_sec_median": round(median(totals), 4),
         "generate_wall_sec_sum": round(generate_wall_sec_sum, 4),
         "generated_tokens_sum": round(generated_tokens_sum, 1),
-        "decode_tokens_per_sec_total": _tokens_per_sec(generated_tokens_sum, generate_wall_sec_sum),
-        "end_to_end_tokens_per_sec_total": _tokens_per_sec(generated_tokens_sum, total_wall_sec_sum),
+        "decode_tokens_per_sec_total": _tokens_per_sec(
+            generated_tokens_sum, generate_wall_sec_sum
+        ),
+        "end_to_end_tokens_per_sec_total": _tokens_per_sec(
+            generated_tokens_sum, total_wall_sec_sum
+        ),
         "decode_tokens_per_sec_median": round(median(decode_tps), 2),
         "generated_tokens_median": round(median(generated_tokens), 1),
     }
     # These hold chrF2 (0-100), not the old 0-1 similarity; named accordingly.
-    chrf_values = [float(row["reference_similarity"]) for row in rows if row.get("reference_similarity") is not None]
+    chrf_values = [
+        float(row["reference_similarity"])
+        for row in rows
+        if row.get("reference_similarity") is not None
+    ]
     if chrf_values:
         summary["chrf_median"] = round(median(chrf_values), 4)
         summary["chrf_min"] = round(min(chrf_values), 4)
@@ -685,13 +869,42 @@ def _performance_issues(
         speedup = baseline_total / float(summary["total_wall_sec_sum"])
         summary["speedup_vs_baseline"] = round(speedup, 4)
         if speedup < min_speedup:
-            issues.append(TranslationIssue("error", "speedup_below_threshold", "speedup vs baseline is too low"))
-    if max_total_wall_sec is not None and float(summary["total_wall_sec_sum"]) > max_total_wall_sec:
-        issues.append(TranslationIssue("error", "total_wall_sec_above_threshold", "total wall time is too high"))
-    if max_median_wall_sec is not None and float(summary["total_wall_sec_median"]) > max_median_wall_sec:
-        issues.append(TranslationIssue("error", "median_wall_sec_above_threshold", "median wall time is too high"))
-    if min_decode_tokens_per_sec is not None and float(summary["decode_tokens_per_sec_median"]) < min_decode_tokens_per_sec:
-        issues.append(TranslationIssue("error", "tokens_per_sec_below_threshold", "decode tokens/sec is too low"))
+            issues.append(
+                TranslationIssue(
+                    "error", "speedup_below_threshold", "speedup vs baseline is too low"
+                )
+            )
+    if (
+        max_total_wall_sec is not None
+        and float(summary["total_wall_sec_sum"]) > max_total_wall_sec
+    ):
+        issues.append(
+            TranslationIssue(
+                "error", "total_wall_sec_above_threshold", "total wall time is too high"
+            )
+        )
+    if (
+        max_median_wall_sec is not None
+        and float(summary["total_wall_sec_median"]) > max_median_wall_sec
+    ):
+        issues.append(
+            TranslationIssue(
+                "error",
+                "median_wall_sec_above_threshold",
+                "median wall time is too high",
+            )
+        )
+    if (
+        min_decode_tokens_per_sec is not None
+        and float(summary["decode_tokens_per_sec_median"]) < min_decode_tokens_per_sec
+    ):
+        issues.append(
+            TranslationIssue(
+                "error",
+                "tokens_per_sec_below_threshold",
+                "decode tokens/sec is too low",
+            )
+        )
     return issues
 
 
@@ -729,9 +942,17 @@ def _quality_gate(
         case_warning_count = sum(1 for row in rows if row["warnings"])
         issues: list[TranslationIssue] = []
         if case_error_count:
-            issues.append(TranslationIssue("error", "quality_errors", "translation quality errors found"))
+            issues.append(
+                TranslationIssue(
+                    "error", "quality_errors", "translation quality errors found"
+                )
+            )
         if fail_on_warnings and case_warning_count:
-            issues.append(TranslationIssue("error", "quality_warnings", "translation quality warnings found"))
+            issues.append(
+                TranslationIssue(
+                    "error", "quality_warnings", "translation quality warnings found"
+                )
+            )
         return {
             "mode": "absolute",
             "baseline_json": None,
@@ -773,7 +994,9 @@ def _quality_gate(
             # deliberately NOT promoted to an error: it is too noisy on single
             # sentences. Systematic loss is judged per direction below.
             reference_drop = (
-                _reference_similarity_drop(row, baseline.get("reference_similarity")) if metric_comparable else None
+                _reference_similarity_drop(row, baseline.get("reference_similarity"))
+                if metric_comparable
+                else None
             )
             if reference_drop is not None:
                 row["reference_similarity_drop"] = reference_drop
@@ -787,15 +1010,24 @@ def _quality_gate(
 
     mean_chrf_drop = round(sum(chrf_drops) / len(chrf_drops), 4) if chrf_drops else None
     mean_chrf_drop_by_direction = {
-        direction: round(sum(values) / len(values), 4) for direction, values in sorted(drops_by_direction.items())
+        direction: round(sum(values) / len(values), 4)
+        for direction, values in sorted(drops_by_direction.items())
     }
     worst_direction, worst_direction_drop = (None, None)
     if mean_chrf_drop_by_direction:
-        worst_direction, worst_direction_drop = max(mean_chrf_drop_by_direction.items(), key=lambda item: item[1])
+        worst_direction, worst_direction_drop = max(
+            mean_chrf_drop_by_direction.items(), key=lambda item: item[1]
+        )
 
     issues = []
     if missing_case_count:
-        issues.append(TranslationIssue("error", "quality_baseline_missing_cases", "quality baseline is missing cases"))
+        issues.append(
+            TranslationIssue(
+                "error",
+                "quality_baseline_missing_cases",
+                "quality baseline is missing cases",
+            )
+        )
     if not metric_comparable:
         issues.append(
             TranslationIssue(
@@ -805,18 +1037,33 @@ def _quality_gate(
             )
         )
     if new_error_count:
-        issues.append(TranslationIssue("error", "new_quality_errors", "new translation quality errors found"))
+        issues.append(
+            TranslationIssue(
+                "error", "new_quality_errors", "new translation quality errors found"
+            )
+        )
     if fail_on_warnings and new_warning_count:
-        issues.append(TranslationIssue("error", "new_quality_warnings", "new translation quality warnings found"))
+        issues.append(
+            TranslationIssue(
+                "error",
+                "new_quality_warnings",
+                "new translation quality warnings found",
+            )
+        )
     if max_mean_chrf_drop is not None:
         if metric_comparable and not chrf_drops:
             # The aggregate gate is the only chrF teeth; never let it pass vacuously.
             issues.append(
                 TranslationIssue(
-                    "error", "no_comparable_chrf_cases", "--max-mean-chrf-drop set but no case had a comparable chrF score"
+                    "error",
+                    "no_comparable_chrf_cases",
+                    "--max-mean-chrf-drop set but no case had a comparable chrF score",
                 )
             )
-        elif worst_direction_drop is not None and worst_direction_drop > max_mean_chrf_drop:
+        elif (
+            worst_direction_drop is not None
+            and worst_direction_drop > max_mean_chrf_drop
+        ):
             # Gate each direction independently: a regression confined to one
             # direction is hidden by a pooled mean, so the worst direction is the
             # sensitive signal.
@@ -847,7 +1094,9 @@ def _quality_gate(
     }
 
 
-def _reference_similarity_drop(row: dict[str, Any], baseline_similarity: float | None) -> float | None:
+def _reference_similarity_drop(
+    row: dict[str, Any], baseline_similarity: float | None
+) -> float | None:
     current = row.get("reference_similarity")
     if current is None or baseline_similarity is None:
         return None
@@ -866,7 +1115,9 @@ def _load_quality_baseline(path: Path) -> tuple[dict[str, dict[str, Any]], str |
             continue
         baseline[case_id] = {
             "errors": {str(issue.get("code") or "") for issue in row.get("errors", [])},
-            "warnings": {str(issue.get("code") or "") for issue in row.get("warnings", [])},
+            "warnings": {
+                str(issue.get("code") or "") for issue in row.get("warnings", [])
+            },
             "reference_similarity": _optional_float(row.get("reference_similarity")),
             "output": str(row.get("output") or ""),
         }
@@ -895,8 +1146,12 @@ def _write_worst(
     """
     baseline_by_id, _ = _load_quality_baseline(baseline_path)
     source_by_id = {str(case["id"]): case for case in cases}
-    candidates = [row for row in rows if row.get("reference_similarity_drop") is not None]
-    candidates.sort(key=lambda row: float(row["reference_similarity_drop"]), reverse=True)
+    candidates = [
+        row for row in rows if row.get("reference_similarity_drop") is not None
+    ]
+    candidates.sort(
+        key=lambda row: float(row["reference_similarity_drop"]), reverse=True
+    )
     worst = []
     for row in candidates[:count]:
         case_id = str(row["id"])
@@ -907,7 +1162,9 @@ def _write_worst(
                 "id": case_id,
                 "direction": f"{row.get('source_language', '')}->{row.get('target_language', '')}",
                 "chrf_drop": row["reference_similarity_drop"],
-                "chrf_baseline": round(float(baseline.get("reference_similarity") or 0.0), 2),
+                "chrf_baseline": round(
+                    float(baseline.get("reference_similarity") or 0.0), 2
+                ),
                 "chrf_candidate": row.get("reference_similarity"),
                 "source": str(case.get("text") or ""),
                 "reference": str(case.get("reference") or ""),
@@ -916,7 +1173,9 @@ def _write_worst(
             }
         )
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(worst, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    out_path.write_text(
+        json.dumps(worst, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def _run_config_diff(baseline_path: Path, candidate: dict[str, Any]) -> dict[str, Any]:
@@ -945,9 +1204,13 @@ def _run_config_diff(baseline_path: Path, candidate: dict[str, Any]) -> dict[str
             if baseline_generation is None:
                 continue
             sub = {
-                sub_key: {"baseline": baseline_generation.get(sub_key), "candidate": sub_value}
+                sub_key: {
+                    "baseline": baseline_generation.get(sub_key),
+                    "candidate": sub_value,
+                }
                 for sub_key, sub_value in value.items()
-                if sub_key in baseline_generation and baseline_generation.get(sub_key) != sub_value
+                if sub_key in baseline_generation
+                and baseline_generation.get(sub_key) != sub_value
             }
             if sub:
                 diff[key] = sub
@@ -963,17 +1226,30 @@ def _baseline_generation_block(baseline: dict[str, Any]) -> dict[str, Any] | Non
 
     fallback: dict[str, Any] = {}
     if "decode" in baseline:
-        fallback["do_sample"] = str(baseline.get("decode") or "").strip().lower() not in {"greedy", "argmax"}
-    for key in ("repetition_penalty", "top_k", "top_p", "temperature", "extra_generate_kwargs"):
+        fallback["do_sample"] = str(
+            baseline.get("decode") or ""
+        ).strip().lower() not in {"greedy", "argmax"}
+    for key in (
+        "repetition_penalty",
+        "top_k",
+        "top_p",
+        "temperature",
+        "extra_generate_kwargs",
+    ):
         if key in baseline:
             fallback[key] = baseline[key]
-    if baseline.get("generator") == "stock_transformers" and "extra_generate_kwargs" not in fallback:
+    if (
+        baseline.get("generator") == "stock_transformers"
+        and "extra_generate_kwargs" not in fallback
+    ):
         fallback["extra_generate_kwargs"] = {}
     return fallback or None
 
 
 def _cuda_peak_allocated_mb(device: str) -> float | None:
-    if not torch.cuda.is_available() or ("cuda" not in str(device) and device != "auto"):
+    if not torch.cuda.is_available() or (
+        "cuda" not in str(device) and device != "auto"
+    ):
         return None
     return round(torch.cuda.max_memory_allocated() / 1024 / 1024, 1)
 

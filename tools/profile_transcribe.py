@@ -12,6 +12,7 @@ Instruments the transcribe() hot path with CUDA-synchronized timers:
 
 No model behavior changes. Intended for 1-2 repeats on a single case.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -28,7 +29,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.audio_window import load_audio_window
-from tools.runtime_helpers import _default_attn_implementation, _dispose_model, _resolve_dtype, _set_seed
+from tools.runtime_helpers import (
+    _default_attn_implementation,
+    _dispose_model,
+    _resolve_dtype,
+    _set_seed,
+)
 
 
 def _sync() -> None:
@@ -62,31 +68,45 @@ class Stopwatch:
         for name in sorted(self.totals, key=lambda k: self.totals[k], reverse=True):
             total = self.totals[name]
             count = self.counts[name]
-            rows.append({
-                "name": name,
-                "total_sec": round(total, 4),
-                "calls": count,
-                "avg_ms": round(total * 1000.0 / max(1, count), 3),
-            })
+            rows.append(
+                {
+                    "name": name,
+                    "total_sec": round(total, 4),
+                    "calls": count,
+                    "avg_ms": round(total * 1000.0 / max(1, count), 3),
+                }
+            )
         return rows
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Profile transcribe() stages with sync timers.")
+    parser = argparse.ArgumentParser(
+        description="Profile transcribe() stages with sync timers."
+    )
     parser.add_argument("--golden", default="local_goldens/offline_regression.json")
     parser.add_argument("--case", default="short_default_15s")
-    parser.add_argument("--audio", default=None, help="Override the audio source from the golden.")
-    parser.add_argument("--start-sec", type=float, default=None, help="Override case start_sec.")
-    parser.add_argument("--duration-sec", type=float, default=None, help="Override case duration_sec.")
+    parser.add_argument(
+        "--audio", default=None, help="Override the audio source from the golden."
+    )
+    parser.add_argument(
+        "--start-sec", type=float, default=None, help="Override case start_sec."
+    )
+    parser.add_argument(
+        "--duration-sec", type=float, default=None, help="Override case duration_sec."
+    )
     parser.add_argument("--context", default=None, help="Override case context.")
     parser.add_argument(
         "--language",
         default=None,
         help="Override case language. Use an empty string to disable forced language.",
     )
-    parser.add_argument("--warmup", type=int, default=1, help="Warmup runs before timing.")
+    parser.add_argument(
+        "--warmup", type=int, default=1, help="Warmup runs before timing."
+    )
     parser.add_argument("--repeats", type=int, default=1)
-    parser.add_argument("--dtype", default=None, choices=["float32", "float16", "bfloat16"])
+    parser.add_argument(
+        "--dtype", default=None, choices=["float32", "float16", "bfloat16"]
+    )
     parser.add_argument("--device-map", default=None)
     parser.add_argument("--attn-implementation", default=None)
     parser.add_argument("--max-new-tokens", type=int, default=None)
@@ -107,7 +127,9 @@ def main() -> None:
     case = matching[0]
     audio_source = args.audio or golden["audio"]
     start_sec = float(case["start_sec"] if args.start_sec is None else args.start_sec)
-    duration_sec = float(case["duration_sec"] if args.duration_sec is None else args.duration_sec)
+    duration_sec = float(
+        case["duration_sec"] if args.duration_sec is None else args.duration_sec
+    )
     context = str(case["context"] if args.context is None else args.context)
     if args.language is None:
         language = case["language"]
@@ -122,7 +144,11 @@ def main() -> None:
     if args.max_new_tokens is not None:
         load_kwargs["max_new_tokens"] = args.max_new_tokens
 
-    attn_implementation = args.attn_implementation or load_kwargs.get("attn_implementation") or _default_attn_implementation(load_kwargs.get("device_map"))
+    attn_implementation = (
+        args.attn_implementation
+        or load_kwargs.get("attn_implementation")
+        or _default_attn_implementation(load_kwargs.get("device_map"))
+    )
     load_kwargs["attn_implementation"] = attn_implementation
     dtype_name = load_kwargs.pop("dtype")
     max_inference_batch_size = int(load_kwargs.pop("max_inference_batch_size"))
@@ -230,6 +256,7 @@ def main() -> None:
 
         # reset counters after warmup
         sw = Stopwatch()
+
         # rebind (the inner closures reference sw via nonlocal capture of the outer sw - fix)
         def timed_processor_call2(self, *args, **kwargs):
             t0 = _now()
@@ -270,7 +297,9 @@ def main() -> None:
         thinker.forward = timed_thinker_forward2
         thinker.get_audio_features = timed_get_audio_features2
         if graph_decoder is not None:
-            graph_decoder.set_profile_callback(lambda name, seconds: sw.add(name, seconds))
+            graph_decoder.set_profile_callback(
+                lambda name, seconds: sw.add(name, seconds)
+            )
 
         wall_total = 0.0
         for _ in range(int(args.repeats)):
@@ -286,11 +315,27 @@ def main() -> None:
 
         wall_mean = wall_total / max(1, int(args.repeats))
         rows = sw.summary()
-        cuda_graph_sec = sum(r["total_sec"] for r in rows if r["name"].startswith("cuda_graph."))
-        cuda_graph_replay_sec = next((r["total_sec"] for r in rows if r["name"] == "cuda_graph.replay"), 0.0)
-        cuda_graph_replay_calls = next((r["calls"] for r in rows if r["name"] == "cuda_graph.replay"), 0)
-        cuda_graph_capture_sec = next((r["total_sec"] for r in rows if r["name"] == "cuda_graph.capture_total"), 0.0)
-        cuda_graph_cache_copy_sec = next((r["total_sec"] for r in rows if r["name"] == "cuda_graph.cache_copy_dynamic_to_static"), 0.0)
+        cuda_graph_sec = sum(
+            r["total_sec"] for r in rows if r["name"].startswith("cuda_graph.")
+        )
+        cuda_graph_replay_sec = next(
+            (r["total_sec"] for r in rows if r["name"] == "cuda_graph.replay"), 0.0
+        )
+        cuda_graph_replay_calls = next(
+            (r["calls"] for r in rows if r["name"] == "cuda_graph.replay"), 0
+        )
+        cuda_graph_capture_sec = next(
+            (r["total_sec"] for r in rows if r["name"] == "cuda_graph.capture_total"),
+            0.0,
+        )
+        cuda_graph_cache_copy_sec = next(
+            (
+                r["total_sec"]
+                for r in rows
+                if r["name"] == "cuda_graph.cache_copy_dynamic_to_static"
+            ),
+            0.0,
+        )
         accounted_no_dup = 0.0
         for row in rows:
             name = row["name"]
@@ -303,30 +348,33 @@ def main() -> None:
                 continue
             accounted_no_dup += float(row["total_sec"])
 
-        print("profile", {
-            "case": args.case,
-            "audio": str(audio_source),
-            "start_sec": start_sec,
-            "duration_sec": duration_sec,
-            "language": language,
-            "context_chars": len(context),
-            "repeats": int(args.repeats),
-            "wall_sec_per_run": round(wall_mean, 4),
-            "wall_sec_total": round(wall_total, 4),
-            "accounted_sec": round(accounted_no_dup, 4),
-            "other_sec": round(wall_total - accounted_no_dup, 4),
-            "cuda_graph_sec": round(cuda_graph_sec, 4),
-            "cuda_graph_replay_sec": round(cuda_graph_replay_sec, 4),
-            "cuda_graph_replay_calls": int(cuda_graph_replay_calls),
-            "cuda_graph_capture_sec": round(cuda_graph_capture_sec, 4),
-            "cuda_graph_cache_copy_sec": round(cuda_graph_cache_copy_sec, 4),
-            "cuda_graph": bool(args.cuda_graph),
-            "flashinfer": bool(args.flashinfer),
-            "fused_rmsnorm": bool(args.fused_rmsnorm),
-            "fused_linears": bool(args.fused_linears),
-            "quantized_linears": bool(args.quantized_linears),
-            "stages": rows,
-        })
+        print(
+            "profile",
+            {
+                "case": args.case,
+                "audio": str(audio_source),
+                "start_sec": start_sec,
+                "duration_sec": duration_sec,
+                "language": language,
+                "context_chars": len(context),
+                "repeats": int(args.repeats),
+                "wall_sec_per_run": round(wall_mean, 4),
+                "wall_sec_total": round(wall_total, 4),
+                "accounted_sec": round(accounted_no_dup, 4),
+                "other_sec": round(wall_total - accounted_no_dup, 4),
+                "cuda_graph_sec": round(cuda_graph_sec, 4),
+                "cuda_graph_replay_sec": round(cuda_graph_replay_sec, 4),
+                "cuda_graph_replay_calls": int(cuda_graph_replay_calls),
+                "cuda_graph_capture_sec": round(cuda_graph_capture_sec, 4),
+                "cuda_graph_cache_copy_sec": round(cuda_graph_cache_copy_sec, 4),
+                "cuda_graph": bool(args.cuda_graph),
+                "flashinfer": bool(args.flashinfer),
+                "fused_rmsnorm": bool(args.fused_rmsnorm),
+                "fused_linears": bool(args.fused_linears),
+                "quantized_linears": bool(args.quantized_linears),
+                "stages": rows,
+            },
+        )
     finally:
         if graph_decoder is not None:
             graph_decoder.set_profile_callback(None)

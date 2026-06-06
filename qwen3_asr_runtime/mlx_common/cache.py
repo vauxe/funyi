@@ -1,5 +1,6 @@
 # coding=utf-8
 """Shared MLX decode primitives: a step-growing KV cache and the causal mask."""
+
 from __future__ import annotations
 
 from typing import Optional
@@ -48,6 +49,6 @@ class KVCache:
             else:
                 self.keys, self.values = new_k, new_v
         self.offset += added
-        self.keys[..., prev:self.offset, :] = keys
-        self.values[..., prev:self.offset, :] = values
-        return self.keys[..., :self.offset, :], self.values[..., :self.offset, :]
+        self.keys[..., prev : self.offset, :] = keys
+        self.values[..., prev : self.offset, :] = values
+        return self.keys[..., : self.offset, :], self.values[..., : self.offset, :]

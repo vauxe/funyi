@@ -31,23 +31,54 @@ from tools.runtime_helpers import (
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate runtime streaming regression goldens.")
-    parser.add_argument("--model", required=True, help="HF repo id or local model path, e.g. Qwen/Qwen3-ASR-1.7B")
-    parser.add_argument("--audio", required=True, help="Audio path used to build streaming slices")
-    parser.add_argument("--reference-srt", default=None, help="Optional SRT path used for final-text CER metadata")
-    parser.add_argument("--output", default="local_goldens/streaming_regression.json", help="Output JSON path")
-    parser.add_argument("--dtype", default="bfloat16", choices=["float32", "float16", "bfloat16"])
+    parser = argparse.ArgumentParser(
+        description="Generate runtime streaming regression goldens."
+    )
+    parser.add_argument(
+        "--model",
+        required=True,
+        help="HF repo id or local model path, e.g. Qwen/Qwen3-ASR-1.7B",
+    )
+    parser.add_argument(
+        "--audio", required=True, help="Audio path used to build streaming slices"
+    )
+    parser.add_argument(
+        "--reference-srt",
+        default=None,
+        help="Optional SRT path used for final-text CER metadata",
+    )
+    parser.add_argument(
+        "--output",
+        default="local_goldens/streaming_regression.json",
+        help="Output JSON path",
+    )
+    parser.add_argument(
+        "--dtype", default="bfloat16", choices=["float32", "float16", "bfloat16"]
+    )
     parser.add_argument("--device-map", default="cuda:0")
     parser.add_argument("--attn-implementation", default=None)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-new-tokens", type=int, default=512)
     parser.add_argument("--max-inference-batch-size", type=int, default=32)
-    parser.add_argument("--cases", default=None, help="Comma separated case names. Default: all built-in streaming cases")
-    parser.add_argument("--step-ms", default=None, help="Comma separated push step sizes. Default: 500,2000")
+    parser.add_argument(
+        "--cases",
+        default=None,
+        help="Comma separated case names. Default: all built-in streaming cases",
+    )
+    parser.add_argument(
+        "--step-ms",
+        default=None,
+        help="Comma separated push step sizes. Default: 500,2000",
+    )
     parser.add_argument("--chunk-size-sec", type=float, default=2.0)
     parser.add_argument("--unfixed-chunk-num", type=int, default=2)
     parser.add_argument("--unfixed-token-num", type=int, default=5)
-    parser.add_argument("--max-window-sec", type=float, default=None, help="Optional bounded live-audio model window.")
+    parser.add_argument(
+        "--max-window-sec",
+        type=float,
+        default=None,
+        help="Optional bounded live-audio model window.",
+    )
     parser.add_argument(
         "--max-prefix-tokens",
         type=int,
@@ -69,7 +100,9 @@ def main() -> None:
     from qwen3_asr_runtime import utils as runtime_utils
 
     sample_rate = int(runtime_utils.SAMPLE_RATE)
-    attn_implementation = args.attn_implementation or _default_attn_implementation(args.device_map)
+    attn_implementation = args.attn_implementation or _default_attn_implementation(
+        args.device_map
+    )
     init_kwargs: dict[str, Any] = {
         "backend": "transformers",
         "dtype": _resolve_dtype(args.dtype),
@@ -89,7 +122,9 @@ def main() -> None:
             "forced_language": {"context": "", "language": "English"},
         }
         prompts = {
-            name: model._build_text_prompt(context=spec["context"], force_language=spec["language"])
+            name: model._build_text_prompt(
+                context=spec["context"], force_language=spec["language"]
+            )
             for name, spec in prompt_specs.items()
         }
 
@@ -118,10 +153,14 @@ def main() -> None:
                     timed=False,
                 )
                 if args.reference_srt and case.context == "" and case.language is None:
-                    reference_text = _extract_srt_text_range(args.reference_srt, case.start_sec, case.duration_sec)
+                    reference_text = _extract_srt_text_range(
+                        args.reference_srt, case.start_sec, case.duration_sec
+                    )
                     step_payload["reference"] = {
                         "reference_chars": len(reference_text),
-                        "cer_vs_reference": round(_cer(step_payload["final"]["text"], reference_text), 6),
+                        "cer_vs_reference": round(
+                            _cer(step_payload["final"]["text"], reference_text), 6
+                        ),
                         "reference_text_sha256": text_sha256(reference_text),
                     }
                 steps.append(step_payload)
@@ -165,11 +204,15 @@ def main() -> None:
         if args.max_window_sec is not None:
             golden["streaming_config"]["max_window_sec"] = float(args.max_window_sec)
         if args.max_prefix_tokens is not None:
-            golden["streaming_config"]["max_prefix_tokens"] = int(args.max_prefix_tokens)
+            golden["streaming_config"]["max_prefix_tokens"] = int(
+                args.max_prefix_tokens
+            )
 
         output_path = Path(args.output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(golden, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        output_path.write_text(
+            json.dumps(golden, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
     finally:
         model = None
         _dispose_model()

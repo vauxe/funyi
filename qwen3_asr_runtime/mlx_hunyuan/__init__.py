@@ -7,6 +7,7 @@ read from the checkpoint ``config.json``. Quality is gated by chrF against the
 stock-transformers golden, not by byte-for-byte parity -- see ``AGENTS.md`` and
 ``tools/parity_mlx_translation.py``.
 """
+
 from __future__ import annotations
 
 from .config import MLXHunyuanConfig

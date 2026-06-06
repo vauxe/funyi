@@ -35,12 +35,30 @@ class CaseSpec:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate offline regression goldens from the runtime default path.")
-    parser.add_argument("--model", required=True, help="HF repo id or local model path, e.g. Qwen/Qwen3-ASR-1.7B")
-    parser.add_argument("--audio", required=True, help="Audio path used to build regression slices")
-    parser.add_argument("--reference-srt", default=None, help="Optional SRT path used for reference CER metadata")
-    parser.add_argument("--output", default="local_goldens/offline_regression.json", help="Output JSON path")
-    parser.add_argument("--dtype", default="bfloat16", choices=["float32", "float16", "bfloat16"])
+    parser = argparse.ArgumentParser(
+        description="Generate offline regression goldens from the runtime default path."
+    )
+    parser.add_argument(
+        "--model",
+        required=True,
+        help="HF repo id or local model path, e.g. Qwen/Qwen3-ASR-1.7B",
+    )
+    parser.add_argument(
+        "--audio", required=True, help="Audio path used to build regression slices"
+    )
+    parser.add_argument(
+        "--reference-srt",
+        default=None,
+        help="Optional SRT path used for reference CER metadata",
+    )
+    parser.add_argument(
+        "--output",
+        default="local_goldens/offline_regression.json",
+        help="Output JSON path",
+    )
+    parser.add_argument(
+        "--dtype", default="bfloat16", choices=["float32", "float16", "bfloat16"]
+    )
     parser.add_argument("--device-map", default="cuda:0")
     parser.add_argument("--attn-implementation", default=None)
     parser.add_argument("--seed", type=int, default=0)
@@ -55,12 +73,48 @@ def _text_sha256(text: str) -> str:
 
 def _build_cases() -> list[CaseSpec]:
     return [
-        CaseSpec(name="short_default_15s", start_sec=0.0, duration_sec=15.0, context="", language=None),
-        CaseSpec(name="short_context_15s", start_sec=0.0, duration_sec=15.0, context="交易 停滞", language=None),
-        CaseSpec(name="short_forced_language_15s", start_sec=0.0, duration_sec=15.0, context="", language="English"),
-        CaseSpec(name="segment_0s", start_sec=0.0, duration_sec=1200.0, context="", language=None),
-        CaseSpec(name="segment_3600s", start_sec=3600.0, duration_sec=1200.0, context="", language=None),
-        CaseSpec(name="segment_7200s", start_sec=7200.0, duration_sec=1200.0, context="", language=None),
+        CaseSpec(
+            name="short_default_15s",
+            start_sec=0.0,
+            duration_sec=15.0,
+            context="",
+            language=None,
+        ),
+        CaseSpec(
+            name="short_context_15s",
+            start_sec=0.0,
+            duration_sec=15.0,
+            context="交易 停滞",
+            language=None,
+        ),
+        CaseSpec(
+            name="short_forced_language_15s",
+            start_sec=0.0,
+            duration_sec=15.0,
+            context="",
+            language="English",
+        ),
+        CaseSpec(
+            name="segment_0s",
+            start_sec=0.0,
+            duration_sec=1200.0,
+            context="",
+            language=None,
+        ),
+        CaseSpec(
+            name="segment_3600s",
+            start_sec=3600.0,
+            duration_sec=1200.0,
+            context="",
+            language=None,
+        ),
+        CaseSpec(
+            name="segment_7200s",
+            start_sec=7200.0,
+            duration_sec=1200.0,
+            context="",
+            language=None,
+        ),
     ]
 
 
@@ -83,7 +137,9 @@ def main() -> None:
         "max_inference_batch_size": args.max_inference_batch_size,
         "max_new_tokens": args.max_new_tokens,
     }
-    attn_implementation = args.attn_implementation or _default_attn_implementation(args.device_map)
+    attn_implementation = args.attn_implementation or _default_attn_implementation(
+        args.device_map
+    )
     if attn_implementation:
         load_kwargs["attn_implementation"] = attn_implementation
 
@@ -96,7 +152,9 @@ def main() -> None:
             {"name": "forced_language", "context": "", "language": "English"},
         ]
         prompts = {
-            case["name"]: model._build_text_prompt(context=case["context"], force_language=case["language"])
+            case["name"]: model._build_text_prompt(
+                context=case["context"], force_language=case["language"]
+            )
             for case in prompt_cases
         }
 
@@ -128,7 +186,9 @@ def main() -> None:
                 "text_sha256": _text_sha256(text),
             }
             if args.reference_srt and case.context == "" and case.language is None:
-                reference_text = _extract_srt_text_range(args.reference_srt, case.start_sec, case.duration_sec)
+                reference_text = _extract_srt_text_range(
+                    args.reference_srt, case.start_sec, case.duration_sec
+                )
                 payload["reference"] = {
                     "reference_chars": len(reference_text),
                     "cer_vs_reference": round(_cer(text, reference_text), 6),
@@ -156,7 +216,9 @@ def main() -> None:
             "cases": cases_payload,
         }
 
-        output_path.write_text(json.dumps(golden, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        output_path.write_text(
+            json.dumps(golden, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
     finally:
         model = None
         _dispose_model()

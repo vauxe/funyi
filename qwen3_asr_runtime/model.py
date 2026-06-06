@@ -59,7 +59,9 @@ class Qwen3ASRModel:
     ):
         if backend_runtime is None:
             if model is None or processor is None:
-                raise ValueError("Either backend_runtime or both model and processor must be provided.")
+                raise ValueError(
+                    "Either backend_runtime or both model and processor must be provided."
+                )
             backend_runtime = TransformersASRBackend(model=model, processor=processor)
 
         self.backend_runtime = backend_runtime
@@ -83,13 +85,17 @@ class Qwen3ASRModel:
     ) -> "Qwen3ASRModel":
         backend_name = str(backend).lower().strip()
         if backend_name == "transformers":
-            backend_runtime = TransformersASRBackend.from_pretrained(pretrained_model_name_or_path, **kwargs)
+            backend_runtime = TransformersASRBackend.from_pretrained(
+                pretrained_model_name_or_path, **kwargs
+            )
         elif backend_name == "mlx":
             # Lazy import: MLX is only available on Apple Silicon, so importing it
             # must not be required on CUDA-only hosts.
             from .backends.mlx import MLXASRBackend
 
-            backend_runtime = MLXASRBackend.from_pretrained(pretrained_model_name_or_path, **kwargs)
+            backend_runtime = MLXASRBackend.from_pretrained(
+                pretrained_model_name_or_path, **kwargs
+            )
         else:
             raise ValueError(f"Unsupported backend: {backend}")
         return cls(
@@ -186,7 +192,9 @@ class Qwen3ASRModel:
         if len(ctxs) == 1 and sample_count > 1:
             ctxs = ctxs * sample_count
         if len(ctxs) != sample_count:
-            raise ValueError(f"Batch size mismatch: audio={sample_count}, context={len(ctxs)}")
+            raise ValueError(
+                f"Batch size mismatch: audio={sample_count}, context={len(ctxs)}"
+            )
 
         langs_in: List[Optional[str]]
         if language is None:
@@ -196,7 +204,9 @@ class Qwen3ASRModel:
             if len(langs_in) == 1 and sample_count > 1:
                 langs_in = langs_in * sample_count
             if len(langs_in) != sample_count:
-                raise ValueError(f"Batch size mismatch: audio={sample_count}, language={len(langs_in)}")
+                raise ValueError(
+                    f"Batch size mismatch: audio={sample_count}, language={len(langs_in)}"
+                )
 
         langs_norm: List[Optional[str]] = []
         for item in langs_in:
@@ -284,17 +294,23 @@ class Qwen3ASRModel:
             if max_prefix_tokens is None:
                 max_prefix_tokens = _LIVE_DEFAULT_MAX_PREFIX_TOKENS
         if max_prefix_tokens is not None and int(max_prefix_tokens) <= 0:
-            raise ValueError(f"max_prefix_tokens must be > 0 when set, got: {max_prefix_tokens}")
+            raise ValueError(
+                f"max_prefix_tokens must be > 0 when set, got: {max_prefix_tokens}"
+            )
 
         self.backend_runtime.reset_decode_runtime()
-        prompt_raw = self._build_text_prompt(context=context, force_language=force_language)
+        prompt_raw = self._build_text_prompt(
+            context=context, force_language=force_language
+        )
 
         return ASRStreamingState(
             unfixed_chunk_num=int(unfixed_chunk_num),
             unfixed_token_num=int(unfixed_token_num),
             chunk_size_samples=int(chunk_size_samples),
             max_window_samples=max_window_samples,
-            max_prefix_tokens=int(max_prefix_tokens) if max_prefix_tokens is not None else None,
+            max_prefix_tokens=int(max_prefix_tokens)
+            if max_prefix_tokens is not None
+            else None,
             chunk_id=0,
             buffer=np.zeros((0,), dtype=np.float32),
             audio_accum=np.zeros((0,), dtype=np.float32),
@@ -311,9 +327,13 @@ class Qwen3ASRModel:
         )
 
     @torch.inference_mode()
-    def streaming_transcribe(self, pcm16k: np.ndarray, state: ASRStreamingState) -> ASRStreamingState:
+    def streaming_transcribe(
+        self, pcm16k: np.ndarray, state: ASRStreamingState
+    ) -> ASRStreamingState:
         if state is None:
-            raise ValueError("state must not be None. Call init_streaming_state() first.")
+            raise ValueError(
+                "state must not be None. Call init_streaming_state() first."
+            )
         if pcm16k is None:
             raise ValueError("pcm16k must not be None.")
 
@@ -331,7 +351,9 @@ class Qwen3ASRModel:
         return state
 
     @torch.inference_mode()
-    def finish_streaming_transcribe(self, state: ASRStreamingState) -> ASRStreamingState:
+    def finish_streaming_transcribe(
+        self, state: ASRStreamingState
+    ) -> ASRStreamingState:
         if state is None:
             raise ValueError("state must not be None.")
         if state.buffer is None or state.buffer.shape[0] == 0:
@@ -356,7 +378,9 @@ class Qwen3ASRModel:
 
     def _build_text_prompt(self, context: str, force_language: Optional[str]) -> str:
         messages = self._build_messages(context=context, audio_payload="")
-        base = self.backend_runtime.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+        base = self.backend_runtime.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=False
+        )
         if force_language:
             base = base + f"language {force_language}{'<asr_text>'}"
         return base
@@ -378,10 +402,15 @@ class Qwen3ASRModel:
         wavs: List[np.ndarray],
         languages: List[Optional[str]],
     ) -> List[str]:
-        prompts = [self._build_text_prompt(context=c, force_language=fl) for c, fl in zip(contexts, languages)]
+        prompts = [
+            self._build_text_prompt(context=c, force_language=fl)
+            for c, fl in zip(contexts, languages)
+        ]
         return self._infer_with_prompts(prompts, wavs)
 
-    def _infer_with_prompts(self, prompts: List[str], wavs: List[np.ndarray]) -> List[str]:
+    def _infer_with_prompts(
+        self, prompts: List[str], wavs: List[np.ndarray]
+    ) -> List[str]:
         return self.backend_runtime.infer_with_prompts(
             prompts,
             wavs,
@@ -400,7 +429,9 @@ class Qwen3ASRModel:
         if state.spec_decode and draft_ids:
             stats["spec_attempt_steps"] = stats.get("spec_attempt_steps", 0) + 1
             if plan.trimmed:
-                stats["spec_trimmed_attempt_steps"] = stats.get("spec_trimmed_attempt_steps", 0) + 1
+                stats["spec_trimmed_attempt_steps"] = (
+                    stats.get("spec_trimmed_attempt_steps", 0) + 1
+                )
             try:
                 spec_stats: Dict[str, int] = {}
                 generated = self.backend_runtime.infer_streaming_with_draft(
@@ -412,8 +443,12 @@ class Qwen3ASRModel:
                 )
                 verified = int(spec_stats.get("draft_tokens", 0))
                 accepted = int(spec_stats.get("accepted_tokens", 0))
-                stats["spec_verified_draft_tokens"] = stats.get("spec_verified_draft_tokens", 0) + verified
-                stats["spec_accepted_tokens"] = stats.get("spec_accepted_tokens", 0) + accepted
+                stats["spec_verified_draft_tokens"] = (
+                    stats.get("spec_verified_draft_tokens", 0) + verified
+                )
+                stats["spec_accepted_tokens"] = (
+                    stats.get("spec_accepted_tokens", 0) + accepted
+                )
             except NotImplementedError:
                 generated = None
         elif state.spec_decode:
@@ -423,7 +458,9 @@ class Qwen3ASRModel:
         raw_decoded = prefix + generated
         self._set_streaming_decoded(state, raw_decoded, prompt_prefix=prefix)
 
-    def _build_streaming_prefix_plan(self, state: ASRStreamingState) -> StreamingPrefixPlan:
+    def _build_streaming_prefix_plan(
+        self, state: ASRStreamingState
+    ) -> StreamingPrefixPlan:
         if state.chunk_id < state.unfixed_chunk_num:
             return StreamingPrefixPlan(prefix="", draft_ids=[])
 
@@ -431,7 +468,11 @@ class Qwen3ASRModel:
         rollback = max(0, int(state.unfixed_token_num))
         while True:
             end_idx = max(0, len(cur_ids) - rollback)
-            prefix = self.backend_runtime.decode_text(cur_ids[:end_idx]) if end_idx > 0 else ""
+            prefix = (
+                self.backend_runtime.decode_text(cur_ids[:end_idx])
+                if end_idx > 0
+                else ""
+            )
             if "\ufffd" not in prefix or end_idx == 0:
                 prefix, trimmed = self._limit_streaming_prefix(state, prefix)
                 return StreamingPrefixPlan(
@@ -444,18 +485,28 @@ class Qwen3ASRModel:
     def _build_finish_streaming_prefix(self, state: ASRStreamingState) -> str:
         return self._build_streaming_prefix_plan(state).prefix
 
-    def _append_streaming_audio(self, state: ASRStreamingState, chunk: np.ndarray) -> None:
+    def _append_streaming_audio(
+        self, state: ASRStreamingState, chunk: np.ndarray
+    ) -> None:
         if chunk.shape[0] == 0:
             return
         state.audio_seen_samples += int(chunk.shape[0])
         state.audio_accum = self._append_audio(state.audio_accum, chunk)
         _TRIM_POLICY.apply(state)
 
-    def _set_streaming_decoded(self, state: ASRStreamingState, raw_decoded: str, *, prompt_prefix: str) -> None:
+    def _set_streaming_decoded(
+        self, state: ASRStreamingState, raw_decoded: str, *, prompt_prefix: str
+    ) -> None:
         state._raw_decoded = raw_decoded
-        language, decoded_text = parse_asr_output(raw_decoded, user_language=state.force_language)
-        _, prompt_text_prefix = parse_asr_output(prompt_prefix, user_language=state.force_language)
-        generated_text = self._strip_prompt_text_prefix(decoded_text, prompt_text_prefix)
+        language, decoded_text = parse_asr_output(
+            raw_decoded, user_language=state.force_language
+        )
+        _, prompt_text_prefix = parse_asr_output(
+            prompt_prefix, user_language=state.force_language
+        )
+        generated_text = self._strip_prompt_text_prefix(
+            decoded_text, prompt_text_prefix
+        )
         full_text = state.carried_text_prefix + decoded_text
         state.language = language
         state.partial_text = decoded_text
@@ -477,7 +528,9 @@ class Qwen3ASRModel:
             return decoded[len(prefix) :].strip()
         return decoded
 
-    def _limit_streaming_prefix(self, state: ASRStreamingState, prefix: str) -> tuple[str, bool]:
+    def _limit_streaming_prefix(
+        self, state: ASRStreamingState, prefix: str
+    ) -> tuple[str, bool]:
         if state.max_prefix_tokens is None or not prefix:
             return prefix, False
 
@@ -517,5 +570,6 @@ class Qwen3ASRModel:
         if current.shape[0] == 0:
             return chunk
         return np.concatenate([current, chunk], axis=0)
+
 
 __all__ = ["ASRStreamingState", "ASRTranscription", "Qwen3ASRModel"]

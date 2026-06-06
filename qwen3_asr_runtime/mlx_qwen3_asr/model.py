@@ -1,5 +1,6 @@
 # coding=utf-8
 """Top-level MLX Qwen3-ASR model: audio merge, prefill, greedy decode."""
+
 from __future__ import annotations
 
 from typing import List, Optional, Sequence, Tuple
@@ -29,9 +30,13 @@ class MLXQwen3ASRForConditionalGeneration(nn.Module):
         # weight, never tied). Otherwise the standard vocab LM head, which is tied when
         # the checkpoint stores no lm_head.weight (logits via embed_tokens.as_linear,
         # works for both nn.Embedding and the quantized QuantizedEmbedding).
-        out_features = config.classify_num if config.is_forced_aligner else config.text.vocab_size
+        out_features = (
+            config.classify_num if config.is_forced_aligner else config.text.vocab_size
+        )
         if config.is_forced_aligner or not tie_lm_head:
-            self.lm_head = nn.Linear(config.text.hidden_size, int(out_features), bias=False)
+            self.lm_head = nn.Linear(
+                config.text.hidden_size, int(out_features), bias=False
+            )
 
     def _logits(self, hidden: mx.array) -> mx.array:
         if self.tie_lm_head:
@@ -39,14 +44,18 @@ class MLXQwen3ASRForConditionalGeneration(nn.Module):
         return self.lm_head(hidden)
 
     # --- multimodal pieces -------------------------------------------------
-    def get_audio_features(self, input_features: mx.array, feature_lengths: Sequence[int]) -> mx.array:
+    def get_audio_features(
+        self, input_features: mx.array, feature_lengths: Sequence[int]
+    ) -> mx.array:
         feats = []
         for i, flen in enumerate(feature_lengths):
             flen = int(flen)
             feats.append(self.audio_tower(input_features[i][:, :flen], flen))
         return mx.concatenate(feats, axis=0)
 
-    def _merge_audio(self, input_ids: mx.array, inputs_embeds: mx.array, audio_features: mx.array) -> mx.array:
+    def _merge_audio(
+        self, input_ids: mx.array, inputs_embeds: mx.array, audio_features: mx.array
+    ) -> mx.array:
         """Replace audio-placeholder rows (B=1) with audio_features (assumes one contiguous run)."""
         ids = np.asarray(input_ids[0]).reshape(-1)
         positions = np.flatnonzero(ids == self.config.audio_token_id)
@@ -61,7 +70,8 @@ class MLXQwen3ASRForConditionalGeneration(nn.Module):
         assert contiguous, "non-contiguous audio placeholders not supported"
         audio = audio_features.astype(inputs_embeds.dtype)[None]  # (1, N, H)
         return mx.concatenate(
-            [inputs_embeds[:, :start], audio, inputs_embeds[:, start + n_audio :]], axis=1
+            [inputs_embeds[:, :start], audio, inputs_embeds[:, start + n_audio :]],
+            axis=1,
         )
 
     # --- generation --------------------------------------------------------
@@ -95,7 +105,9 @@ class MLXQwen3ASRForConditionalGeneration(nn.Module):
             if tok in eos:
                 break
             generated.append(tok)
-            step_embeds = self.model.embed_tokens(mx.array([[tok]], dtype=input_ids.dtype))
+            step_embeds = self.model.embed_tokens(
+                mx.array([[tok]], dtype=input_ids.dtype)
+            )
             hidden = self.model(step_embeds, caches)
         return generated
 

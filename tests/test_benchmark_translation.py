@@ -44,7 +44,11 @@ class TestBenchmarkTranslation:
         extra_args: list[str],
         expected_sample: bool,
     ) -> None:
-        monkeypatch.setattr(sys, "argv", ["benchmark_translation.py", "--dataset", "cases.jsonl", *extra_args])
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["benchmark_translation.py", "--dataset", "cases.jsonl", *extra_args],
+        )
 
         args = _parse_args()
 
@@ -63,9 +67,9 @@ class TestBenchmarkTranslation:
         assert _resolve_warmup_count(raw, 42) == expected
 
     def test_parse_json_object_rejects_non_object(self) -> None:
-        assert _parse_json_object('{"logits_to_keep": 1}') == {'logits_to_keep': 1}
+        assert _parse_json_object('{"logits_to_keep": 1}') == {"logits_to_keep": 1}
 
-        with pytest.raises(ValueError, match='JSON object'):
+        with pytest.raises(ValueError, match="JSON object"):
             _parse_json_object("[]")
 
     def test_run_case_omits_output_by_default(self) -> None:
@@ -76,10 +80,10 @@ class TestBenchmarkTranslation:
             max_new_tokens=16,
         )
 
-        assert row['output_chars'] == len(FakeResult.text)
-        assert row['encode_wall_sec_median'] == 0.01
-        assert row['decode_wall_sec_median'] == 0.02
-        assert 'output' not in row
+        assert row["output_chars"] == len(FakeResult.text)
+        assert row["encode_wall_sec_median"] == 0.01
+        assert row["decode_wall_sec_median"] == 0.02
+        assert "output" not in row
 
     def test_summarize_reports_generate_token_correlation(self) -> None:
         rows = [
@@ -105,11 +109,11 @@ class TestBenchmarkTranslation:
 
         summary = _summarize(rows)
 
-        assert summary['generate_wall_sec_sum'] == 0.5
-        assert summary['generated_tokens_sum'] == 6.0
-        assert summary['decode_tokens_per_sec_total'] == 12.0
-        assert summary['end_to_end_tokens_per_sec_total'] == 10.0
-        assert summary['correlation']['generated_tokens_vs_total_sec'] == 1.0
+        assert summary["generate_wall_sec_sum"] == 0.5
+        assert summary["generated_tokens_sum"] == 6.0
+        assert summary["decode_tokens_per_sec_total"] == 12.0
+        assert summary["end_to_end_tokens_per_sec_total"] == 10.0
+        assert summary["correlation"]["generated_tokens_vs_total_sec"] == 1.0
 
     def test_pearson_returns_none_for_constant_values(self) -> None:
         assert _pearson([1.0, 1.0], [2.0, 3.0]) is None

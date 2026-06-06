@@ -44,7 +44,9 @@ class EnergyVadAdapter:
 
     def __init__(self, config: EnergyVadConfig | None = None) -> None:
         self.config = config or EnergyVadConfig()
-        self._frame_samples = max(1, int(round(self.config.sample_rate * self.config.frame_ms / 1000)))
+        self._frame_samples = max(
+            1, int(round(self.config.sample_rate * self.config.frame_ms / 1000))
+        )
         self._active = False
         self._candidate_speech_ms = 0
         self._silence_ms = 0
@@ -159,13 +161,19 @@ class SileroVadConfig:
 class SileroVadAdapter:
     """Streaming Silero VAD wrapper with the same endpoint semantics as EnergyVadAdapter."""
 
-    def __init__(self, config: SileroVadConfig | None = None, *, model: Any | None = None) -> None:
+    def __init__(
+        self, config: SileroVadConfig | None = None, *, model: Any | None = None
+    ) -> None:
         self.config = config or SileroVadConfig()
         if self.config.sample_rate != SAMPLE_RATE:
-            raise ValueError(f"Silero VAD expects {SAMPLE_RATE} Hz audio, got {self.config.sample_rate}.")
+            raise ValueError(
+                f"Silero VAD expects {SAMPLE_RATE} Hz audio, got {self.config.sample_rate}."
+            )
 
         self._chunk_samples = 512
-        self._chunk_ms = int(round(1000 * self._chunk_samples / self.config.sample_rate))
+        self._chunk_ms = int(
+            round(1000 * self._chunk_samples / self.config.sample_rate)
+        )
         self._negative_threshold = (
             float(self.config.negative_threshold)
             if self.config.negative_threshold is not None
@@ -214,7 +222,12 @@ class SileroVadAdapter:
                 is_speech = speech_prob >= self._negative_threshold
             else:
                 is_speech = speech_prob >= float(self.config.threshold)
-            self._apply_frame(decision, is_speech=is_speech, frame_start=frame_start, frame_end=frame_end)
+            self._apply_frame(
+                decision,
+                is_speech=is_speech,
+                frame_start=frame_start,
+                frame_end=frame_end,
+            )
             self._processed_samples = frame_end
 
         if offset:
@@ -222,7 +235,14 @@ class SileroVadAdapter:
         decision.speech_active = self._active
         return decision
 
-    def _apply_frame(self, decision: VadDecision, *, is_speech: bool, frame_start: int, frame_end: int) -> None:
+    def _apply_frame(
+        self,
+        decision: VadDecision,
+        *,
+        is_speech: bool,
+        frame_start: int,
+        frame_end: int,
+    ) -> None:
         decision.has_speech = decision.has_speech or is_speech
         if is_speech:
             decision.last_speech_end_sample = frame_end

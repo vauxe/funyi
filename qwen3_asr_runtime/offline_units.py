@@ -118,14 +118,22 @@ class SourceUnitBuilder:
             current_width = _tokens_text_width(current)
             current_ms = int(current[-1].end_ms) - int(current[0].start_ms)
             timing_status = _tokens_timing_status(current)
-            can_close_by_duration = timing_status == "aligned" or current_width >= _ESTIMATED_DURATION_MIN_WIDTH
-            duration_at_limit = can_close_by_duration and current_ms >= self._max_unit_ms
-            duration_over_limit = can_close_by_duration and current_ms > self._max_unit_ms
+            can_close_by_duration = (
+                timing_status == "aligned"
+                or current_width >= _ESTIMATED_DURATION_MIN_WIDTH
+            )
+            duration_at_limit = (
+                can_close_by_duration and current_ms >= self._max_unit_ms
+            )
+            duration_over_limit = (
+                can_close_by_duration and current_ms > self._max_unit_ms
+            )
             if current_width >= self._max_unit_width or duration_at_limit:
                 return _close_index_for_limit(
                     index,
                     last_safe=last_safe,
-                    hard_over_limit=current_width > self._max_unit_width or duration_over_limit,
+                    hard_over_limit=current_width > self._max_unit_width
+                    or duration_over_limit,
                 )
             last_safe = index
         return len(self._pending) - 1 if is_final else None
@@ -154,7 +162,9 @@ def timed_tokens_from_aligned_items(
         return []
 
     source_text = str(text or "")
-    spans = _find_item_spans(source_text, [str(getattr(item, "text", "") or "") for item in item_list])
+    spans = _find_item_spans(
+        source_text, [str(getattr(item, "text", "") or "") for item in item_list]
+    )
     span_list: list[tuple[int, int]] = []
     for span in spans:
         if span is None:
@@ -167,7 +177,9 @@ def timed_tokens_from_aligned_items(
     display_start = 0
     for index, item in enumerate(item_list):
         start, end = span_list[index]
-        next_start = span_list[index + 1][0] if index + 1 < len(span_list) else len(source_text)
+        next_start = (
+            span_list[index + 1][0] if index + 1 < len(span_list) else len(source_text)
+        )
         display_end = _aligned_token_display_end(source_text, end, next_start)
         display_text = source_text[display_start:display_end]
         if not display_text.strip():
@@ -175,7 +187,11 @@ def timed_tokens_from_aligned_items(
         display_start = display_end
         start_time = float(getattr(item, "start_time", 0.0))
         end_time = float(getattr(item, "end_time", 0.0))
-        if not math.isfinite(start_time) or not math.isfinite(end_time) or end_time < start_time:
+        if (
+            not math.isfinite(start_time)
+            or not math.isfinite(end_time)
+            or end_time < start_time
+        ):
             return []
         local_start_ms = max(0, int(round(start_time * 1000)))
         local_end_ms = max(local_start_ms, int(round(end_time * 1000)))
@@ -208,7 +224,9 @@ def estimated_timed_tokens_from_text(
     spans = _estimated_token_spans(source_text)
     if not spans:
         return []
-    weights = [max(1, _display_width(source_text[start:end].strip())) for start, end in spans]
+    weights = [
+        max(1, _display_width(source_text[start:end].strip())) for start, end in spans
+    ]
     total_weight = sum(weights)
     elapsed = 0
     tokens: list[TimedToken] = []
@@ -259,7 +277,9 @@ def layout_source_cues(
     return [cue for group in groups if (cue := _make_cue(group)) is not None]
 
 
-def _make_estimated_cues(groups: Sequence[Sequence[TimedToken]], *, max_cue_ms: int) -> list[SourceCue]:
+def _make_estimated_cues(
+    groups: Sequence[Sequence[TimedToken]], *, max_cue_ms: int
+) -> list[SourceCue]:
     cues: list[SourceCue] = []
     if not groups:
         return cues
@@ -270,7 +290,9 @@ def _make_estimated_cues(groups: Sequence[Sequence[TimedToken]], *, max_cue_ms: 
             continue
         raw_duration_ms = max(1, int(group[-1].end_ms) - int(group[0].start_ms))
         duration_ms = min(max(1, int(max_cue_ms)), raw_duration_ms)
-        cues.append(SourceCue(text=text, start_ms=cursor_ms, end_ms=cursor_ms + duration_ms))
+        cues.append(
+            SourceCue(text=text, start_ms=cursor_ms, end_ms=cursor_ms + duration_ms)
+        )
         cursor_ms += duration_ms
     return cues
 
@@ -329,7 +351,9 @@ def _tokens_fit_one_cue(
     if not tokens:
         return False
     duration_ms = int(tokens[-1].end_ms) - int(tokens[0].start_ms)
-    duration_fits = _tokens_timing_status(tokens) != "aligned" or duration_ms <= max_cue_ms
+    duration_fits = (
+        _tokens_timing_status(tokens) != "aligned" or duration_ms <= max_cue_ms
+    )
     return duration_fits and _tokens_text_width(tokens) <= max_cue_width
 
 
@@ -362,7 +386,9 @@ def _make_cue(tokens: Sequence[TimedToken]) -> SourceCue | None:
     )
 
 
-def _find_item_spans(text: str, item_texts: Sequence[str]) -> list[tuple[int, int] | None]:
+def _find_item_spans(
+    text: str, item_texts: Sequence[str]
+) -> list[tuple[int, int] | None]:
     spans: list[tuple[int, int] | None] = []
     normalized_text, original_indices = _alignment_index(text)
     lower_text = normalized_text.lower()
@@ -410,7 +436,9 @@ def _word_token_spans(text: str) -> list[tuple[int, int]]:
     return _spans_with_interstitial_text(text, spans)
 
 
-def _spans_with_interstitial_text(text: str, spans: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+def _spans_with_interstitial_text(
+    text: str, spans: Sequence[tuple[int, int]]
+) -> list[tuple[int, int]]:
     expanded: list[tuple[int, int]] = []
     cursor = 0
     for start, end in spans:
@@ -467,7 +495,9 @@ def _is_unit_end_token(tokens: Sequence[TimedToken], index: int) -> bool:
     return not _period_is_numeric_separator(tokens, index, text)
 
 
-def _period_is_numeric_separator(tokens: Sequence[TimedToken], index: int, text: str) -> bool:
+def _period_is_numeric_separator(
+    tokens: Sequence[TimedToken], index: int, text: str
+) -> bool:
     left = _last_non_space(text[:-1])
     if left is None and index > 0:
         left = _last_non_space(str(tokens[index - 1].text or ""))
@@ -493,11 +523,17 @@ def _needs_text_separator(
         return False
     left = _last_non_space(joined)
     right = _first_non_space(text)
-    if left is None or right is None or not _can_separate_before_ascii_token(left, right):
+    if (
+        left is None
+        or right is None
+        or not _can_separate_before_ascii_token(left, right)
+    ):
         return False
     if previous_token is None:
         return False
-    return bool(token.starts_new_batch) or int(token.start_ms) > int(previous_token.end_ms)
+    return bool(token.starts_new_batch) or int(token.start_ms) > int(
+        previous_token.end_ms
+    )
 
 
 def _can_separate_before_ascii_token(left: str, right: str) -> bool:

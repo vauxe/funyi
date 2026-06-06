@@ -19,7 +19,12 @@ class TestWebSocketE2EInvariant:
         assert (
             _record_event_contract(
                 state,
-                {'type': 'transcript_update', 'revision': 2, 'stable_appends': [], 'partial': {'text': 'new'}},
+                {
+                    "type": "transcript_update",
+                    "revision": 2,
+                    "stable_appends": [],
+                    "partial": {"text": "new"},
+                },
             )
             == []
         )
@@ -28,7 +33,9 @@ class TestWebSocketE2EInvariant:
             {"type": "translation_preview", "source_revision": 1, "text": "old"},
         )
 
-        assert issues == ['translation_preview source_revision 1 is older than latest transcript_update revision 2']
+        assert issues == [
+            "translation_preview source_revision 1 is older than latest transcript_update revision 2"
+        ]
 
     def test_stable_translation_history_must_cover_final_source_segments(self) -> None:
         state: dict[str, object] = {}
@@ -72,9 +79,11 @@ class TestWebSocketE2EInvariant:
             expect_translation=True,
         )
 
-        assert issues == ['missing translation_stable for source segments: seg_000002']
+        assert issues == ["missing translation_stable for source segments: seg_000002"]
 
-    def test_grouped_stable_translation_can_cover_multiple_source_segments(self) -> None:
+    def test_grouped_stable_translation_can_cover_multiple_source_segments(
+        self,
+    ) -> None:
         state: dict[str, object] = {}
         _record_event_contract(
             state,
@@ -123,7 +132,9 @@ class TestWebSocketE2EInvariant:
 
         assert issues == []
 
-    def test_grouped_stable_translation_rejects_mismatched_coverage_indices(self) -> None:
+    def test_grouped_stable_translation_rejects_mismatched_coverage_indices(
+        self,
+    ) -> None:
         state: dict[str, object] = {}
         _record_event_contract(
             state,
@@ -199,9 +210,13 @@ class TestWebSocketE2EInvariant:
             },
         )
 
-        assert issues == ['transcript_timing_update references unknown source segment: seg_000001']
+        assert issues == [
+            "transcript_timing_update references unknown source segment: seg_000001"
+        ]
 
-    def test_timestamp_quality_uses_srt_text_match_for_boundary_errors(self, tmp_path: Path) -> None:
+    def test_timestamp_quality_uses_srt_text_match_for_boundary_errors(
+        self, tmp_path: Path
+    ) -> None:
         srt_path = tmp_path / "ref.srt"
         srt_path.write_text(
             "1\n00:00:00,000 --> 00:00:01,000\n第一句\n\n"
@@ -236,8 +251,8 @@ class TestWebSocketE2EInvariant:
         )
 
         assert quality is not None
-        assert quality['matched_segments'] == 2  # type: ignore[index]
-        assert quality['boundary_abs_error_ms']['p50'] == 0.0  # type: ignore[index]
+        assert quality["matched_segments"] == 2  # type: ignore[index]
+        assert quality["boundary_abs_error_ms"]["p50"] == 0.0  # type: ignore[index]
 
     def test_repetition_loop_detector_flags_long_adjacent_repeated_text(self) -> None:
         loop = _detect_repetition_loop("前缀" + "重复内容甲乙丙丁" * 12 + "后缀")
@@ -254,7 +269,9 @@ class TestWebSocketE2EInvariant:
         assert len("".join(ch for ch in text if not ch.isspace())) == 79
         assert _detect_repetition_loop(text) is None
 
-    def test_repetition_loop_detector_flags_repeats_separated_by_punctuation(self) -> None:
+    def test_repetition_loop_detector_flags_repeats_separated_by_punctuation(
+        self,
+    ) -> None:
         # Punctuation and spaces are normalized away, so an interleaved loop is still caught.
         loop = _detect_repetition_loop("，".join(["重复内容甲乙丙丁"] * 12))
 

@@ -21,38 +21,94 @@ from tools.streaming_regression_common import (
     run_streaming_case,
     summarize_seconds,
 )
-from tools.runtime_helpers import _default_attn_implementation, _dispose_model, _resolve_dtype, _set_seed
+from tools.runtime_helpers import (
+    _default_attn_implementation,
+    _dispose_model,
+    _resolve_dtype,
+    _set_seed,
+)
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Benchmark runtime streaming transcription on local streaming goldens.")
-    parser.add_argument("--golden", default="local_goldens/streaming_regression.json", help="Streaming regression golden JSON")
+    parser = argparse.ArgumentParser(
+        description="Benchmark runtime streaming transcription on local streaming goldens."
+    )
+    parser.add_argument(
+        "--golden",
+        default="local_goldens/streaming_regression.json",
+        help="Streaming regression golden JSON",
+    )
     parser.add_argument("--model", default=None, help="Optional model override")
     parser.add_argument("--audio", default=None, help="Optional audio override")
-    parser.add_argument("--dtype", default=None, choices=["float32", "float16", "bfloat16"], help="Optional dtype override")
-    parser.add_argument("--device-map", default=None, help="Optional device_map override")
-    parser.add_argument("--attn-implementation", default=None, help="Optional attn_implementation override")
+    parser.add_argument(
+        "--dtype",
+        default=None,
+        choices=["float32", "float16", "bfloat16"],
+        help="Optional dtype override",
+    )
+    parser.add_argument(
+        "--device-map", default=None, help="Optional device_map override"
+    )
+    parser.add_argument(
+        "--attn-implementation",
+        default=None,
+        help="Optional attn_implementation override",
+    )
     parser.add_argument("--seed", type=int, default=None, help="Optional seed override")
     parser.add_argument("--max-new-tokens", type=int, default=None)
     parser.add_argument("--max-inference-batch-size", type=int, default=None)
-    parser.add_argument("--cases", default=None, help="Comma separated case names to run. Default: all")
-    parser.add_argument("--step-ms", default=None, help="Comma separated push step sizes. Default: golden config")
+    parser.add_argument(
+        "--cases", default=None, help="Comma separated case names to run. Default: all"
+    )
+    parser.add_argument(
+        "--step-ms",
+        default=None,
+        help="Comma separated push step sizes. Default: golden config",
+    )
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--warmup", type=int, default=1)
-    parser.add_argument("--check-final", action="store_true", help="Verify final text hash against the golden.")
-    parser.add_argument("--max-window-sec", type=float, default=None, help="Override with a bounded live-audio model window.")
+    parser.add_argument(
+        "--check-final",
+        action="store_true",
+        help="Verify final text hash against the golden.",
+    )
+    parser.add_argument(
+        "--max-window-sec",
+        type=float,
+        default=None,
+        help="Override with a bounded live-audio model window.",
+    )
     parser.add_argument(
         "--max-prefix-tokens",
         type=int,
         default=None,
         help="Override rolling text-prefix token cap. Defaults inside runtime when --max-window-sec is set.",
     )
-    parser.add_argument("--cuda-graph", action="store_true", help="Use CUDA graph decode loop.")
-    parser.add_argument("--cuda-graph-len-bucket", type=int, default=1, help="Round CUDA graph/cache length up to this token bucket.")
-    parser.add_argument("--flashinfer", action="store_true", help="Use FlashInfer decode attention.")
-    parser.add_argument("--fused-rmsnorm", action="store_true", help="Patch RMSNorm modules to F.rms_norm.")
-    parser.add_argument("--fused-linears", action="store_true", help="Fuse q/k/v and gate/up linears.")
-    parser.add_argument("--quantized-linears", action="store_true", help="Use W8A16 for fused qkv/gate_up.")
+    parser.add_argument(
+        "--cuda-graph", action="store_true", help="Use CUDA graph decode loop."
+    )
+    parser.add_argument(
+        "--cuda-graph-len-bucket",
+        type=int,
+        default=1,
+        help="Round CUDA graph/cache length up to this token bucket.",
+    )
+    parser.add_argument(
+        "--flashinfer", action="store_true", help="Use FlashInfer decode attention."
+    )
+    parser.add_argument(
+        "--fused-rmsnorm",
+        action="store_true",
+        help="Patch RMSNorm modules to F.rms_norm.",
+    )
+    parser.add_argument(
+        "--fused-linears", action="store_true", help="Fuse q/k/v and gate/up linears."
+    )
+    parser.add_argument(
+        "--quantized-linears",
+        action="store_true",
+        help="Use W8A16 for fused qkv/gate_up.",
+    )
     parser.add_argument(
         "--spec-decode",
         action="store_true",
@@ -102,7 +158,9 @@ def main() -> None:
 
     attn_implementation = args.attn_implementation
     if attn_implementation is None:
-        attn_implementation = load_kwargs.get("attn_implementation") or _default_attn_implementation(load_kwargs.get("device_map"))
+        attn_implementation = load_kwargs.get(
+            "attn_implementation"
+        ) or _default_attn_implementation(load_kwargs.get("device_map"))
     load_kwargs["attn_implementation"] = attn_implementation
 
     dtype_name = load_kwargs.pop("dtype")
@@ -118,8 +176,13 @@ def main() -> None:
         available_names = {str(case["name"]) for case in golden["cases"]}
         unknown_names = sorted(selected_names.difference(available_names))
         if unknown_names:
-            raise ValueError(f"Unknown streaming cases: {unknown_names}. Available: {sorted(available_names)}")
-    default_step_ms = tuple(int(item) for item in golden.get("streaming_config", {}).get("step_ms", DEFAULT_STEP_MS))
+            raise ValueError(
+                f"Unknown streaming cases: {unknown_names}. Available: {sorted(available_names)}"
+            )
+    default_step_ms = tuple(
+        int(item)
+        for item in golden.get("streaming_config", {}).get("step_ms", DEFAULT_STEP_MS)
+    )
     selected_steps = set(parse_int_list(args.step_ms, default=default_step_ms))
     streaming_config = golden["streaming_config"]
     max_window_sec = args.max_window_sec
@@ -131,7 +194,10 @@ def main() -> None:
     if args.check_final:
         golden_max_window_sec = streaming_config.get("max_window_sec")
         golden_max_prefix_tokens = streaming_config.get("max_prefix_tokens")
-        if max_window_sec != golden_max_window_sec or max_prefix_tokens != golden_max_prefix_tokens:
+        if (
+            max_window_sec != golden_max_window_sec
+            or max_prefix_tokens != golden_max_prefix_tokens
+        ):
             raise ValueError(
                 "--check-final compares against the golden streaming semantics and cannot be used "
                 "with different live-window settings. Regenerate a matching golden or drop --check-final. "
@@ -164,12 +230,17 @@ def main() -> None:
     results = []
     try:
         for case_payload in golden["cases"]:
-            if selected_names is not None and case_payload["name"] not in selected_names:
+            if (
+                selected_names is not None
+                and case_payload["name"] not in selected_names
+            ):
                 continue
             step_payloads = _steps_by_ms(case_payload)
             missing_steps = sorted(selected_steps.difference(step_payloads))
             if missing_steps:
-                raise ValueError(f"Case {case_payload['name']} does not contain step_ms entries: {missing_steps}")
+                raise ValueError(
+                    f"Case {case_payload['name']} does not contain step_ms entries: {missing_steps}"
+                )
 
             sliced_audio = load_audio_window(
                 audio_path,
@@ -198,8 +269,12 @@ def main() -> None:
                         chunk_size_sec=float(streaming_config["chunk_size_sec"]),
                         unfixed_chunk_num=int(streaming_config["unfixed_chunk_num"]),
                         unfixed_token_num=int(streaming_config["unfixed_token_num"]),
-                        max_window_sec=float(max_window_sec) if max_window_sec is not None else None,
-                        max_prefix_tokens=int(max_prefix_tokens) if max_prefix_tokens is not None else None,
+                        max_window_sec=float(max_window_sec)
+                        if max_window_sec is not None
+                        else None,
+                        max_prefix_tokens=int(max_prefix_tokens)
+                        if max_prefix_tokens is not None
+                        else None,
                         timed=True,
                         spec_decode=bool(args.spec_decode),
                     )
@@ -215,20 +290,30 @@ def main() -> None:
                         chunk_size_sec=float(streaming_config["chunk_size_sec"]),
                         unfixed_chunk_num=int(streaming_config["unfixed_chunk_num"]),
                         unfixed_token_num=int(streaming_config["unfixed_token_num"]),
-                        max_window_sec=float(max_window_sec) if max_window_sec is not None else None,
-                        max_prefix_tokens=int(max_prefix_tokens) if max_prefix_tokens is not None else None,
+                        max_window_sec=float(max_window_sec)
+                        if max_window_sec is not None
+                        else None,
+                        max_prefix_tokens=int(max_prefix_tokens)
+                        if max_prefix_tokens is not None
+                        else None,
                         timed=True,
                         spec_decode=bool(args.spec_decode),
                         include_internal_stats=True,
                     )
-                    if args.check_final and payload["final"]["text_sha256"] != expected["final"]["text_sha256"]:
+                    if (
+                        args.check_final
+                        and payload["final"]["text_sha256"]
+                        != expected["final"]["text_sha256"]
+                    ):
                         raise AssertionError(
                             f"final text hash mismatch for {case.name}:{step_ms}: "
                             f"expected {expected['final']['text_sha256']}, actual {payload['final']['text_sha256']}"
                         )
                     run_payloads.append(payload)
 
-                total_walls = [payload["timing"]["total_wall_sec"] for payload in run_payloads]
+                total_walls = [
+                    payload["timing"]["total_wall_sec"] for payload in run_payloads
+                ]
                 active_update_walls = [
                     event["wall_sec"]
                     for payload in run_payloads
@@ -250,12 +335,20 @@ def main() -> None:
                         "step_ms": step_ms,
                         "duration_sec": duration_sec,
                         "push_count": run_payloads[-1]["metrics"]["push_count"],
-                        "model_decode_updates": run_payloads[-1]["metrics"]["model_decode_updates"],
-                        "first_text_audio_ms": run_payloads[-1]["metrics"]["first_text_audio_ms"],
-                        "audio_sec_per_wall_sec": round(duration_sec / median_total, 4) if median_total > 0 else None,
+                        "model_decode_updates": run_payloads[-1]["metrics"][
+                            "model_decode_updates"
+                        ],
+                        "first_text_audio_ms": run_payloads[-1]["metrics"][
+                            "first_text_audio_ms"
+                        ],
+                        "audio_sec_per_wall_sec": round(duration_sec / median_total, 4)
+                        if median_total > 0
+                        else None,
                         "total_wall": total_summary,
                         "active_update_wall": summarize_seconds(active_update_walls),
-                        "active_update_p95_sec": round(_percentile(active_update_walls, 0.95), 4),
+                        "active_update_p95_sec": round(
+                            _percentile(active_update_walls, 0.95), 4
+                        ),
                         "all_push_wall": summarize_seconds(all_push_walls),
                         "spec_decode_stats": _sum_spec_decode_stats(run_payloads),
                     }
@@ -276,7 +369,9 @@ def main() -> None:
             "dtype": dtype_name,
             "attn_implementation": attn_implementation,
             "cuda_graph": bool(args.cuda_graph),
-            "cuda_graph_len_bucket": int(args.cuda_graph_len_bucket) if args.cuda_graph else None,
+            "cuda_graph_len_bucket": int(args.cuda_graph_len_bucket)
+            if args.cuda_graph
+            else None,
             "flashinfer": bool(args.flashinfer),
             "fused_rmsnorm": bool(args.fused_rmsnorm),
             "fused_linears": bool(args.fused_linears),

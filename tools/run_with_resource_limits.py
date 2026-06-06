@@ -244,12 +244,16 @@ def _allowed_cpus() -> set[int] | None:
         return None
 
 
-def _cpu_affinity(*, cpu_threads: Optional[int], cpu_list: Optional[str]) -> set[int] | None:
+def _cpu_affinity(
+    *, cpu_threads: Optional[int], cpu_list: Optional[str]
+) -> set[int] | None:
     allowed = _allowed_cpus()
     if cpu_list:
         affinity = _parse_cpu_list(cpu_list)
     elif cpu_threads is not None:
-        base = sorted(allowed) if allowed is not None else list(range(os.cpu_count() or 1))
+        base = (
+            sorted(allowed) if allowed is not None else list(range(os.cpu_count() or 1))
+        )
         affinity = set(base[: max(1, int(cpu_threads))])
     else:
         return None
@@ -266,7 +270,7 @@ def _cpu_affinity(*, cpu_threads: Optional[int], cpu_list: Optional[str]) -> set
 def _set_memory_limit(rlimit_as_gib: Optional[float]) -> None:
     if rlimit_as_gib is None:
         return
-    limit_bytes = int(float(rlimit_as_gib) * (1024 ** 3))
+    limit_bytes = int(float(rlimit_as_gib) * (1024**3))
     resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
 
 
@@ -289,7 +293,11 @@ def _child_env(args: argparse.Namespace) -> dict[str, str]:
     env = dict(os.environ)
     affinity = _cpu_affinity(cpu_threads=args.cpu_threads, cpu_list=args.cpu_list)
     if args.cpu_threads is not None or affinity is not None:
-        thread_count = int(args.cpu_threads) if args.cpu_threads is not None else len(affinity or ())
+        thread_count = (
+            int(args.cpu_threads)
+            if args.cpu_threads is not None
+            else len(affinity or ())
+        )
         if affinity is not None:
             thread_count = min(thread_count, len(affinity))
         threads = str(max(1, thread_count))
@@ -372,8 +380,10 @@ def main() -> None:
         start_new_session=True,
     )
 
-    rss_limit = None if args.max_rss_gib is None else int(args.max_rss_gib * (1024 ** 3))
-    deadline = None if args.timeout_sec is None else time.time() + float(args.timeout_sec)
+    rss_limit = None if args.max_rss_gib is None else int(args.max_rss_gib * (1024**3))
+    deadline = (
+        None if args.timeout_sec is None else time.time() + float(args.timeout_sec)
+    )
     triggered_reason: Optional[str] = None
     try:
         while True:
@@ -384,9 +394,7 @@ def main() -> None:
             tree_pids = _process_tree_pids(proc.pid)
 
             if deadline is not None and time.time() >= deadline:
-                triggered_reason = (
-                    f"Wall timeout exceeded: pid={proc.pid} timeout_sec={args.timeout_sec:.1f}"
-                )
+                triggered_reason = f"Wall timeout exceeded: pid={proc.pid} timeout_sec={args.timeout_sec:.1f}"
                 break
 
             if rss_limit is not None:
@@ -394,7 +402,7 @@ def main() -> None:
                 if rss_bytes is not None and rss_bytes >= rss_limit:
                     triggered_reason = (
                         f"RSS limit exceeded: pid={proc.pid} pids={len(tree_pids)} "
-                        f"rss_gib={rss_bytes / (1024 ** 3):.2f} "
+                        f"rss_gib={rss_bytes / (1024**3):.2f} "
                         f"limit_gib={args.max_rss_gib:.2f}"
                     )
                     break

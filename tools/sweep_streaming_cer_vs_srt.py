@@ -7,6 +7,7 @@ window through Qwen3ASRModel.streaming_transcribe(), evaluates the final text
 against the SRT reference, and records latency/stability metrics for the partial
 updates observed along the way.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -29,7 +30,13 @@ if str(ROOT) not in sys.path:
 from qwen3_asr_runtime import Qwen3ASRModel
 from qwen3_asr_runtime.utils import normalize_language_name, validate_language
 from tools.streaming_regression_common import StreamingCaseSpec, run_streaming_case
-from tools.sweep_cer_vs_srt import _cer, _normalize_for_cer, _pct, load_srt, srt_text_in_window
+from tools.sweep_cer_vs_srt import (
+    _cer,
+    _normalize_for_cer,
+    _pct,
+    load_srt,
+    srt_text_in_window,
+)
 from tools.runtime_helpers import _dispose_model
 
 _RESUME_ARG_KEYS = (
@@ -63,22 +70,37 @@ _RESUME_ARG_KEYS = (
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Streaming CER sweep vs SRT reference.")
+    parser = argparse.ArgumentParser(
+        description="Streaming CER sweep vs SRT reference."
+    )
     parser.add_argument("--audio", required=True, help="Local audio file to evaluate.")
-    parser.add_argument("--srt", required=True, help="Reference SRT file for the same audio.")
+    parser.add_argument(
+        "--srt", required=True, help="Reference SRT file for the same audio."
+    )
     parser.add_argument("--model", default="Qwen/Qwen3-ASR-1.7B")
     parser.add_argument("--dtype", default="bfloat16", choices=["float32", "bfloat16"])
     parser.add_argument("--device-map", default="cuda:0")
-    parser.add_argument("--attn-implementation", default="sdpa", choices=["sdpa", "eager", "flash_attention_2"])
+    parser.add_argument(
+        "--attn-implementation",
+        default="sdpa",
+        choices=["sdpa", "eager", "flash_attention_2"],
+    )
     parser.add_argument("--window-sec", type=float, default=60.0)
     parser.add_argument("--num-windows", type=int, default=200)
     parser.add_argument("--stride-sec", type=float, default=None)
     parser.add_argument("--start-sec", type=float, default=0.0)
-    parser.add_argument("--step-ms", default="2000", help="Comma separated streaming push step sizes.")
+    parser.add_argument(
+        "--step-ms", default="2000", help="Comma separated streaming push step sizes."
+    )
     parser.add_argument("--chunk-size-sec", type=float, default=2.0)
     parser.add_argument("--unfixed-chunk-num", type=int, default=2)
     parser.add_argument("--unfixed-token-num", type=int, default=5)
-    parser.add_argument("--max-window-sec", type=float, default=None, help="Optional bounded live-audio model window.")
+    parser.add_argument(
+        "--max-window-sec",
+        type=float,
+        default=None,
+        help="Optional bounded live-audio model window.",
+    )
     parser.add_argument(
         "--max-prefix-tokens",
         type=int,
@@ -86,10 +108,23 @@ def _parse_args() -> argparse.Namespace:
         help="Optional rolling text-prefix token cap. Defaults inside runtime when --max-window-sec is set.",
     )
     parser.add_argument("--max-new-tokens", type=int, default=512)
-    parser.add_argument("--paths", default="opt_nograph", help="Comma subset of: base, opt_nograph, graph.")
+    parser.add_argument(
+        "--paths",
+        default="opt_nograph",
+        help="Comma subset of: base, opt_nograph, graph.",
+    )
     parser.add_argument("--output", default="artifacts/streaming_cer_sweep.json")
-    parser.add_argument("--resume", action="store_true", help="Skip windows whose results already exist in --output.")
-    parser.add_argument("--flush-every", type=int, default=1, help="Flush JSON after this many completed path rows.")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Skip windows whose results already exist in --output.",
+    )
+    parser.add_argument(
+        "--flush-every",
+        type=int,
+        default=1,
+        help="Flush JSON after this many completed path rows.",
+    )
     parser.add_argument(
         "--strip-ruby",
         action="store_true",
@@ -100,11 +135,32 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Force a known ASR language, e.g. Chinese. Empty string keeps auto language detection.",
     )
-    parser.add_argument("--flashinfer", action="store_true", help="Use FlashInfer decode attention for optimized paths.")
-    parser.add_argument("--cuda-graph-len-bucket", type=int, default=1, help="Round CUDA graph/cache length up to this token bucket for graph paths.")
-    parser.add_argument("--fused-rmsnorm", action="store_true", help="Use F.rms_norm for optimized paths.")
-    parser.add_argument("--fused-linears", action="store_true", help="Use fused q/k/v and gate/up linears for optimized paths.")
-    parser.add_argument("--quantized-linears", action="store_true", help="Use W8A16 for fused qkv/gate_up.")
+    parser.add_argument(
+        "--flashinfer",
+        action="store_true",
+        help="Use FlashInfer decode attention for optimized paths.",
+    )
+    parser.add_argument(
+        "--cuda-graph-len-bucket",
+        type=int,
+        default=1,
+        help="Round CUDA graph/cache length up to this token bucket for graph paths.",
+    )
+    parser.add_argument(
+        "--fused-rmsnorm",
+        action="store_true",
+        help="Use F.rms_norm for optimized paths.",
+    )
+    parser.add_argument(
+        "--fused-linears",
+        action="store_true",
+        help="Use fused q/k/v and gate/up linears for optimized paths.",
+    )
+    parser.add_argument(
+        "--quantized-linears",
+        action="store_true",
+        help="Use W8A16 for fused qkv/gate_up.",
+    )
     parser.add_argument(
         "--spec-decode",
         action="store_true",
@@ -138,7 +194,9 @@ def _parse_paths(value: str) -> list[str]:
         raise ValueError("At least one path is required.")
     unknown = sorted(set(paths).difference({"base", "opt_nograph", "graph"}))
     if unknown:
-        raise ValueError(f"Unknown paths: {unknown}. Supported: base, opt_nograph, graph")
+        raise ValueError(
+            f"Unknown paths: {unknown}. Supported: base, opt_nograph, graph"
+        )
     return paths
 
 
@@ -147,7 +205,9 @@ def _flush(path: Optional[str], data: Dict[str, Any]) -> None:
         return
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    out.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def _resume_config(args_or_dict: argparse.Namespace | dict[str, Any]) -> dict[str, Any]:
@@ -161,7 +221,9 @@ def _resume_config(args_or_dict: argparse.Namespace | dict[str, Any]) -> dict[st
     return values
 
 
-def _validate_resume_args(previous_args: dict[str, Any], current_args: argparse.Namespace, output: str) -> None:
+def _validate_resume_args(
+    previous_args: dict[str, Any], current_args: argparse.Namespace, output: str
+) -> None:
     previous = _resume_config(previous_args)
     current = _resume_config(current_args)
     mismatches = {
@@ -185,7 +247,9 @@ def _load_audio_16k(path: str, sample_rate: int) -> np.ndarray:
         return wav
     import librosa
 
-    return librosa.resample(wav, orig_sr=file_sr, target_sr=sample_rate).astype(np.float32)
+    return librosa.resample(wav, orig_sr=file_sr, target_sr=sample_rate).astype(
+        np.float32
+    )
 
 
 def _safe_empty_cache() -> None:
@@ -206,7 +270,14 @@ def _is_cuda_oom_error(ex: BaseException) -> bool:
     )
 
 
-def _build_windows(audio_sec: float, *, start_sec: float, window_sec: float, stride_sec: float, num_windows: int) -> list[tuple[float, float]]:
+def _build_windows(
+    audio_sec: float,
+    *,
+    start_sec: float,
+    window_sec: float,
+    stride_sec: float,
+    num_windows: int,
+) -> list[tuple[float, float]]:
     windows: list[tuple[float, float]] = []
     for idx in range(int(num_windows)):
         start = float(start_sec) + idx * float(stride_sec)
@@ -227,7 +298,9 @@ def _extract_active_update_walls(payload: dict[str, Any]) -> list[float]:
 
 def _summarize_partial_stability(payload: dict[str, Any]) -> dict[str, Any]:
     snapshots = payload["snapshots"]
-    text_hashes = [item["text_sha256"] for item in snapshots if item["event"] in {"push", "finish"}]
+    text_hashes = [
+        item["text_sha256"] for item in snapshots if item["event"] in {"push", "finish"}
+    ]
     non_empty = [item for item in snapshots if item.get("text_chars", 0) > 0]
     text_changes = 0
     prev_hash = None
@@ -308,18 +381,24 @@ def main() -> None:
         prev = json.loads(Path(args.output).read_text(encoding="utf-8"))
         previous_args = prev.get("args")
         if not isinstance(previous_args, dict):
-            raise ValueError(f"--resume output {args.output} does not contain args metadata; use a new output path.")
+            raise ValueError(
+                f"--resume output {args.output} does not contain args metadata; use a new output path."
+            )
         _validate_resume_args(previous_args, args, args.output)
         for row in prev.get("windows", []):
             existing[(int(row["idx"]), int(row["step_ms"]))] = row
-        print(f"resume: {len(existing)} window/step rows already present in {args.output}")
+        print(
+            f"resume: {len(existing)} window/step rows already present in {args.output}"
+        )
 
     row_by_key: dict[tuple[int, int], dict[str, Any]] = dict(existing)
     completed = 0
     had_error = False
     fatal_error: str | None = None
 
-    def get_row(idx: int, start_sec: float, dur_sec: float, step_ms: int, ref_chars: int) -> dict[str, Any]:
+    def get_row(
+        idx: int, start_sec: float, dur_sec: float, step_ms: int, ref_chars: int
+    ) -> dict[str, Any]:
         key = (idx, step_ms)
         row = row_by_key.get(key)
         if row is not None:
@@ -362,7 +441,7 @@ def main() -> None:
                     row = get_row(idx, start_sec, dur_sec, step_ms, ref_chars)
                     if path in row["paths"]:
                         print(
-                            f"  [{idx+1:3d}/{len(windows)}] start={start_sec:7.1f}s "
+                            f"  [{idx + 1:3d}/{len(windows)}] start={start_sec:7.1f}s "
                             f"step={step_ms:4d}ms path={path} (resumed)"
                         )
                         continue
@@ -399,15 +478,29 @@ def main() -> None:
                             "cer": round(cer, 6),
                             "wall_sec": round(wall_sec, 3),
                             "error": None,
-                            "model_decode_updates": payload["metrics"]["model_decode_updates"],
+                            "model_decode_updates": payload["metrics"][
+                                "model_decode_updates"
+                            ],
                             "push_count": payload["metrics"]["push_count"],
                             "final_text_sha256": payload["final"]["text_sha256"],
                             "stability": _summarize_partial_stability(payload),
                         }
                         if args.timed:
-                            path_row["active_update_wall_mean_sec"] = round(mean(active_update_walls), 4) if active_update_walls else None
-                            path_row["active_update_wall_p50_sec"] = round(median(active_update_walls), 4) if active_update_walls else None
-                            path_row["active_update_wall_p95_sec"] = round(_pct(active_update_walls, 0.95), 4) if active_update_walls else None
+                            path_row["active_update_wall_mean_sec"] = (
+                                round(mean(active_update_walls), 4)
+                                if active_update_walls
+                                else None
+                            )
+                            path_row["active_update_wall_p50_sec"] = (
+                                round(median(active_update_walls), 4)
+                                if active_update_walls
+                                else None
+                            )
+                            path_row["active_update_wall_p95_sec"] = (
+                                round(_pct(active_update_walls, 0.95), 4)
+                                if active_update_walls
+                                else None
+                            )
                     except Exception as ex:
                         if not _is_cuda_oom_error(ex):
                             raise
@@ -429,7 +522,7 @@ def main() -> None:
                     row["paths"][path] = path_row
                     completed += 1
 
-                    line = f"  [{idx+1:3d}/{len(windows)}] start={start_sec:7.1f}s step={step_ms:4d}ms ref_chars={ref_chars:4d} "
+                    line = f"  [{idx + 1:3d}/{len(windows)}] start={start_sec:7.1f}s step={step_ms:4d}ms ref_chars={ref_chars:4d} "
                     pp = row["paths"][path]
                     cer_text = "ERR" if pp["cer"] is None else f"{pp['cer']:.3f}"
                     line += f"{path}:cer={cer_text} wall={pp['wall_sec']:.2f}s"
@@ -437,23 +530,37 @@ def main() -> None:
 
                     flush_every = max(1, int(args.flush_every))
                     if args.output and completed % flush_every == 0:
-                        partial_rows = sorted(row_by_key.values(), key=lambda item: (int(item["idx"]), int(item["step_ms"])))
-                        _flush(args.output, {"args": vars(args), "windows": partial_rows})
+                        partial_rows = sorted(
+                            row_by_key.values(),
+                            key=lambda item: (int(item["idx"]), int(item["step_ms"])),
+                        )
+                        _flush(
+                            args.output, {"args": vars(args), "windows": partial_rows}
+                        )
                     if had_error:
                         break
         finally:
             model = None
             _dispose_model()
 
-    rows = sorted(row_by_key.values(), key=lambda item: (int(item["idx"]), int(item["step_ms"])))
+    rows = sorted(
+        row_by_key.values(), key=lambda item: (int(item["idx"]), int(item["step_ms"]))
+    )
     for row in rows:
         if "base" not in row["paths"]:
             continue
         base_cer = row["paths"]["base"]["cer"]
         for path in selected_paths:
-            if path == "base" or path not in row["paths"] or base_cer is None or row["paths"][path]["cer"] is None:
+            if (
+                path == "base"
+                or path not in row["paths"]
+                or base_cer is None
+                or row["paths"][path]["cer"] is None
+            ):
                 continue
-            row["paths"][path]["delta_vs_base"] = round(row["paths"][path]["cer"] - base_cer, 6)
+            row["paths"][path]["delta_vs_base"] = round(
+                row["paths"][path]["cer"] - base_cer, 6
+            )
 
     non_empty = [row for row in rows if not row.get("ref_empty")]
     print()
@@ -461,8 +568,16 @@ def main() -> None:
     summary: dict[str, Any] = {}
     for path in selected_paths:
         path_rows = [row for row in non_empty if path in row["paths"]]
-        cer_vals = [row["paths"][path]["cer"] for row in path_rows if row["paths"][path]["cer"] is not None]
-        wall_vals = [row["paths"][path]["wall_sec"] for row in path_rows if row["paths"][path].get("wall_sec", 0) > 0]
+        cer_vals = [
+            row["paths"][path]["cer"]
+            for row in path_rows
+            if row["paths"][path]["cer"] is not None
+        ]
+        wall_vals = [
+            row["paths"][path]["wall_sec"]
+            for row in path_rows
+            if row["paths"][path].get("wall_sec", 0) > 0
+        ]
         update_vals = [
             row["paths"][path].get("active_update_wall_p95_sec")
             for row in path_rows
@@ -471,10 +586,17 @@ def main() -> None:
         first_text_vals = [
             row["paths"][path]["stability"].get("first_text_audio_ms")
             for row in path_rows
-            if row["paths"][path].get("stability") and row["paths"][path]["stability"].get("first_text_audio_ms") is not None
+            if row["paths"][path].get("stability")
+            and row["paths"][path]["stability"].get("first_text_audio_ms") is not None
         ]
         entry: dict[str, Any] = {
-            "n_windows": len({int(row["idx"]) for row in path_rows if row["paths"][path].get("cer") is not None}),
+            "n_windows": len(
+                {
+                    int(row["idx"])
+                    for row in path_rows
+                    if row["paths"][path].get("cer") is not None
+                }
+            ),
             "n_rows": len(cer_vals),
             "cer_mean": round(mean(cer_vals), 4) if cer_vals else None,
             "cer_p50": round(median(cer_vals), 4) if cer_vals else None,
@@ -482,7 +604,9 @@ def main() -> None:
             "cer_max": round(max(cer_vals), 4) if cer_vals else None,
             "wall_mean_sec": round(mean(wall_vals), 3) if wall_vals else None,
             "wall_p50_sec": round(median(wall_vals), 3) if wall_vals else None,
-            "first_text_audio_ms_mean": round(mean(first_text_vals), 1) if first_text_vals else None,
+            "first_text_audio_ms_mean": round(mean(first_text_vals), 1)
+            if first_text_vals
+            else None,
         }
         if update_vals:
             entry["active_update_p95_mean_sec"] = round(mean(update_vals), 4)

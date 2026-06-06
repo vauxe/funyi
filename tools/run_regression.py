@@ -13,21 +13,55 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.audio_window import load_audio_window
-from tools.runtime_helpers import _default_attn_implementation, _dispose_model, _resolve_dtype, _set_seed
+from tools.runtime_helpers import (
+    _default_attn_implementation,
+    _dispose_model,
+    _resolve_dtype,
+    _set_seed,
+)
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run runtime offline regression against a local golden.")
-    parser.add_argument("--golden", default="local_goldens/offline_regression.json", help="Offline regression golden JSON")
+    parser = argparse.ArgumentParser(
+        description="Run runtime offline regression against a local golden."
+    )
+    parser.add_argument(
+        "--golden",
+        default="local_goldens/offline_regression.json",
+        help="Offline regression golden JSON",
+    )
     parser.add_argument("--model", default=None, help="Optional model override")
     parser.add_argument("--audio", default=None, help="Optional audio override")
-    parser.add_argument("--dtype", default=None, choices=["float32", "float16", "bfloat16"], help="Optional dtype override")
-    parser.add_argument("--device-map", default=None, help="Optional device_map override")
-    parser.add_argument("--attn-implementation", default=None, help="Optional attn_implementation override")
+    parser.add_argument(
+        "--dtype",
+        default=None,
+        choices=["float32", "float16", "bfloat16"],
+        help="Optional dtype override",
+    )
+    parser.add_argument(
+        "--device-map", default=None, help="Optional device_map override"
+    )
+    parser.add_argument(
+        "--attn-implementation",
+        default=None,
+        help="Optional attn_implementation override",
+    )
     parser.add_argument("--seed", type=int, default=None, help="Optional seed override")
-    parser.add_argument("--max-new-tokens", type=int, default=None, help="Optional max_new_tokens override")
-    parser.add_argument("--max-inference-batch-size", type=int, default=None, help="Optional batch size override")
-    parser.add_argument("--cases", default=None, help="Comma separated case names to run. Default: all")
+    parser.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=None,
+        help="Optional max_new_tokens override",
+    )
+    parser.add_argument(
+        "--max-inference-batch-size",
+        type=int,
+        default=None,
+        help="Optional batch size override",
+    )
+    parser.add_argument(
+        "--cases", default=None, help="Comma separated case names to run. Default: all"
+    )
     return parser.parse_args()
 
 
@@ -37,7 +71,9 @@ def _text_sha256(text: str) -> str:
 
 def _assert_equal(name: str, expected: Any, actual: Any) -> None:
     if expected != actual:
-        raise AssertionError(f"{name} mismatch:\nEXPECTED: {expected!r}\nACTUAL  : {actual!r}")
+        raise AssertionError(
+            f"{name} mismatch:\nEXPECTED: {expected!r}\nACTUAL  : {actual!r}"
+        )
 
 
 def main() -> None:
@@ -61,7 +97,9 @@ def main() -> None:
 
     attn_implementation = args.attn_implementation
     if attn_implementation is None:
-        attn_implementation = load_kwargs.get("attn_implementation") or _default_attn_implementation(load_kwargs.get("device_map"))
+        attn_implementation = load_kwargs.get(
+            "attn_implementation"
+        ) or _default_attn_implementation(load_kwargs.get("device_map"))
     load_kwargs["attn_implementation"] = attn_implementation
 
     dtype_name = load_kwargs.pop("dtype")
@@ -75,7 +113,9 @@ def main() -> None:
 
     selected_names = None
     if args.cases:
-        selected_names = {item.strip() for item in args.cases.split(",") if item.strip()}
+        selected_names = {
+            item.strip() for item in args.cases.split(",") if item.strip()
+        }
 
     init_kwargs = dict(
         backend="transformers",
@@ -92,7 +132,11 @@ def main() -> None:
     )
     model.eval()
     try:
-        _assert_equal("supported_languages", golden["supported_languages"], model.get_supported_languages())
+        _assert_equal(
+            "supported_languages",
+            golden["supported_languages"],
+            model.get_supported_languages(),
+        )
         prompt_specs = {
             "default": {"context": "", "language": None},
             "context_only": {"context": "交易 停滞", "language": None},
@@ -102,7 +146,9 @@ def main() -> None:
             _assert_equal(
                 f"prompt[{name}]",
                 golden["prompts"][name],
-                model._build_text_prompt(context=spec["context"], force_language=spec["language"]),
+                model._build_text_prompt(
+                    context=spec["context"], force_language=spec["language"]
+                ),
             )
 
         ran_cases = []

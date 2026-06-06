@@ -64,7 +64,9 @@ def _cer(hyp: str, ref: str) -> float:
     return compute_cer(hyp, ref)
 
 
-def _extract_srt_text_range(path: str | Path, start_sec: float, duration_sec: float) -> str:
+def _extract_srt_text_range(
+    path: str | Path, start_sec: float, duration_sec: float
+) -> str:
     from tools.sweep_cer_vs_srt import load_srt, srt_text_in_window
 
     return srt_text_in_window(load_srt(str(path)), start_sec, duration_sec)

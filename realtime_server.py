@@ -27,7 +27,10 @@ from qwen3_asr_runtime.offline_transcription import (
     stream_transcribe_file,
     transcribe_file,
 )
-from qwen3_asr_runtime.realtime_session import RealtimeASRConfig, RealtimeConnectionSession
+from qwen3_asr_runtime.realtime_session import (
+    RealtimeASRConfig,
+    RealtimeConnectionSession,
+)
 from qwen3_asr_runtime.realtime_timestamps import (
     AudioTimelineBuffer,
     RealtimeTimestampConfig,
@@ -59,7 +62,11 @@ from qwen3_asr_runtime.transcription_document import (
     TranscriptSegment,
     TranscriptTranslationUnit,
 )
-from qwen3_asr_runtime.utils import SAMPLE_RATE, normalize_language_name, validate_language
+from qwen3_asr_runtime.utils import (
+    SAMPLE_RATE,
+    normalize_language_name,
+    validate_language,
+)
 from qwen3_asr_runtime.vad import VadDecision
 
 _SERVICE_SEND_TIMEOUT_SEC = 5.0
@@ -154,7 +161,9 @@ class _PcmDebugSummary:
     ) -> None:
         self.session_id = session_id
         self.sample_rate = int(sample_rate)
-        self.interval_samples = max(1, int(round(self.sample_rate * int(interval_ms) / 1000)))
+        self.interval_samples = max(
+            1, int(round(self.sample_rate * int(interval_ms) / 1000))
+        )
         self.total_samples = 0
         self._next_log_sample = self.interval_samples
         self._reset_window()
@@ -201,7 +210,9 @@ class _PcmDebugSummary:
 
 
 class _DebugAudioRecorder:
-    def __init__(self, directory: str | Path, *, session_id: str, sample_rate: int = SAMPLE_RATE) -> None:
+    def __init__(
+        self, directory: str | Path, *, session_id: str, sample_rate: int = SAMPLE_RATE
+    ) -> None:
         self.path = _debug_audio_path(directory, session_id=session_id)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._wav = wave.open(str(self.path), "wb")
@@ -237,7 +248,9 @@ class _DebugAudioRecorder:
 # run on the same thread; the returned (events, jobs) are handled back on the loop.
 
 
-def _asr_step(session: Any, call: Any, *args: Any) -> tuple[list[dict[str, Any]], list[Any]]:
+def _asr_step(
+    session: Any, call: Any, *args: Any
+) -> tuple[list[dict[str, Any]], list[Any]]:
     """Run one session mutation `call(*args)` and consume its timing jobs.
 
     Both run on the ASR executor thread: they mutate session state, so they must
@@ -247,7 +260,9 @@ def _asr_step(session: Any, call: Any, *args: Any) -> tuple[list[dict[str, Any]]
     return events, session.consume_stable_timing_jobs_for_events(events)
 
 
-def _asr_set_language(session: Any, language: str | None) -> tuple[list[dict[str, Any]], list[Any], bool]:
+def _asr_set_language(
+    session: Any, language: str | None
+) -> tuple[list[dict[str, Any]], list[Any], bool]:
     """Flush + switch ASR source language, only if it actually changed.
 
     The current language is compared on the executor thread (the only thread that
@@ -312,7 +327,9 @@ def build_app(
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import JSONResponse, StreamingResponse
     except ImportError as exc:
-        raise RuntimeError("Install service dependencies with: uv sync --python 3.12") from exc
+        raise RuntimeError(
+            "Install service dependencies with: uv sync --python 3.12"
+        ) from exc
 
     lifespan = None
     if translation_actor is not None or timestamp_actor is not None:
@@ -347,7 +364,9 @@ def build_app(
         return {"status": "ok"}
 
     def error_response(code: str, message: str, status_code: int) -> Any:
-        return JSONResponse({"error": {"code": code, "message": message}}, status_code=status_code)
+        return JSONResponse(
+            {"error": {"code": code, "message": message}}, status_code=status_code
+        )
 
     async def release_active_connection() -> None:
         async with active_lock:
@@ -370,12 +389,16 @@ def build_app(
             else:
                 active_connection["open"] = True
         if reject_request:
-            return error_response("busy", "Another transcription session is active.", 409)
+            return error_response(
+                "busy", "Another transcription session is active.", 409
+            )
 
         try:
             try:
                 normalized_language = _normalize_optional_asr_language(language)
-                target = _normalize_optional_translation_target(targetLanguage or target_language)
+                target = _normalize_optional_translation_target(
+                    targetLanguage or target_language
+                )
             except ValueError as exc:
                 return error_response("invalid_request", str(exc), 400)
             if target and translation_actor is None:
@@ -405,18 +428,26 @@ def build_app(
                         timestamp_actor=timestamp_actor,
                         translation_actor=translation_actor,
                         translation_max_new_tokens=(
-                            translation_service_config.max_new_tokens if translation_service_config is not None else None
+                            translation_service_config.max_new_tokens
+                            if translation_service_config is not None
+                            else None
                         ),
                         asr_executor=asr_executor,
                     )
                 except OfflineTranscriptionInputError as exc:
                     return error_response("invalid_request", str(exc), 400)
                 except ValueError:
-                    _LOGGER.exception("Offline transcription failed with a backend value error.")
-                    return error_response("internal_error", "Offline transcription failed.", 500)
+                    _LOGGER.exception(
+                        "Offline transcription failed with a backend value error."
+                    )
+                    return error_response(
+                        "internal_error", "Offline transcription failed.", 500
+                    )
                 except Exception:
                     _LOGGER.exception("Offline transcription failed.")
-                    return error_response("internal_error", "Offline transcription failed.", 500)
+                    return error_response(
+                        "internal_error", "Offline transcription failed.", 500
+                    )
             return document.to_payload()
         finally:
             await release_active_connection()
@@ -438,14 +469,18 @@ def build_app(
             else:
                 active_connection["open"] = True
         if reject_request:
-            return error_response("busy", "Another transcription session is active.", 409)
+            return error_response(
+                "busy", "Another transcription session is active.", 409
+            )
 
         tmp_context: tempfile.TemporaryDirectory[str] | None = None
         stream_owns_resources = False
         try:
             try:
                 normalized_language = _normalize_optional_asr_language(language)
-                target = _normalize_optional_translation_target(targetLanguage or target_language)
+                target = _normalize_optional_translation_target(
+                    targetLanguage or target_language
+                )
             except ValueError as exc:
                 return error_response("invalid_request", str(exc), 400)
             if target and translation_actor is None:
@@ -463,12 +498,15 @@ def build_app(
                 return error_response("invalid_request", str(exc), 400)
 
             stream_tmp_context = tmp_context
+
             async def event_stream() -> Any:
                 output_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(
                     maxsize=_SERVICE_EVENT_QUEUE_MAXSIZE
                 )
                 translation_max_new_tokens = (
-                    translation_service_config.max_new_tokens if translation_service_config is not None else None
+                    translation_service_config.max_new_tokens
+                    if translation_service_config is not None
+                    else None
                 )
                 translation_timeout_sec = (
                     _translation_stable_timeout_sec(translation_service_config)
@@ -545,7 +583,9 @@ def build_app(
                 active_connection["open"] = True
         if reject_connection:
             with suppress(WebSocketSendTimeout):
-                await _send_error_and_close(websocket, "Another realtime session is active.", code=1013)
+                await _send_error_and_close(
+                    websocket, "Another realtime session is active.", code=1013
+                )
             await _close_websocket(websocket, code=1013)
             return
 
@@ -568,12 +608,16 @@ def build_app(
                 await _send_error_and_close(websocket, str(exc), code=1003)
                 return
             try:
-                session_translation_config = _session_translation_config(start_payload, translation_service_config)
+                session_translation_config = _session_translation_config(
+                    start_payload, translation_service_config
+                )
             except ValueError as exc:
                 await _send_error_and_close(websocket, str(exc), code=1003)
                 return
             event_queue = asyncio.Queue(maxsize=_SERVICE_EVENT_QUEUE_MAXSIZE)
-            sender_task = asyncio.create_task(_send_queued_events(websocket, event_queue))
+            sender_task = asyncio.create_task(
+                _send_queued_events(websocket, event_queue)
+            )
             session = RealtimeConnectionSession(
                 model,
                 transcript_store=store,
@@ -600,7 +644,9 @@ def build_app(
                 )
                 await translation.start()
             if debug_audio_dir is not None:
-                audio_recorder = _DebugAudioRecorder(debug_audio_dir, session_id=session_id, sample_rate=SAMPLE_RATE)
+                audio_recorder = _DebugAudioRecorder(
+                    debug_audio_dir, session_id=session_id, sample_rate=SAMPLE_RATE
+                )
 
             ready: dict[str, Any] = {
                 "type": "ready",
@@ -622,7 +668,11 @@ def build_app(
                 translation is not None,
             )
 
-            pcm_debug_summary = _PcmDebugSummary(session_id=session_id) if _LOGGER.isEnabledFor(logging.DEBUG) else None
+            pcm_debug_summary = (
+                _PcmDebugSummary(session_id=session_id)
+                if _LOGGER.isEnabledFor(logging.DEBUG)
+                else None
+            )
 
             while True:
                 message = await _receive_or_sender_failed(websocket, sender_task)
@@ -646,15 +696,21 @@ def build_app(
                     if audio_recorder is not None:
                         audio_recorder.write(audio)
                     if pcm_debug_summary is not None:
-                        summary = pcm_debug_summary.accept(audio, byte_count=len(message["bytes"]))
+                        summary = pcm_debug_summary.accept(
+                            audio, byte_count=len(message["bytes"])
+                        )
                         if summary is not None:
                             _LOGGER.debug(summary)
                     timestamps.accept_audio(audio)
                     events, timing_jobs = await loop.run_in_executor(
                         asr_executor, _asr_step, session, session.ingest_audio, audio
                     )
-                    if await _publish_session_events(event_queue, translation, events, sender_task=sender_task):
-                        await _drain_and_close(websocket, event_queue, sender_task, code=1011)
+                    if await _publish_session_events(
+                        event_queue, translation, events, sender_task=sender_task
+                    ):
+                        await _drain_and_close(
+                            websocket, event_queue, sender_task, code=1011
+                        )
                         return
                     await timestamps.accept_jobs(timing_jobs)
                     continue
@@ -665,48 +721,82 @@ def build_app(
                 try:
                     command = json.loads(message["text"])
                 except json.JSONDecodeError:
-                    await _queue_event(event_queue, {"type": "error", "error": "Invalid JSON command."})
+                    await _queue_event(
+                        event_queue, {"type": "error", "error": "Invalid JSON command."}
+                    )
                     continue
                 if not isinstance(command, dict):
-                    await _queue_event(event_queue, {"type": "error", "error": "Command must be a JSON object."})
+                    await _queue_event(
+                        event_queue,
+                        {"type": "error", "error": "Command must be a JSON object."},
+                    )
                     continue
                 command_type = command.get("type")
                 if command_type == "flush":
-                    _LOGGER.debug("Realtime command session_id=%s type=flush", session_id)
-                    events, timing_jobs = await loop.run_in_executor(asr_executor, _asr_step, session, session.flush)
-                    if await _publish_session_events(event_queue, translation, events, sender_task=sender_task):
-                        await _drain_and_close(websocket, event_queue, sender_task, code=1011)
+                    _LOGGER.debug(
+                        "Realtime command session_id=%s type=flush", session_id
+                    )
+                    events, timing_jobs = await loop.run_in_executor(
+                        asr_executor, _asr_step, session, session.flush
+                    )
+                    if await _publish_session_events(
+                        event_queue, translation, events, sender_task=sender_task
+                    ):
+                        await _drain_and_close(
+                            websocket, event_queue, sender_task, code=1011
+                        )
                         return
                     await timestamps.accept_jobs(timing_jobs)
                 elif command_type == "set_language":
-                    _LOGGER.debug("Realtime command session_id=%s type=set_language payload=%s", session_id, command)
+                    _LOGGER.debug(
+                        "Realtime command session_id=%s type=set_language payload=%s",
+                        session_id,
+                        command,
+                    )
                     try:
                         language_update = _parse_language_config_update(
                             command,
                             translation_service_config,
                         )
                     except ValueError as exc:
-                        await _queue_event(event_queue, {"type": "error", "error": str(exc)})
+                        await _queue_event(
+                            event_queue, {"type": "error", "error": str(exc)}
+                        )
                         continue
 
-                    current_target = translation.target_language if translation is not None else None
+                    current_target = (
+                        translation.target_language if translation is not None else None
+                    )
                     target_changed = (
                         "target_language" in language_update
                         and language_update["target_language"] != current_target
                     )
 
                     if "language" in language_update:
-                        events, timing_jobs, language_changed = await loop.run_in_executor(
-                            asr_executor, _asr_set_language, session, language_update["language"]
+                        (
+                            events,
+                            timing_jobs,
+                            language_changed,
+                        ) = await loop.run_in_executor(
+                            asr_executor,
+                            _asr_set_language,
+                            session,
+                            language_update["language"],
                         )
                     else:
                         events, timing_jobs, language_changed = [], [], False
                     # Target-only change: flush the current tail before switching the
                     # translation target. A language change already flushed via set_language.
                     if target_changed and not language_changed:
-                        events, timing_jobs = await loop.run_in_executor(asr_executor, _asr_step, session, session.flush)
-                    if await _publish_session_events(event_queue, translation, events, sender_task=sender_task):
-                        await _drain_and_close(websocket, event_queue, sender_task, code=1011)
+                        events, timing_jobs = await loop.run_in_executor(
+                            asr_executor, _asr_step, session, session.flush
+                        )
+                    if await _publish_session_events(
+                        event_queue, translation, events, sender_task=sender_task
+                    ):
+                        await _drain_and_close(
+                            websocket, event_queue, sender_task, code=1011
+                        )
                         return
                     await timestamps.accept_jobs(timing_jobs)
 
@@ -720,19 +810,35 @@ def build_app(
                                 event_queue=event_queue,
                             )
                         except ValueError as exc:
-                            await _queue_event(event_queue, {"type": "error", "error": str(exc)})
+                            await _queue_event(
+                                event_queue, {"type": "error", "error": str(exc)}
+                            )
                             continue
                 elif command_type == "finish":
-                    _LOGGER.debug("Realtime command session_id=%s type=finish", session_id)
-                    events, timing_jobs = await loop.run_in_executor(asr_executor, _asr_step, session, session.flush)
+                    _LOGGER.debug(
+                        "Realtime command session_id=%s type=finish", session_id
+                    )
+                    events, timing_jobs = await loop.run_in_executor(
+                        asr_executor, _asr_step, session, session.flush
+                    )
                     timing_events = await timestamps.finish(timing_jobs)
                     events.extend(timing_events)
                     events.append(store.final_event())
-                    await _publish_finish_events(event_queue, translation, events, sender_task=sender_task)
-                    await _drain_and_close(websocket, event_queue, sender_task, code=1000)
+                    await _publish_finish_events(
+                        event_queue, translation, events, sender_task=sender_task
+                    )
+                    await _drain_and_close(
+                        websocket, event_queue, sender_task, code=1000
+                    )
                     return
                 else:
-                    await _queue_event(event_queue, {"type": "error", "error": f"Unsupported command: {command_type}"})
+                    await _queue_event(
+                        event_queue,
+                        {
+                            "type": "error",
+                            "error": f"Unsupported command: {command_type}",
+                        },
+                    )
         except WebSocketDisconnect:
             return
         except WebSocketSendTimeout:
@@ -742,15 +848,27 @@ def build_app(
         except Exception as exc:
             _LOGGER.exception("Realtime ASR WebSocket session failed.")
             try:
-                if event_queue is not None and sender_task is not None and not sender_task.done():
+                if (
+                    event_queue is not None
+                    and sender_task is not None
+                    and not sender_task.done()
+                ):
                     await _queue_event(
                         event_queue,
-                        {"type": "error", "error": str(exc) or type(exc).__name__, "fatal": True},
+                        {
+                            "type": "error",
+                            "error": str(exc) or type(exc).__name__,
+                            "fatal": True,
+                        },
                         sender_task=sender_task,
                     )
-                    await _drain_and_close(websocket, event_queue, sender_task, code=1011)
+                    await _drain_and_close(
+                        websocket, event_queue, sender_task, code=1011
+                    )
                 else:
-                    await _send_error_and_close(websocket, str(exc) or type(exc).__name__, code=1011)
+                    await _send_error_and_close(
+                        websocket, str(exc) or type(exc).__name__, code=1011
+                    )
             except Exception:
                 _LOGGER.exception("Failed to send realtime ASR error response.")
             return
@@ -843,11 +961,17 @@ async def _produce_offline_stream_payloads(
                 segment = event.segment
                 segments.append(segment)
                 revision = max(revision + 1, int(segment.index))
-                await output_queue.put(_offline_segment_stream_payload(segment, revision))
-            elif event.kind == "translation_unit" and event.translation_unit is not None:
+                await output_queue.put(
+                    _offline_segment_stream_payload(segment, revision)
+                )
+            elif (
+                event.kind == "translation_unit" and event.translation_unit is not None
+            ):
                 if translation_jobs is not None:
                     await translation_jobs.put(
-                        _offline_translation_job_from_unit(event.translation_unit, revision)
+                        _offline_translation_job_from_unit(
+                            event.translation_unit, revision
+                        )
                     )
             elif event.kind == "complete" and event.document is not None:
                 final_document = event.document
@@ -859,22 +983,36 @@ async def _produce_offline_stream_payloads(
             translation_task = None
 
         if final_document is None:
-            final_document = TranscriptDocument(duration_ms=0, language="", segments=segments)
+            final_document = TranscriptDocument(
+                duration_ms=0, language="", segments=segments
+            )
         await output_queue.put(
             _offline_final_stream_payload(
-                replace(final_document, segments=segments, translation_units=translation_units),
+                replace(
+                    final_document,
+                    segments=segments,
+                    translation_units=translation_units,
+                ),
                 revision,
             )
         )
     except OfflineTranscriptionInputError as exc:
         await _cancel_offline_translation_worker(translation_task)
         translation_task = None
-        await output_queue.put(_offline_stream_error_payload("invalid_request", str(exc)))
+        await output_queue.put(
+            _offline_stream_error_payload("invalid_request", str(exc))
+        )
     except ValueError:
         await _cancel_offline_translation_worker(translation_task)
         translation_task = None
-        _LOGGER.exception("Offline transcription stream failed with a backend value error.")
-        await output_queue.put(_offline_stream_error_payload("internal_error", "Offline transcription failed."))
+        _LOGGER.exception(
+            "Offline transcription stream failed with a backend value error."
+        )
+        await output_queue.put(
+            _offline_stream_error_payload(
+                "internal_error", "Offline transcription failed."
+            )
+        )
     except asyncio.CancelledError:
         await _cancel_offline_translation_worker(translation_task)
         translation_task = None
@@ -883,7 +1021,11 @@ async def _produce_offline_stream_payloads(
         await _cancel_offline_translation_worker(translation_task)
         translation_task = None
         _LOGGER.exception("Offline transcription stream failed.")
-        await output_queue.put(_offline_stream_error_payload("internal_error", "Offline transcription failed."))
+        await output_queue.put(
+            _offline_stream_error_payload(
+                "internal_error", "Offline transcription failed."
+            )
+        )
     finally:
         await _cancel_offline_translation_worker(translation_task)
         if not _current_task_is_cancelling():
@@ -912,7 +1054,9 @@ def _offline_translation_job_from_unit(
     unit: OfflineTranslationUnit,
     revision: int,
 ) -> _OfflineTranslationJob:
-    revision = max(int(revision), max(unit.source_segment_indices, default=int(revision)))
+    revision = max(
+        int(revision), max(unit.source_segment_indices, default=int(revision))
+    )
     return _OfflineTranslationJob(unit=unit, revision=revision)
 
 
@@ -943,12 +1087,20 @@ async def _offline_translation_worker(
                 timeout_sec=timeout_sec,
             )
             document_unit = apply_unit_translation(
-                segments, unit, target_language=target_language, text=translated, error=error_code
+                segments,
+                unit,
+                target_language=target_language,
+                text=translated,
+                error=error_code,
             )
             if document_unit is not None:
                 translation_units.append(document_unit)
             if translated and error_code is None:
-                await output_queue.put(_offline_translation_stable_payload(job, translated, target_language))
+                await output_queue.put(
+                    _offline_translation_stable_payload(
+                        job, translated, target_language
+                    )
+                )
             else:
                 await output_queue.put(
                     _offline_translation_status_payload(
@@ -982,7 +1134,9 @@ async def _translate_offline_unit(
         if timeout_sec is None:
             outputs = await translate_call
         else:
-            outputs = await asyncio.wait_for(translate_call, timeout=max(0.001, float(timeout_sec)) + 0.1)
+            outputs = await asyncio.wait_for(
+                translate_call, timeout=max(0.001, float(timeout_sec)) + 0.1
+            )
     except asyncio.TimeoutError:
         return None, "timeout"
     except asyncio.CancelledError:
@@ -1059,8 +1213,12 @@ def _offline_translation_source_payload(job: _OfflineTranslationJob) -> dict[str
     unit = job.unit
     return {
         "source_revision": int(job.revision),
-        "source_segment_id": unit.source_segment_ids[-1] if unit.source_segment_ids else "",
-        "source_segment_index": int(unit.source_segment_indices[-1]) if unit.source_segment_indices else 0,
+        "source_segment_id": unit.source_segment_ids[-1]
+        if unit.source_segment_ids
+        else "",
+        "source_segment_index": int(unit.source_segment_indices[-1])
+        if unit.source_segment_indices
+        else 0,
         "source_segment_ids": list(unit.source_segment_ids),
         "source_segment_indices": [int(index) for index in unit.source_segment_indices],
     }
@@ -1074,7 +1232,9 @@ def _offline_final_stream_payload(document: Any, revision: int) -> dict[str, Any
         "stable_count": len(document.segments),
         "duration_ms": int(document.duration_ms),
         "language": document.language,
-        "segments": [_offline_segment_realtime_payload(segment) for segment in document.segments],
+        "segments": [
+            _offline_segment_realtime_payload(segment) for segment in document.segments
+        ],
         "document": document.to_payload(),
     }
 
@@ -1212,7 +1372,9 @@ def _format_event_log_summary(event: dict[str, Any]) -> str:
             if isinstance(segment, dict)
         ]
         partial = event.get("partial")
-        partial_text = _truncate_log_text(partial.get("text")) if isinstance(partial, dict) else ""
+        partial_text = (
+            _truncate_log_text(partial.get("text")) if isinstance(partial, dict) else ""
+        )
         return (
             "type=transcript_update "
             f"revision={event.get('revision')} stable_base={event.get('stable_base')} "
@@ -1329,7 +1491,9 @@ async def _set_session_translation_target(
 
     translation = RealtimeTranslationRuntime(
         translation_actor,
-        config=_translation_config_for_target(target_language, translation_service_config),
+        config=_translation_config_for_target(
+            target_language, translation_service_config
+        ),
         event_queue=event_queue,
     )
     await translation.start()
@@ -1342,7 +1506,9 @@ def _parse_language_config_update(
 ) -> dict[str, str | None]:
     unknown_fields = sorted(set(command) - _LANGUAGE_COMMAND_FIELDS)
     if unknown_fields:
-        raise ValueError(f"Unsupported set_language command field(s): {', '.join(unknown_fields)}.")
+        raise ValueError(
+            f"Unsupported set_language command field(s): {', '.join(unknown_fields)}."
+        )
 
     update: dict[str, str | None] = {}
     if "language" in command:
@@ -1357,7 +1523,9 @@ def _parse_language_config_update(
         target_language: str | None = None
         if raw_target is not None and str(raw_target).strip():
             if service_config is None:
-                raise ValueError("target_language requires translation model to be configured")
+                raise ValueError(
+                    "target_language requires translation model to be configured"
+                )
             target_language = _normalize_translation_target_language(str(raw_target))
         update["target_language"] = target_language
 
@@ -1373,11 +1541,15 @@ def _normalize_supported_language(language: str) -> str:
 def _normalize_aligned_source_language(language: str) -> str:
     normalized = _normalize_supported_language(language)
     if normalized not in QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES:
-        raise ValueError(f"Forced aligner does not support source language: {normalized}.")
+        raise ValueError(
+            f"Forced aligner does not support source language: {normalized}."
+        )
     return normalized
 
 
-def _normalize_language_choice(language: str, allowed: tuple[str, ...], *, field_name: str) -> str:
+def _normalize_language_choice(
+    language: str, allowed: tuple[str, ...], *, field_name: str
+) -> str:
     raw = str(language or "").strip()
     if not raw:
         raise ValueError(f"{field_name} is empty")
@@ -1389,7 +1561,9 @@ def _normalize_language_choice(language: str, allowed: tuple[str, ...], *, field
 
 
 def _normalize_translation_target_language(language: str) -> str:
-    return _normalize_language_choice(language, HYMT_MODEL_CARD_LANGUAGES, field_name="target_language")
+    return _normalize_language_choice(
+        language, HYMT_MODEL_CARD_LANGUAGES, field_name="target_language"
+    )
 
 
 async def _receive_start(websocket: Any) -> dict[str, Any] | None:
@@ -1397,18 +1571,26 @@ async def _receive_start(websocket: Any) -> dict[str, Any] | None:
     if message.get("type") == "websocket.disconnect":
         return None
     if message.get("text") is None:
-        await _send_error_and_close(websocket, "First frame must be a JSON start command.", code=1003)
+        await _send_error_and_close(
+            websocket, "First frame must be a JSON start command.", code=1003
+        )
         return None
     try:
         payload = json.loads(message["text"])
     except json.JSONDecodeError:
-        await _send_error_and_close(websocket, "Start command must be valid JSON.", code=1003)
+        await _send_error_and_close(
+            websocket, "Start command must be valid JSON.", code=1003
+        )
         return None
     if not isinstance(payload, dict):
-        await _send_error_and_close(websocket, "Start command must be a JSON object.", code=1003)
+        await _send_error_and_close(
+            websocket, "Start command must be a JSON object.", code=1003
+        )
         return None
     if payload.get("type") != "start":
-        await _send_error_and_close(websocket, "First command must be type=start.", code=1003)
+        await _send_error_and_close(
+            websocket, "First command must be type=start.", code=1003
+        )
         return None
     unknown_fields = sorted(set(payload) - _START_COMMAND_FIELDS)
     if unknown_fields:
@@ -1532,7 +1714,9 @@ async def _queue_event(
         return
 
     put_task = asyncio.ensure_future(event_queue.put(event))
-    done, _pending = await asyncio.wait({put_task, sender_task}, return_when=asyncio.FIRST_COMPLETED)
+    done, _pending = await asyncio.wait(
+        {put_task, sender_task}, return_when=asyncio.FIRST_COMPLETED
+    )
     if put_task in done:
         put_task.result()
         return
@@ -1547,7 +1731,9 @@ def _raise_sender_failure(sender_task: asyncio.Task[None]) -> None:
     exc = sender_task.exception()
     if exc is not None:
         raise exc
-    raise WebSocketSendTimeout("server output sender stopped before event could be queued")
+    raise WebSocketSendTimeout(
+        "server output sender stopped before event could be queued"
+    )
 
 
 async def _send_queued_events(
@@ -1561,14 +1747,20 @@ async def _send_queued_events(
         try:
             if event is None:
                 return
-            if _LOGGER.isEnabledFor(logging.DEBUG) and _should_log_realtime_event(event):
+            if _LOGGER.isEnabledFor(logging.DEBUG) and _should_log_realtime_event(
+                event
+            ):
                 _LOGGER.debug("Realtime event %s", _format_event_log_summary(event))
-            await _send_json_with_timeout(websocket, event, timeout_sec=send_timeout_sec)
+            await _send_json_with_timeout(
+                websocket, event, timeout_sec=send_timeout_sec
+            )
         finally:
             event_queue.task_done()
 
 
-async def _receive_or_sender_failed(websocket: Any, sender_task: asyncio.Task[None]) -> dict[str, Any]:
+async def _receive_or_sender_failed(
+    websocket: Any, sender_task: asyncio.Task[None]
+) -> dict[str, Any]:
     if sender_task.done():
         sender_task.result()
         return {"type": "websocket.disconnect"}
@@ -1595,7 +1787,9 @@ async def _receive_or_sender_failed(websocket: Any, sender_task: asyncio.Task[No
         raise
 
 
-async def _send_json_with_timeout(websocket: Any, payload: dict[str, Any], *, timeout_sec: float) -> None:
+async def _send_json_with_timeout(
+    websocket: Any, payload: dict[str, Any], *, timeout_sec: float
+) -> None:
     try:
         await asyncio.wait_for(
             _send_json(websocket, payload),
@@ -1616,7 +1810,9 @@ async def _send_error_and_close(websocket: Any, error: str, *, code: int) -> Non
     await _close_websocket(websocket, code=code)
 
 
-async def _close_websocket(websocket: Any, *, code: int, timeout_sec: float = _SERVICE_SEND_TIMEOUT_SEC) -> None:
+async def _close_websocket(
+    websocket: Any, *, code: int, timeout_sec: float = _SERVICE_SEND_TIMEOUT_SEC
+) -> None:
     with suppress(Exception):
         await asyncio.wait_for(
             websocket.close(code=code),
@@ -1625,12 +1821,18 @@ async def _close_websocket(websocket: Any, *, code: int, timeout_sec: float = _S
 
 
 async def _send_json(websocket: Any, payload: dict[str, Any]) -> None:
-    await websocket.send_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    await websocket.send_text(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    )
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the Qwen3-ASR runtime realtime ASR WebSocket service.")
-    parser.add_argument("--model", required=True, help="Model path or Hugging Face model id.")
+    parser = argparse.ArgumentParser(
+        description="Run the Qwen3-ASR runtime realtime ASR WebSocket service."
+    )
+    parser.add_argument(
+        "--model", required=True, help="Model path or Hugging Face model id."
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument(
@@ -1659,17 +1861,27 @@ def _parse_args() -> argparse.Namespace:
         help="ASR backend. 'auto' picks mlx on Apple Silicon (Metal) and transformers (CUDA) "
         "elsewhere. 'mlx' forces the Apple Silicon backend; CUDA-only flags are ignored.",
     )
-    parser.add_argument("--device-map", default=None, help="Transformers device_map. Default: cuda:0.")
+    parser.add_argument(
+        "--device-map", default=None, help="Transformers device_map. Default: cuda:0."
+    )
     parser.add_argument(
         "--dtype",
         default=None,
         choices=["auto", "float16", "bfloat16", "float32"],
         help="Compute dtype. Default: bfloat16.",
     )
-    parser.add_argument("--cuda-graph", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--flashinfer", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--fused-rmsnorm", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--fused-linears", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument(
+        "--cuda-graph", action=argparse.BooleanOptionalAction, default=None
+    )
+    parser.add_argument(
+        "--flashinfer", action=argparse.BooleanOptionalAction, default=None
+    )
+    parser.add_argument(
+        "--fused-rmsnorm", action=argparse.BooleanOptionalAction, default=None
+    )
+    parser.add_argument(
+        "--fused-linears", action=argparse.BooleanOptionalAction, default=None
+    )
     parser.add_argument(
         "--w8a16",
         action=argparse.BooleanOptionalAction,
@@ -1677,7 +1889,9 @@ def _parse_args() -> argparse.Namespace:
         help="W8A16 quant. Default OFF for streaming (its fp32 Triton GEMM slows "
         "prefill ~3x at equal CER); pass --w8a16 to force on.",
     )
-    parser.add_argument("--cuda-graph-prewarm", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--cuda-graph-prewarm", action=argparse.BooleanOptionalAction, default=True
+    )
     parser.add_argument("--cuda-graph-prewarm-language", default="Chinese")
     parser.add_argument("--cuda-graph-prewarm-window-sec", type=float, default=20.0)
     parser.add_argument("--cuda-graph-prewarm-prefix-tokens", type=int, default=64)
@@ -1686,8 +1900,16 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Pass all received audio to ASR instead of using VAD speech gating.",
     )
-    parser.add_argument("--timestamp-model", default=None, help="Required forced-aligner model for realtime ASR.")
-    parser.add_argument("--timestamp-device-map", default=None, help="Forced-aligner device_map. Default: cuda:0.")
+    parser.add_argument(
+        "--timestamp-model",
+        default=None,
+        help="Required forced-aligner model for realtime ASR.",
+    )
+    parser.add_argument(
+        "--timestamp-device-map",
+        default=None,
+        help="Forced-aligner device_map. Default: cuda:0.",
+    )
     parser.add_argument(
         "--timestamp-dtype",
         default=None,
@@ -1710,7 +1932,11 @@ def _parse_args() -> argparse.Namespace:
         "the whole win, the aligner is prefill-bound so linear fusion is not applied; bf16 argmax "
         "can shift <=~1%% of timestamps by <=0.16s, no word-count change).",
     )
-    parser.add_argument("--timestamp-local-files-only", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--timestamp-local-files-only",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     parser.add_argument("--timestamp-pad-ms", type=int, default=500)
     parser.add_argument("--timestamp-finish-timeout-ms", type=int, default=30_000)
     parser.add_argument(
@@ -1736,16 +1962,38 @@ def _parse_args() -> argparse.Namespace:
         help="Translation backend. 'auto' follows the ASR backend (mlx on Apple Silicon). "
         "'mlx' runs HY-MT on Metal; CUDA-only flags (device, w8a16, fused_rmsnorm, decode_backend) are ignored.",
     )
-    parser.add_argument("--translation-dtype", default=None, choices=["auto", "float16", "bfloat16", "float32"])
-    parser.add_argument("--translation-preview", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--translation-preview-debounce-ms", type=int, default=_SERVICE_TRANSLATION_PREVIEW_DEBOUNCE_MS)
+    parser.add_argument(
+        "--translation-dtype",
+        default=None,
+        choices=["auto", "float16", "bfloat16", "float32"],
+    )
+    parser.add_argument(
+        "--translation-preview", action=argparse.BooleanOptionalAction, default=True
+    )
+    parser.add_argument(
+        "--translation-preview-debounce-ms",
+        type=int,
+        default=_SERVICE_TRANSLATION_PREVIEW_DEBOUNCE_MS,
+    )
     parser.add_argument("--translation-preview-timeout-ms", type=int, default=30_000)
-    parser.add_argument("--translation-max-new-tokens", type=int, default=_SERVICE_TRANSLATION_MAX_NEW_TOKENS)
+    parser.add_argument(
+        "--translation-max-new-tokens",
+        type=int,
+        default=_SERVICE_TRANSLATION_MAX_NEW_TOKENS,
+    )
     parser.add_argument("--translation-stable-timeout-ms", type=int, default=30_000)
     parser.add_argument("--translation-stable-batch-size", type=int, default=1)
-    parser.add_argument("--translation-sample", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--translation-decode-backend", default=DEFAULT_HYMT_DECODE_BACKEND, choices=["fixed_mask", "generate"])
-    parser.add_argument("--translation-attn-implementation", default=DEFAULT_HYMT_ATTN_IMPLEMENTATION)
+    parser.add_argument(
+        "--translation-sample", action=argparse.BooleanOptionalAction, default=False
+    )
+    parser.add_argument(
+        "--translation-decode-backend",
+        default=DEFAULT_HYMT_DECODE_BACKEND,
+        choices=["fixed_mask", "generate"],
+    )
+    parser.add_argument(
+        "--translation-attn-implementation", default=DEFAULT_HYMT_ATTN_IMPLEMENTATION
+    )
     parser.add_argument(
         "--translation-w8a16",
         action=argparse.BooleanOptionalAction,
@@ -1760,7 +2008,11 @@ def _parse_args() -> argparse.Namespace:
         help="Apply fused F.rms_norm to HY-MT. Enabled by default for the validated "
         "Hy-MT2 translation profile; pass --no-translation-fused-rmsnorm to disable.",
     )
-    parser.add_argument("--translation-local-files-only", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--translation-local-files-only",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     parser.add_argument("--translation-trust-remote-code", action="store_true")
     return parser.parse_args()
 
@@ -1874,7 +2126,9 @@ def _build_model_load(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
     return "transformers", load_kwargs
 
 
-def _build_translation(args: argparse.Namespace) -> tuple[Any | None, TranslationServiceConfig | None]:
+def _build_translation(
+    args: argparse.Namespace,
+) -> tuple[Any | None, TranslationServiceConfig | None]:
     model_path = str(args.translation_model or "").strip()
     if not model_path:
         return None, None
@@ -1919,7 +2173,9 @@ def _build_translation(args: argparse.Namespace) -> tuple[Any | None, Translatio
     return translator, config
 
 
-def _build_aligner(args: argparse.Namespace) -> tuple[Any | None, RealtimeTimestampConfig | None]:
+def _build_aligner(
+    args: argparse.Namespace,
+) -> tuple[Any | None, RealtimeTimestampConfig | None]:
     """Construct the forced aligner (not the actor). The caller wraps it in a
     TimestampModelActor bound to the executor the model was loaded on -- the MLX
     backend ties a model to its loading thread."""
@@ -1931,7 +2187,11 @@ def _build_aligner(args: argparse.Namespace) -> tuple[Any | None, RealtimeTimest
         # MLX (Apple Silicon): ground-up aligner forward; CUDA-only flags ignored.
         from qwen3_asr_runtime.mlx_forced_aligner import MLXForcedAlignerBackend
 
-        dtype_name = args.timestamp_dtype if args.timestamp_dtype not in {None, "auto"} else "bfloat16"
+        dtype_name = (
+            args.timestamp_dtype
+            if args.timestamp_dtype not in {None, "auto"}
+            else "bfloat16"
+        )
         aligner = MLXForcedAlignerBackend.from_pretrained(
             model_path,
             dtype=dtype_name,
@@ -2011,7 +2271,9 @@ def _prewarm_translation_runtime(
         )
 
 
-def _timestamp_prewarm_audio(duration_sec: float = _SERVICE_TIMESTAMP_PREWARM_DURATION_SEC) -> np.ndarray:
+def _timestamp_prewarm_audio(
+    duration_sec: float = _SERVICE_TIMESTAMP_PREWARM_DURATION_SEC,
+) -> np.ndarray:
     sample_count = max(1, int(round(float(duration_sec) * SAMPLE_RATE)))
     t = np.arange(sample_count, dtype=np.float32) / float(SAMPLE_RATE)
     return (0.01 * np.sin(2.0 * np.pi * 220.0 * t)).astype(np.float32)
@@ -2065,7 +2327,9 @@ def _prepare_cuda_graph_runtime(model: Any, args: argparse.Namespace) -> None:
             int(args.cuda_graph_prewarm_prefix_tokens),
         )
         if not _prewarm_realtime_cuda_graph(model, args):
-            raise RuntimeError("cuda graph prewarm was requested but this backend does not support it")
+            raise RuntimeError(
+                "cuda graph prewarm was requested but this backend does not support it"
+            )
         _LOGGER.info(
             "Prewarmed ASR cuda graph language=%s wall_ms=%d",
             args.cuda_graph_prewarm_language,
@@ -2084,10 +2348,15 @@ def _prewarm_mlx_asr(model: Any) -> None:
     _LOGGER.info("Prewarming MLX ASR (compiling Metal kernels)")
     silence = np.zeros(int(1.0 * SAMPLE_RATE), dtype=np.float32)
     model.transcribe((silence, SAMPLE_RATE))
-    _LOGGER.info("Prewarmed MLX ASR wall_ms=%d", int(round((time.perf_counter() - started) * 1000)))
+    _LOGGER.info(
+        "Prewarmed MLX ASR wall_ms=%d",
+        int(round((time.perf_counter() - started) * 1000)),
+    )
 
 
-def _translation_capture_lock(args: argparse.Namespace, *, translation_enabled: bool) -> Any | None:
+def _translation_capture_lock(
+    args: argparse.Namespace, *, translation_enabled: bool
+) -> Any | None:
     if not translation_enabled:
         return None
     if _cuda_graph_enabled(args) and not args.cuda_graph_prewarm:
@@ -2121,7 +2390,9 @@ def main() -> None:
     args = _parse_args()
     log_level = _configure_logging(args.log_level)
     if not str(args.timestamp_model or "").strip():
-        raise RuntimeError("--timestamp-model is required; realtime ASR commits require ASR and forced aligner together.")
+        raise RuntimeError(
+            "--timestamp-model is required; realtime ASR commits require ASR and forced aligner together."
+        )
     _resolve_service_backends(args)
     if args.backend == "mlx":
         # MLX has no cuda graph; force the flag off so the cuda-graph prewarm and the
@@ -2151,16 +2422,23 @@ def main() -> None:
     asr_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="qwen3-asr")
     try:
         model, _ = _load_on_thread(
-            lambda: Qwen3ASRModel.from_pretrained(args.model, backend=backend, **load_kwargs),
-            use_executor=(backend == "mlx"), executor=asr_executor, thread_name="qwen3-asr",
+            lambda: Qwen3ASRModel.from_pretrained(
+                args.model, backend=backend, **load_kwargs
+            ),
+            use_executor=(backend == "mlx"),
+            executor=asr_executor,
+            thread_name="qwen3-asr",
         )
         asr_executor.submit(_prepare_cuda_graph_runtime, model, args).result()
         if backend == "mlx":
             asr_executor.submit(_prewarm_mlx_asr, model).result()
 
-        (translator, translation_service_config), translation_executor = _load_on_thread(
-            lambda: _build_translation(args),
-            use_executor=(args.translation_backend == "mlx"), thread_name="hymt-translation",
+        (translator, translation_service_config), translation_executor = (
+            _load_on_thread(
+                lambda: _build_translation(args),
+                use_executor=(args.translation_backend == "mlx"),
+                thread_name="hymt-translation",
+            )
         )
         if translator is not None:
             translation_actor = TranslationModelActor(
@@ -2174,7 +2452,8 @@ def main() -> None:
 
         (aligner, timestamp_config), timestamp_executor = _load_on_thread(
             lambda: _build_aligner(args),
-            use_executor=(args.timestamp_backend == "mlx"), thread_name="qwen3-timestamp",
+            use_executor=(args.timestamp_backend == "mlx"),
+            thread_name="qwen3-timestamp",
         )
         if aligner is not None:
             timestamp_actor = TimestampModelActor(aligner, executor=timestamp_executor)
@@ -2209,7 +2488,9 @@ def main() -> None:
     try:
         import uvicorn
     except ImportError as exc:
-        raise RuntimeError("Install service dependencies with: uv sync --python 3.12") from exc
+        raise RuntimeError(
+            "Install service dependencies with: uv sync --python 3.12"
+        ) from exc
 
     try:
         uvicorn.run(

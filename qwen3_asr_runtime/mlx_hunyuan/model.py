@@ -5,6 +5,7 @@ The Hunyuan-specific differences from the shared Qwen text stack are QK norm
 after RoPE and the alpha-derived RoPE base. Greedy decode is gated by chrF
 against the stock-transformers golden, not by byte parity.
 """
+
 from __future__ import annotations
 
 from typing import List, Optional, Sequence, Tuple
@@ -25,12 +26,16 @@ class HunyuanAttention(nn.Module):
         self.head_dim = cfg.head_dim
         self.n_heads = cfg.num_attention_heads
         self.n_kv = cfg.num_key_value_heads
-        self.scale = self.head_dim ** -0.5
+        self.scale = self.head_dim**-0.5
         bias = cfg.attention_bias
-        self.q_proj = nn.Linear(cfg.hidden_size, self.n_heads * self.head_dim, bias=bias)
+        self.q_proj = nn.Linear(
+            cfg.hidden_size, self.n_heads * self.head_dim, bias=bias
+        )
         self.k_proj = nn.Linear(cfg.hidden_size, self.n_kv * self.head_dim, bias=bias)
         self.v_proj = nn.Linear(cfg.hidden_size, self.n_kv * self.head_dim, bias=bias)
-        self.o_proj = nn.Linear(self.n_heads * self.head_dim, cfg.hidden_size, bias=bias)
+        self.o_proj = nn.Linear(
+            self.n_heads * self.head_dim, cfg.hidden_size, bias=bias
+        )
         self.use_qk_norm = cfg.use_qk_norm
         if self.use_qk_norm:
             # HunYuan names: query_layernorm / key_layernorm; RMSNorm per head over head_dim.
@@ -40,9 +45,21 @@ class HunyuanAttention(nn.Module):
 
     def __call__(self, x: mx.array, cache: Optional[KVCache]):
         b, length, _ = x.shape
-        q = self.q_proj(x).reshape(b, length, self.n_heads, self.head_dim).transpose(0, 2, 1, 3)
-        k = self.k_proj(x).reshape(b, length, self.n_kv, self.head_dim).transpose(0, 2, 1, 3)
-        v = self.v_proj(x).reshape(b, length, self.n_kv, self.head_dim).transpose(0, 2, 1, 3)
+        q = (
+            self.q_proj(x)
+            .reshape(b, length, self.n_heads, self.head_dim)
+            .transpose(0, 2, 1, 3)
+        )
+        k = (
+            self.k_proj(x)
+            .reshape(b, length, self.n_kv, self.head_dim)
+            .transpose(0, 2, 1, 3)
+        )
+        v = (
+            self.v_proj(x)
+            .reshape(b, length, self.n_kv, self.head_dim)
+            .transpose(0, 2, 1, 3)
+        )
 
         offset = cache.offset if cache is not None else 0
         # RoPE first, then QK-norm (HunYuanDenseV1Attention order).
@@ -162,7 +179,9 @@ class MLXHunyuanForCausalLM(nn.Module):
                 break
             generated.append(tok)
             if use_penalty:
-                seen_mask[y.reshape(1)] = 1.0  # fold the new token into the penalty context
+                seen_mask[y.reshape(1)] = (
+                    1.0  # fold the new token into the penalty context
+                )
             step_embeds = self.model.embed_tokens(y.reshape(1, 1))
             hidden = self.model(step_embeds, caches)
         return generated

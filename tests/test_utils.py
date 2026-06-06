@@ -41,8 +41,12 @@ class TestFloatRangeNormalize:
 
     def test_nonfinite_peak_keeps_previous_edge_case_semantics(self) -> None:
         with np.errstate(invalid="ignore"):
-            inf_normalized = float_range_normalize(np.array([np.inf, 1.0], dtype=np.float32))
-        nan_normalized = float_range_normalize(np.array([np.nan, 2.0], dtype=np.float32))
+            inf_normalized = float_range_normalize(
+                np.array([np.inf, 1.0], dtype=np.float32)
+            )
+        nan_normalized = float_range_normalize(
+            np.array([np.nan, 2.0], dtype=np.float32)
+        )
 
         assert np.isnan(inf_normalized[0])
         assert inf_normalized[1] == 0.0

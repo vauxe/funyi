@@ -10,6 +10,7 @@ punctuation-stripped CER:
 This lets us compare CER vectors from multiple runtime paths on the same
 audio/SRT windows. tools/merge_cer_sweeps.py merges the per-path JSONs.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -24,6 +25,7 @@ from statistics import mean, median
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+from rapidfuzz.distance import Levenshtein
 import soundfile as sf
 import torch
 
@@ -33,7 +35,11 @@ if str(ROOT) not in sys.path:
 
 from qwen3_asr_runtime import Qwen3ASRModel
 from qwen3_asr_runtime.decode_runtime import CudaGraphDecoder
-from qwen3_asr_runtime.utils import normalize_language_name, parse_asr_output, validate_language
+from qwen3_asr_runtime.utils import (
+    normalize_language_name,
+    parse_asr_output,
+    validate_language,
+)
 
 _RESUME_ARG_KEYS = (
     "audio",
@@ -79,28 +85,12 @@ def _normalize_for_cer(text: str) -> str:
     return "".join(out)
 
 
-def _levenshtein(a: str, b: str) -> int:
-    if a == b:
-        return 0
-    if not a:
-        return len(b)
-    if not b:
-        return len(a)
-    prev = list(range(len(b) + 1))
-    for i, ca in enumerate(a, start=1):
-        cur = [i]
-        for j, cb in enumerate(b, start=1):
-            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (0 if ca == cb else 1)))
-        prev = cur
-    return prev[-1]
-
-
 def _cer(hyp: str, ref: str) -> float:
     hyp_n = _normalize_for_cer(hyp)
     ref_n = _normalize_for_cer(ref)
     if not ref_n:
         return 0.0 if not hyp_n else 1.0
-    return _levenshtein(hyp_n, ref_n) / len(ref_n)
+    return Levenshtein.distance(hyp_n, ref_n) / len(ref_n)
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +142,9 @@ def load_srt(path: str, *, strip_ruby: bool = False) -> List[Dict[str, Any]]:
     return entries
 
 
-def srt_text_in_window(entries: List[Dict[str, Any]], start: float, duration: float) -> str:
+def srt_text_in_window(
+    entries: List[Dict[str, Any]], start: float, duration: float
+) -> str:
     end = start + duration
     out = []
     for e in entries:
@@ -169,35 +161,65 @@ def srt_text_in_window(entries: List[Dict[str, Any]], start: float, duration: fl
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="CER sweep across windows and runtime paths vs SRT reference.")
+    p = argparse.ArgumentParser(
+        description="CER sweep across windows and runtime paths vs SRT reference."
+    )
     p.add_argument("--audio", required=True, help="Local audio file to evaluate.")
-    p.add_argument("--srt", required=True, help="Reference SRT file for the same audio.")
+    p.add_argument(
+        "--srt", required=True, help="Reference SRT file for the same audio."
+    )
     p.add_argument("--dtype", default="bfloat16", choices=["float32", "bfloat16"])
-    p.add_argument("--attn-implementation", default="sdpa", choices=["sdpa", "eager", "flash_attention_2"])
+    p.add_argument(
+        "--attn-implementation",
+        default="sdpa",
+        choices=["sdpa", "eager", "flash_attention_2"],
+    )
     p.add_argument("--window-sec", type=float, default=60.0)
     p.add_argument("--num-windows", type=int, default=200)
     p.add_argument("--stride-sec", type=float, default=None)
     p.add_argument("--start-sec", type=float, default=0.0)
     p.add_argument("--max-new-tokens", type=int, default=512)
-    p.add_argument("--paths", default="base", help="Comma subset of: base, graph. Run one path per process to avoid cross-path allocator issues.")
+    p.add_argument(
+        "--paths",
+        default="base",
+        help="Comma subset of: base, graph. Run one path per process to avoid cross-path allocator issues.",
+    )
     p.add_argument("--output", default="artifacts/cer_sweep.json")
-    p.add_argument("--resume", action="store_true",
-                   help="Skip windows whose results already exist in --output.")
-    p.add_argument("--strip-ruby", action="store_true",
-                   help="Remove Japanese-style furigana annotations like （さいがい） from the SRT reference.")
+    p.add_argument(
+        "--resume",
+        action="store_true",
+        help="Skip windows whose results already exist in --output.",
+    )
+    p.add_argument(
+        "--strip-ruby",
+        action="store_true",
+        help="Remove Japanese-style furigana annotations like （さいがい） from the SRT reference.",
+    )
     p.add_argument(
         "--language",
         default=None,
         help="Force a known ASR language, e.g. Chinese. Empty string keeps auto language detection.",
     )
-    p.add_argument("--flashinfer", action="store_true",
-                   help="Use flashinfer's single_decode attention kernel.")
-    p.add_argument("--fused-rmsnorm", action="store_true",
-                   help="Replace hand-rolled RMSNorm with torch.nn.functional.rms_norm.")
-    p.add_argument("--fused-linears", action="store_true",
-                   help="Fuse q/k/v and gate/up linear projections per layer.")
-    p.add_argument("--quantized-linears", action="store_true",
-                   help="Use W8A16 for fused qkv/gate_up.")
+    p.add_argument(
+        "--flashinfer",
+        action="store_true",
+        help="Use flashinfer's single_decode attention kernel.",
+    )
+    p.add_argument(
+        "--fused-rmsnorm",
+        action="store_true",
+        help="Replace hand-rolled RMSNorm with torch.nn.functional.rms_norm.",
+    )
+    p.add_argument(
+        "--fused-linears",
+        action="store_true",
+        help="Fuse q/k/v and gate/up linear projections per layer.",
+    )
+    p.add_argument(
+        "--quantized-linears",
+        action="store_true",
+        help="Use W8A16 for fused qkv/gate_up.",
+    )
     return p.parse_args()
 
 
@@ -211,7 +233,9 @@ def _decode_tokens(tokenizer, ids: List[int], *, user_language: Optional[str]) -
     eos = {151645, 151643}
     while ids and ids[-1] in eos:
         ids = ids[:-1]
-    raw = tokenizer.decode(ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+    raw = tokenizer.decode(
+        ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
+    )
     _, text = parse_asr_output(raw, user_language=user_language)
     return text
 
@@ -220,7 +244,9 @@ def _flush(path: Optional[str], data: Dict[str, Any]) -> None:
     if not path:
         return
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    Path(path).write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
 
 def _parse_paths(value: str) -> List[str]:
@@ -246,7 +272,9 @@ def _resume_config(args_or_dict: argparse.Namespace | Dict[str, Any]) -> Dict[st
     return values
 
 
-def _validate_resume_args(previous_args: Dict[str, Any], current_args: argparse.Namespace, output: str) -> None:
+def _validate_resume_args(
+    previous_args: Dict[str, Any], current_args: argparse.Namespace, output: str
+) -> None:
     previous = _resume_config(previous_args)
     current = _resume_config(current_args)
     mismatches = {
@@ -295,15 +323,19 @@ def main() -> None:
         windows.append((start, args.window_sec))
 
     srt_entries = load_srt(args.srt, strip_ruby=args.strip_ruby)
-    print(f"loaded SRT: {len(srt_entries)} entries; sweeping {len(windows)} windows of "
-          f"{args.window_sec}s  dtype={args.dtype}  attn={args.attn_implementation}  paths={selected_paths}")
+    print(
+        f"loaded SRT: {len(srt_entries)} entries; sweeping {len(windows)} windows of "
+        f"{args.window_sec}s  dtype={args.dtype}  attn={args.attn_implementation}  paths={selected_paths}"
+    )
 
     existing: Dict[int, Dict[str, Any]] = {}
     if args.resume and Path(args.output).exists():
         prev = json.loads(Path(args.output).read_text(encoding="utf-8"))
         previous_args = prev.get("args")
         if not isinstance(previous_args, dict):
-            raise ValueError(f"--resume output {args.output} does not contain args metadata; use a new output path.")
+            raise ValueError(
+                f"--resume output {args.output} does not contain args metadata; use a new output path."
+            )
         _validate_resume_args(previous_args, args, args.output)
         for row in prev.get("windows", []):
             existing[int(row["idx"])] = row
@@ -344,7 +376,10 @@ def main() -> None:
     wav_full = wav_full.astype(np.float32)
     if file_sr != sr:
         import librosa
-        wav_full = librosa.resample(wav_full, orig_sr=file_sr, target_sr=sr).astype(np.float32)
+
+        wav_full = librosa.resample(wav_full, orig_sr=file_sr, target_sr=sr).astype(
+            np.float32
+        )
         print(f"resampled {file_sr}Hz -> {sr}Hz, {wav_full.shape[0]} samples")
 
     rows: List[Dict[str, Any]] = []
@@ -354,7 +389,9 @@ def main() -> None:
         _sync_cuda()
         t0 = time.perf_counter()
         if name == "base":
-            seq = hf_model.generate(**inputs, max_new_tokens=args.max_new_tokens).sequences
+            seq = hf_model.generate(
+                **inputs, max_new_tokens=args.max_new_tokens
+            ).sequences
         elif name == "graph":
             dec = fresh_decoder()
             seq = dec.generate(
@@ -378,7 +415,7 @@ def main() -> None:
     for idx, (start_sec, dur_sec) in enumerate(windows):
         if idx in existing:
             rows.append(existing[idx])
-            print(f"  [{idx+1:3d}/{len(windows)}] start={start_sec:7.1f}s  (resumed)")
+            print(f"  [{idx + 1:3d}/{len(windows)}] start={start_sec:7.1f}s  (resumed)")
             continue
 
         s = int(round(start_sec * sr))
@@ -386,7 +423,11 @@ def main() -> None:
         wav = wav_full[s:e]
         ref_text = srt_text_in_window(srt_entries, start_sec, dur_sec)
 
-        inputs = processor(text=[prompt], audio=[wav], return_tensors="pt", padding=True).to("cuda:0").to(dtype)
+        inputs = (
+            processor(text=[prompt], audio=[wav], return_tensors="pt", padding=True)
+            .to("cuda:0")
+            .to(dtype)
+        )
         prompt_len = int(inputs["input_ids"].shape[1])
 
         out: Dict[str, Dict[str, Any]] = {}
@@ -399,7 +440,10 @@ def main() -> None:
                 out[p] = {"ids": [], "wall": 0.0, "error": "OOM"}
                 print(f"    path={p} OOM")
 
-        texts = {p: _decode_tokens(tokenizer, out[p]["ids"], user_language=force_language) for p in selected_paths}
+        texts = {
+            p: _decode_tokens(tokenizer, out[p]["ids"], user_language=force_language)
+            for p in selected_paths
+        }
         cers = {p: _cer(texts[p], ref_text) for p in selected_paths}
 
         row = {
@@ -426,7 +470,7 @@ def main() -> None:
 
         rows.append(row)
 
-        line = f"  [{idx+1:3d}/{len(windows)}] start={start_sec:7.1f}s  ref_chars={row['ref_chars']:4d}  "
+        line = f"  [{idx + 1:3d}/{len(windows)}] start={start_sec:7.1f}s  ref_chars={row['ref_chars']:4d}  "
         for p in selected_paths:
             pp = row["paths"][p]
             line += f"{p}:cer={pp['cer']:.3f} "
@@ -454,8 +498,14 @@ def main() -> None:
     print(f"Aggregate over {len(non_empty)} windows with non-empty SRT reference:")
     summary: Dict[str, Any] = {}
     for p in selected_paths:
-        cer_vals = [r["paths"][p]["cer"] for r in non_empty if r["paths"][p]["cer"] is not None]
-        wall_vals = [r["paths"][p]["wall_sec"] for r in non_empty if r["paths"][p].get("wall_sec", 0) > 0]
+        cer_vals = [
+            r["paths"][p]["cer"] for r in non_empty if r["paths"][p]["cer"] is not None
+        ]
+        wall_vals = [
+            r["paths"][p]["wall_sec"]
+            for r in non_empty
+            if r["paths"][p].get("wall_sec", 0) > 0
+        ]
         entry = {
             "cer_mean": round(mean(cer_vals), 4) if cer_vals else None,
             "cer_p50": round(median(cer_vals), 4) if cer_vals else None,
@@ -465,7 +515,11 @@ def main() -> None:
             "wall_p50_sec": round(median(wall_vals), 3) if wall_vals else None,
         }
         if p != "base" and "base" in selected_paths:
-            deltas = [r["paths"][p]["delta_vs_base"] for r in non_empty if "delta_vs_base" in r["paths"][p]]
+            deltas = [
+                r["paths"][p]["delta_vs_base"]
+                for r in non_empty
+                if "delta_vs_base" in r["paths"][p]
+            ]
             abs_deltas = [abs(value) for value in deltas]
             entry["delta_mean"] = round(mean(deltas), 5) if deltas else None
             entry["delta_p50"] = round(median(deltas), 5) if deltas else None

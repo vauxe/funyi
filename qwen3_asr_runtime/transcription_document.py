@@ -51,7 +51,9 @@ class TranscriptTranslationUnit:
             "text": self.text,
             "targetLanguage": self.target_language,
             "sourceSegmentIds": list(self.source_segment_ids),
-            "sourceSegmentIndices": [int(index) for index in self.source_segment_indices],
+            "sourceSegmentIndices": [
+                int(index) for index in self.source_segment_indices
+            ],
         }
 
 
@@ -76,7 +78,9 @@ class TranscriptDocument:
             "segments": [segment.to_payload() for segment in self.segments],
         }
         if self.translation_units:
-            payload["translationUnits"] = [unit.to_payload() for unit in self.translation_units]
+            payload["translationUnits"] = [
+                unit.to_payload() for unit in self.translation_units
+            ]
         return payload
 
 

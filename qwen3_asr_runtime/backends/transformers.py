@@ -46,7 +46,9 @@ class TransformersASRBackend(ASRRuntimeBackend):
         self._cuda_graph_decoder: Optional[CudaGraphDecoder] = None
 
     @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path: str, **kwargs) -> "TransformersASRBackend":
+    def from_pretrained(
+        cls, pretrained_model_name_or_path: str, **kwargs
+    ) -> "TransformersASRBackend":
         if "attn_implementation" not in kwargs:
             default_attn = cls._default_attn_implementation(kwargs.get("device_map"))
             if default_attn is not None:
@@ -59,13 +61,17 @@ class TransformersASRBackend(ASRRuntimeBackend):
         use_fused_linears = bool(kwargs.pop("fused_linears", False))
         use_quantized_linears = bool(kwargs.pop("quantized_linears", False))
         if "quantized_linear_components" in kwargs:
-            raise RuntimeError("quantized_linear_components was removed; W8A16 now always uses qkv and gate_up.")
+            raise RuntimeError(
+                "quantized_linear_components was removed; W8A16 now always uses qkv and gate_up."
+            )
         if use_quantized_linears and not use_fused_linears:
             raise RuntimeError("quantized_linears=True requires fused_linears=True")
 
         if use_flashinfer:
             if not register_flashinfer("flashinfer"):
-                raise RuntimeError("flashinfer is not installed; install dependencies with `uv sync --python 3.12`")
+                raise RuntimeError(
+                    "flashinfer is not installed; install dependencies with `uv sync --python 3.12`"
+                )
             kwargs["attn_implementation"] = "flashinfer"
 
         model = AutoModel.from_pretrained(pretrained_model_name_or_path, **kwargs)
@@ -85,7 +91,9 @@ class TransformersASRBackend(ASRRuntimeBackend):
         if use_quantized_linears:
             summary = patch_model_quantized_linears(model)
             if summary["qkv"] == 0 and summary["gate_up"] == 0:
-                raise RuntimeError("quantized_linears=True but no linears were quantized")
+                raise RuntimeError(
+                    "quantized_linears=True but no linears were quantized"
+                )
         cls._prepare_inference_only_model(model)
         if use_fused_linears or use_quantized_linears:
             cls._release_patch_time_cuda_cache(model)
@@ -100,13 +108,17 @@ class TransformersASRBackend(ASRRuntimeBackend):
 
     def enable_cuda_graph(self, *, graph_len_bucket: int = 1) -> None:
         if self._cuda_graph_decoder is None:
-            self._cuda_graph_decoder = CudaGraphDecoder(self.model.thinker, graph_len_bucket=graph_len_bucket)
+            self._cuda_graph_decoder = CudaGraphDecoder(
+                self.model.thinker, graph_len_bucket=graph_len_bucket
+            )
 
     def freeze_cuda_graph_capture(self) -> None:
         if self._cuda_graph_decoder is not None:
             self._cuda_graph_decoder.freeze_runtime_capture()
 
-    def prewarm_cuda_graph(self, *, prompt: str, wav: np.ndarray, max_new_tokens: int) -> bool:
+    def prewarm_cuda_graph(
+        self, *, prompt: str, wav: np.ndarray, max_new_tokens: int
+    ) -> bool:
         if self._cuda_graph_decoder is None:
             return False
         self.infer_with_prompts(
@@ -165,7 +177,9 @@ class TransformersASRBackend(ASRRuntimeBackend):
         :meth:`CudaGraphDecoder.generate_with_draft`. Not byte-identical under
         bf16; see ``spec_decode.py`` docstring.
         """
-        inputs = self.processor(text=[prompt], audio=[wav], return_tensors="pt", padding=True)
+        inputs = self.processor(
+            text=[prompt], audio=[wav], return_tensors="pt", padding=True
+        )
         inputs = self._move_inputs(inputs)
         prompt_len = int(inputs["input_ids"].shape[1])
         draft = list(draft_ids)
@@ -222,13 +236,23 @@ class TransformersASRBackend(ASRRuntimeBackend):
             return []
 
         outs: List[str] = []
-        batch_size = max_inference_batch_size if max_inference_batch_size >= 0 else len(prompts)
+        batch_size = (
+            max_inference_batch_size if max_inference_batch_size >= 0 else len(prompts)
+        )
 
-        for prompt_batch, wav_batch in zip(chunk_list(prompts, batch_size), chunk_list(wavs, batch_size)):
-            inputs = self.processor(text=prompt_batch, audio=wav_batch, return_tensors="pt", padding=True)
+        for prompt_batch, wav_batch in zip(
+            chunk_list(prompts, batch_size), chunk_list(wavs, batch_size)
+        ):
+            inputs = self.processor(
+                text=prompt_batch, audio=wav_batch, return_tensors="pt", padding=True
+            )
             inputs = self._move_inputs(inputs)
             prompt_len = int(inputs["input_ids"].shape[1])
-            if self._cuda_graph_decoder is not None and prompt_batch and len(prompt_batch) == 1:
+            if (
+                self._cuda_graph_decoder is not None
+                and prompt_batch
+                and len(prompt_batch) == 1
+            ):
                 try:
                     sequences = self._cuda_graph_decoder.generate(
                         input_ids=inputs["input_ids"],
@@ -238,11 +262,17 @@ class TransformersASRBackend(ASRRuntimeBackend):
                         max_new_tokens=max_new_tokens,
                     )
                 except CudaGraphCaptureRequired:
-                    outputs = self._generate_with_hf(inputs, max_new_tokens=max_new_tokens)
-                    sequences = outputs.sequences if hasattr(outputs, "sequences") else outputs
+                    outputs = self._generate_with_hf(
+                        inputs, max_new_tokens=max_new_tokens
+                    )
+                    sequences = (
+                        outputs.sequences if hasattr(outputs, "sequences") else outputs
+                    )
             else:
                 outputs = self._generate_with_hf(inputs, max_new_tokens=max_new_tokens)
-                sequences = outputs.sequences if hasattr(outputs, "sequences") else outputs
+                sequences = (
+                    outputs.sequences if hasattr(outputs, "sequences") else outputs
+                )
             decoded = self.processor.batch_decode(
                 sequences[:, prompt_len:],
                 skip_special_tokens=True,
@@ -280,7 +310,9 @@ class TransformersASRBackend(ASRRuntimeBackend):
         )
 
     @classmethod
-    def _resolve_generation_token_kwargs(cls, model: Any, processor: Any) -> Dict[str, int]:
+    def _resolve_generation_token_kwargs(
+        cls, model: Any, processor: Any
+    ) -> Dict[str, int]:
         tokenizer = getattr(processor, "tokenizer", None)
         thinker = getattr(model, "thinker", None)
         model_config = getattr(model, "config", None)

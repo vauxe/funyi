@@ -58,7 +58,11 @@ class SubtitleDocument:
             self._apply_translation_status(event)
 
     def window(self, *, include_translation: bool | None = None) -> SubtitleWindow:
-        enabled = self.translation_enabled if include_translation is None else bool(include_translation)
+        enabled = (
+            self.translation_enabled
+            if include_translation is None
+            else bool(include_translation)
+        )
         previous = self.stable_lines[-1] if self.stable_lines else None
         return SubtitleWindow(
             previous=_render_line(previous, include_translation=enabled),
@@ -66,7 +70,11 @@ class SubtitleDocument:
         )
 
     def to_srt(self, *, include_translation: bool | None = None) -> str:
-        enabled = self.translation_enabled if include_translation is None else bool(include_translation)
+        enabled = (
+            self.translation_enabled
+            if include_translation is None
+            else bool(include_translation)
+        )
         blocks: list[str] = []
         number = 1
         for line in self.stable_lines:
@@ -104,10 +112,16 @@ class SubtitleDocument:
         revision = int(event.get("revision") or self.revision)
         for segment in stable_appends:
             if isinstance(segment, dict):
-                self.stable_lines.append(_line_from_segment(segment, source_revision=revision))
+                self.stable_lines.append(
+                    _line_from_segment(segment, source_revision=revision)
+                )
 
         partial = event.get("partial")
-        self.current = _line_from_segment(partial, source_revision=revision) if isinstance(partial, dict) else None
+        self.current = (
+            _line_from_segment(partial, source_revision=revision)
+            if isinstance(partial, dict)
+            else None
+        )
         self.revision = revision
 
     def _apply_transcript_timing_update(self, event: dict[str, Any]) -> None:
@@ -128,13 +142,19 @@ class SubtitleDocument:
             return
 
         existing_by_id = {line.id: line for line in self.stable_lines if line.id}
-        existing_by_index = {line.index: line for line in self.stable_lines if line.index is not None}
+        existing_by_index = {
+            line.index: line for line in self.stable_lines if line.index is not None
+        }
         lines: list[SubtitleLine] = []
         for segment in event.get("segments") or []:
             if not isinstance(segment, dict):
                 continue
-            line = _line_from_segment(segment, source_revision=int(event.get("revision") or self.revision))
-            previous = existing_by_id.get(line.id or "") or existing_by_index.get(line.index)
+            line = _line_from_segment(
+                segment, source_revision=int(event.get("revision") or self.revision)
+            )
+            previous = existing_by_id.get(line.id or "") or existing_by_index.get(
+                line.index
+            )
             if previous is not None and not _segment_has_translation_state(segment):
                 line = replace(
                     line,
@@ -201,7 +221,9 @@ class SubtitleDocument:
         return None
 
 
-def _line_from_segment(segment: dict[str, Any], *, source_revision: int) -> SubtitleLine:
+def _line_from_segment(
+    segment: dict[str, Any], *, source_revision: int
+) -> SubtitleLine:
     text = str(segment.get("text") or "").strip()
     return SubtitleLine(
         id=str(segment.get("id") or "") or None,
@@ -218,7 +240,9 @@ def _line_from_segment(segment: dict[str, Any], *, source_revision: int) -> Subt
     )
 
 
-def _render_line(line: SubtitleLine | None, *, include_translation: bool) -> SubtitleLine | None:
+def _render_line(
+    line: SubtitleLine | None, *, include_translation: bool
+) -> SubtitleLine | None:
     if line is None or include_translation:
         return line
     return replace(
@@ -230,7 +254,10 @@ def _render_line(line: SubtitleLine | None, *, include_translation: bool) -> Sub
 
 
 def _segment_has_translation_state(segment: dict[str, Any]) -> bool:
-    return any(key in segment for key in ("translation", "translation_status", "translation_message"))
+    return any(
+        key in segment
+        for key in ("translation", "translation_status", "translation_message")
+    )
 
 
 def _apply_document_translation_units(lines: list[SubtitleLine], document: Any) -> None:
@@ -253,10 +280,14 @@ def _apply_document_translation_units(lines: list[SubtitleLine], document: Any) 
         )
 
 
-def _translation_unit_anchor_index(lines: list[SubtitleLine], unit: dict[str, Any]) -> int | None:
+def _translation_unit_anchor_index(
+    lines: list[SubtitleLine], unit: dict[str, Any]
+) -> int | None:
     segment_ids = _string_tuple(unit.get("sourceSegmentIds"))
     segment_indices = _int_tuple(unit.get("sourceSegmentIndices"))
-    for coverage_index in range(max(len(segment_ids), len(segment_indices)) - 1, -1, -1):
+    for coverage_index in range(
+        max(len(segment_ids), len(segment_indices)) - 1, -1, -1
+    ):
         if coverage_index < len(segment_ids):
             segment_id = segment_ids[coverage_index]
             for index, line in enumerate(lines):

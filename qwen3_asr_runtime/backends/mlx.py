@@ -8,6 +8,7 @@ kernels, W8A16, speculative decode) do not apply and are silently dropped so
 existing call sites that pass them keep working. Streaming works through the
 standard infer_with_prompts prefix re-feed -- no token-level prefix API needed.
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Sequence
@@ -38,7 +39,9 @@ def _dtype_name(dtype: Any) -> str:
         return "bfloat16"
     if isinstance(dtype, str):
         return dtype
-    return str(dtype)  # e.g. torch.bfloat16 -> "torch.bfloat16"; resolve_dtype strips the prefix
+    return str(
+        dtype
+    )  # e.g. torch.bfloat16 -> "torch.bfloat16"; resolve_dtype strips the prefix
 
 
 class MLXASRBackend(ASRRuntimeBackend):
@@ -57,7 +60,9 @@ class MLXASRBackend(ASRRuntimeBackend):
         self._compute = resolve_dtype(dtype_name)
 
     @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path: str, **kwargs) -> "MLXASRBackend":
+    def from_pretrained(
+        cls, pretrained_model_name_or_path: str, **kwargs
+    ) -> "MLXASRBackend":
         from ..mlx_qwen3_asr import load_mlx_qwen3_asr
 
         AutoConfig.register("qwen3_asr", Qwen3ASRConfig, exist_ok=True)
@@ -74,10 +79,14 @@ class MLXASRBackend(ASRRuntimeBackend):
 
         # Resolve an HF id to its local snapshot dir (the MLX loader needs config.json +
         # safetensors on disk); a local path is returned unchanged.
-        model_dir = resolve_model_dir(pretrained_model_name_or_path, local_files_only=local_files_only)
+        model_dir = resolve_model_dir(
+            pretrained_model_name_or_path, local_files_only=local_files_only
+        )
         model, config = load_mlx_qwen3_asr(model_dir, dtype=dtype_name)
         processor = AutoProcessor.from_pretrained(model_dir, fix_mistral_regex=True)
-        return cls(model=model, processor=processor, config=config, dtype_name=dtype_name)
+        return cls(
+            model=model, processor=processor, config=config, dtype_name=dtype_name
+        )
 
     def eval(self) -> None:
         return None
@@ -115,10 +124,16 @@ class MLXASRBackend(ASRRuntimeBackend):
         outs: List[str] = []
         for prompt, wav in zip(prompts, wavs):
             wav = np.asarray(wav, dtype=np.float32)
-            inputs = self.processor(text=[prompt], audio=[wav], return_tensors="np", padding=True)
+            inputs = self.processor(
+                text=[prompt], audio=[wav], return_tensors="np", padding=True
+            )
             input_ids = mx.array(np.asarray(inputs["input_ids"]).astype(np.int32))
-            feats = mx.array(np.asarray(inputs["input_features"], dtype=np.float32)).astype(self._compute)
-            flen = [int(np.asarray(inputs["feature_attention_mask"]).sum(-1).reshape(-1)[0])]
+            feats = mx.array(
+                np.asarray(inputs["input_features"], dtype=np.float32)
+            ).astype(self._compute)
+            flen = [
+                int(np.asarray(inputs["feature_attention_mask"]).sum(-1).reshape(-1)[0])
+            ]
             gen_ids = self.model.generate(
                 input_ids,
                 max_new_tokens=int(max_new_tokens),

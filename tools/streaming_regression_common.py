@@ -20,9 +20,27 @@ class StreamingCaseSpec:
 
 
 DEFAULT_STREAMING_CASES: tuple[StreamingCaseSpec, ...] = (
-    StreamingCaseSpec(name="short_default_15s", start_sec=0.0, duration_sec=15.0, context="", language=None),
-    StreamingCaseSpec(name="short_context_15s", start_sec=0.0, duration_sec=15.0, context="交易 停滞", language=None),
-    StreamingCaseSpec(name="short_forced_language_15s", start_sec=0.0, duration_sec=15.0, context="", language="English"),
+    StreamingCaseSpec(
+        name="short_default_15s",
+        start_sec=0.0,
+        duration_sec=15.0,
+        context="",
+        language=None,
+    ),
+    StreamingCaseSpec(
+        name="short_context_15s",
+        start_sec=0.0,
+        duration_sec=15.0,
+        context="交易 停滞",
+        language=None,
+    ),
+    StreamingCaseSpec(
+        name="short_forced_language_15s",
+        start_sec=0.0,
+        duration_sec=15.0,
+        context="",
+        language="English",
+    ),
 )
 
 DEFAULT_STEP_MS: tuple[int, ...] = (500, 2000)
@@ -55,7 +73,9 @@ def selected_default_cases(names: set[str] | None) -> list[StreamingCaseSpec]:
     available = {case.name for case in cases}
     unknown = sorted(names.difference(available))
     if unknown:
-        raise ValueError(f"Unknown streaming cases: {unknown}. Available: {sorted(available)}")
+        raise ValueError(
+            f"Unknown streaming cases: {unknown}. Available: {sorted(available)}"
+        )
     return [case for case in cases if case.name in names]
 
 
@@ -308,14 +328,22 @@ def run_streaming_case(
             "model_decode_updates": model_decode_updates,
             "finish_decode_steps": finish_decode_steps,
             "audio_duration_sec": round(audio.shape[0] / float(sample_rate), 6),
-            "first_text_audio_ms": round(first_text_audio_ms, 3) if first_text_audio_ms is not None else None,
+            "first_text_audio_ms": round(first_text_audio_ms, 3)
+            if first_text_audio_ms is not None
+            else None,
         },
     }
     if include_internal_stats:
-        payload["metrics"]["spec_decode_stats"] = dict(getattr(state, "spec_decode_stats", {}) or {})
+        payload["metrics"]["spec_decode_stats"] = dict(
+            getattr(state, "spec_decode_stats", {}) or {}
+        )
     if timed:
-        active_update_walls = [item["wall_sec"] for item in event_timings if item["decode_steps"] > 0]
-        all_push_walls = [item["wall_sec"] for item in event_timings if item["event"] == "push"]
+        active_update_walls = [
+            item["wall_sec"] for item in event_timings if item["decode_steps"] > 0
+        ]
+        all_push_walls = [
+            item["wall_sec"] for item in event_timings if item["event"] == "push"
+        ]
         payload["timing"] = {
             "total_wall_sec": round(total_wall, 4),
             "active_update_wall": summarize_seconds(active_update_walls),

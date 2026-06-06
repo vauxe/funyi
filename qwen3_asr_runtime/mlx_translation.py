@@ -5,6 +5,7 @@ The public methods mirror ``translation.HYMTTranslator`` so the realtime
 translation actor can drive torch and MLX translators the same way. CUDA-only
 kwargs are accepted and ignored on this path.
 """
+
 from __future__ import annotations
 
 import time
@@ -48,7 +49,9 @@ class MLXHYMTTranslator:
                 "sampling is not implemented on the MLX backend."
             )
 
-        resolved = resolve_model_dir(self.model_path, local_files_only=local_files_only, revision=model_revision)
+        resolved = resolve_model_dir(
+            self.model_path, local_files_only=local_files_only, revision=model_revision
+        )
         self.tokenizer = _load_tokenizer(resolved, local_files_only=local_files_only)
         self.model, self.config = load_mlx_hunyuan(resolved, dtype=self.dtype)
         self.resolved_model_commit = snapshot_commit(resolved)
@@ -135,7 +138,9 @@ class MLXHYMTTranslator:
         if not target:
             raise ValueError("target_language must not be empty")
 
-        prompt = build_hymt_prompt(source_text, target_language=target, source_language=source_language)
+        prompt = build_hymt_prompt(
+            source_text, target_language=target, source_language=source_language
+        )
 
         encode_started = time.perf_counter()
         input_np = self._encode_prompt(prompt)
@@ -146,7 +151,9 @@ class MLXHYMTTranslator:
         generated = self.model.generate(
             input_ids,
             max_new_tokens=int(
-                max_new_tokens if max_new_tokens is not None else self.generation_config.max_new_tokens
+                max_new_tokens
+                if max_new_tokens is not None
+                else self.generation_config.max_new_tokens
             ),
             eos_token_ids=self.config.eos_token_ids,
             repetition_penalty=float(self.generation_config.repetition_penalty),
@@ -202,8 +209,14 @@ def _load_tokenizer(resolved: str, *, local_files_only: bool) -> Any:
         d = Path(resolved)
         cfg_path = d / "tokenizer_config.json"
         tc = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
-        special = {k: tc[k] for k in ("bos_token", "eos_token", "pad_token", "unk_token") if tc.get(k)}
-        tok = PreTrainedTokenizerFast(tokenizer_file=str(d / "tokenizer.json"), **special)
+        special = {
+            k: tc[k]
+            for k in ("bos_token", "eos_token", "pad_token", "unk_token")
+            if tc.get(k)
+        }
+        tok = PreTrainedTokenizerFast(
+            tokenizer_file=str(d / "tokenizer.json"), **special
+        )
         jinja = d / "chat_template.jinja"
         if jinja.exists():
             tok.chat_template = jinja.read_text(encoding="utf-8")

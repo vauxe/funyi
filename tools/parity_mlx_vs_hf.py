@@ -16,6 +16,7 @@ Examples:
         --wav local_data/e2e_en_espeak_20260522T201810.wav --seconds 6 --dtype float32
     uv run python tools/parity_mlx_vs_hf.py --model <path> --dtype bfloat16 --max-cer 0.02
 """
+
 from __future__ import annotations
 
 import argparse
@@ -41,6 +42,7 @@ def _load_clip(path: str, seconds: float) -> np.ndarray:
     if seconds and seconds > 0:
         wav = wav[: int(seconds * SAMPLE_RATE)]
     return np.asarray(wav, dtype=np.float32)
+
 
 PROMPT_MESSAGES = [
     {"role": "system", "content": ""},
@@ -74,31 +76,69 @@ def _patch_hf_audio_windowing() -> None:
 
     orig = M.eager_attention_forward
 
-    def windowed(module, query, key, value, attention_mask, scaling, dropout=0.0, **kwargs):
+    def windowed(
+        module, query, key, value, attention_mask, scaling, dropout=0.0, **kwargs
+    ):
         cu = kwargs.get("cu_seq_lens_q")
         if attention_mask is None and cu is not None:
             s = query.shape[-2]
-            m = torch.full((1, 1, s, s), torch.finfo(query.dtype).min, dtype=query.dtype, device=query.device)
+            m = torch.full(
+                (1, 1, s, s),
+                torch.finfo(query.dtype).min,
+                dtype=query.dtype,
+                device=query.device,
+            )
             cu_list = cu.tolist() if hasattr(cu, "tolist") else list(cu)
             for i in range(1, len(cu_list)):
                 a, b = int(cu_list[i - 1]), int(cu_list[i])
                 m[..., a:b, a:b] = 0
             attention_mask = m
-        return orig(module, query, key, value, attention_mask, scaling, dropout=dropout, **kwargs)
+        return orig(
+            module,
+            query,
+            key,
+            value,
+            attention_mask,
+            scaling,
+            dropout=dropout,
+            **kwargs,
+        )
 
     M.eager_attention_forward = windowed
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", required=True, help="HF id or local path of Qwen3-ASR-0.6B")
-    ap.add_argument("--wav", action="append", default=None, help="audio file(s); repeatable")
-    ap.add_argument("--seconds", type=float, default=6.0, help="trim each clip to N seconds (0 = full)")
-    ap.add_argument("--dtype", default="float32", help="MLX compute dtype (float32 for strict parity)")
+    ap.add_argument(
+        "--model", required=True, help="HF id or local path of Qwen3-ASR-0.6B"
+    )
+    ap.add_argument(
+        "--wav", action="append", default=None, help="audio file(s); repeatable"
+    )
+    ap.add_argument(
+        "--seconds",
+        type=float,
+        default=6.0,
+        help="trim each clip to N seconds (0 = full)",
+    )
+    ap.add_argument(
+        "--dtype",
+        default="float32",
+        help="MLX compute dtype (float32 for strict parity)",
+    )
     ap.add_argument("--hf-dtype", default="float32", help="HF reference dtype")
     ap.add_argument("--max-new-tokens", type=int, default=256)
-    ap.add_argument("--max-cer", type=float, default=0.02, help="gate: mean CER vs reference must be <=")
-    ap.add_argument("--reference-json", default=None, help="JSON {wav_basename: text} to gate against instead of live HF")
+    ap.add_argument(
+        "--max-cer",
+        type=float,
+        default=0.02,
+        help="gate: mean CER vs reference must be <=",
+    )
+    ap.add_argument(
+        "--reference-json",
+        default=None,
+        help="JSON {wav_basename: text} to gate against instead of live HF",
+    )
     args = ap.parse_args()
 
     import mlx.core as mx
@@ -107,7 +147,9 @@ def main() -> int:
 
     wavs = args.wav or ["local_data/e2e_en_espeak_20260522T201810.wav"]
     processor = _build_processor(args.model)
-    prompt = processor.apply_chat_template(PROMPT_MESSAGES, add_generation_prompt=True, tokenize=False)
+    prompt = processor.apply_chat_template(
+        PROMPT_MESSAGES, add_generation_prompt=True, tokenize=False
+    )
 
     ml, cfg = load_mlx_qwen3_asr(args.model, dtype=args.dtype)
     eos = cfg.eos_token_ids
@@ -130,16 +172,25 @@ def main() -> int:
     cers, token_matches, audio_diffs = [], [], []
     for wav_path in wavs:
         wav = _load_clip(wav_path, args.seconds)
-        inputs = processor(text=[prompt], audio=[wav], return_tensors="np", padding=True)
+        inputs = processor(
+            text=[prompt], audio=[wav], return_tensors="np", padding=True
+        )
         ids = np.asarray(inputs["input_ids"]).astype(np.int32)
         feats = np.asarray(inputs["input_features"], dtype=np.float32)
-        flen = [int(np.asarray(inputs["feature_attention_mask"]).sum(-1).reshape(-1)[0])]
+        flen = [
+            int(np.asarray(inputs["feature_attention_mask"]).sum(-1).reshape(-1)[0])
+        ]
 
         ml_gen = ml.generate(
-            mx.array(ids), max_new_tokens=args.max_new_tokens, eos_token_ids=eos,
-            input_features=mx.array(feats).astype(ml.compute_dtype), feature_lengths=flen,
+            mx.array(ids),
+            max_new_tokens=args.max_new_tokens,
+            eos_token_ids=eos,
+            input_features=mx.array(feats).astype(ml.compute_dtype),
+            feature_lengths=flen,
         )
-        ml_text = processor.tokenizer.decode(ml_gen, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+        ml_text = processor.tokenizer.decode(
+            ml_gen, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )
 
         name = Path(wav_path).name
         if reference is not None:
@@ -150,9 +201,16 @@ def main() -> int:
             import torch
 
             with torch.no_grad():
-                hf_af = hf.thinker.get_audio_features(
-                    torch.tensor(feats), feature_attention_mask=torch.tensor(np.asarray(inputs["feature_attention_mask"]))
-                ).float().numpy()
+                hf_af = (
+                    hf.thinker.get_audio_features(
+                        torch.tensor(feats),
+                        feature_attention_mask=torch.tensor(
+                            np.asarray(inputs["feature_attention_mask"])
+                        ),
+                    )
+                    .float()
+                    .numpy()
+                )
                 ml_af = np.asarray(
                     ml.get_audio_features(mx.array(feats), flen).astype(mx.float32)
                 )
@@ -161,13 +219,19 @@ def main() -> int:
                     input_ids=torch.tensor(ids.astype(np.int64)),
                     input_features=torch.tensor(feats),
                     attention_mask=torch.tensor(np.asarray(inputs["attention_mask"])),
-                    feature_attention_mask=torch.tensor(np.asarray(inputs["feature_attention_mask"])),
+                    feature_attention_mask=torch.tensor(
+                        np.asarray(inputs["feature_attention_mask"])
+                    ),
                     max_new_tokens=args.max_new_tokens,
                 )
             seq = res.sequences if hasattr(res, "sequences") else res
-            hf_gen = [t for t in seq[0, ids.shape[1]:].tolist() if t not in set(eos)]
-            ref_text = processor.tokenizer.decode(hf_gen, skip_special_tokens=True, clean_up_tokenization_spaces=False)
-            token_match = sum(1 for a, b in zip(hf_gen, ml_gen) if a == b) / max(1, max(len(hf_gen), len(ml_gen)))
+            hf_gen = [t for t in seq[0, ids.shape[1] :].tolist() if t not in set(eos)]
+            ref_text = processor.tokenizer.decode(
+                hf_gen, skip_special_tokens=True, clean_up_tokenization_spaces=False
+            )
+            token_match = sum(1 for a, b in zip(hf_gen, ml_gen) if a == b) / max(
+                1, max(len(hf_gen), len(ml_gen))
+            )
             audio_diffs.append(audio_diff)
             token_matches.append(token_match)
 
@@ -175,7 +239,9 @@ def main() -> int:
         cers.append(cer)
         print(f"\n=== {name} (dur~{args.seconds}s) ===")
         if audio_diff is not None:
-            print(f"  audio-feat max|diff| = {audio_diff:.2e}   token-match = {token_match:.3f}")
+            print(
+                f"  audio-feat max|diff| = {audio_diff:.2e}   token-match = {token_match:.3f}"
+            )
         print(f"  CER vs reference     = {cer:.4f}")
         print(f"  MLX : {ml_text!r}")
         print(f"  REF : {ref_text!r}")
@@ -183,7 +249,9 @@ def main() -> int:
     mean_cer = sum(cers) / len(cers)
     print(f"\nmean CER = {mean_cer:.4f} over {len(cers)} clip(s) (dtype={args.dtype})")
     if audio_diffs:
-        print(f"max audio-feat diff = {max(audio_diffs):.2e}  min token-match = {min(token_matches):.3f}")
+        print(
+            f"max audio-feat diff = {max(audio_diffs):.2e}  min token-match = {min(token_matches):.3f}"
+        )
     ok = mean_cer <= args.max_cer
     print("GATE:", "PASS" if ok else "FAIL", f"(threshold {args.max_cer})")
     return 0 if ok else 1

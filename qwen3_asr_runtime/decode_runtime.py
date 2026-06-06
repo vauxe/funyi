@@ -7,6 +7,7 @@ the normal HF forward (variable length, once per transcribe). Decode steps run
 against fixed-shape buffers and a StaticCache, and a single decode step is
 captured into a CUDA graph that is replayed for subsequent tokens.
 """
+
 from __future__ import annotations
 
 import time
@@ -21,10 +22,10 @@ from .cuda_serialization import CUDA_GRAPH_CAPTURE_LOCK
 
 @dataclass
 class DecodeBuffers:
-    input_ids: torch.Tensor          # [B, 1]
-    attention_mask: torch.Tensor     # [B, max_len]
-    cache_position: torch.Tensor     # [1]
-    position_ids: torch.Tensor       # [3, B, 1] multimodal rope positions
+    input_ids: torch.Tensor  # [B, 1]
+    attention_mask: torch.Tensor  # [B, max_len]
+    cache_position: torch.Tensor  # [1]
+    position_ids: torch.Tensor  # [3, B, 1] multimodal rope positions
 
 
 def _normalize_eos_ids(eos: Any) -> List[int]:
@@ -118,7 +119,9 @@ class CudaGraphDecoder:
 
     def freeze_runtime_capture(self) -> None:
         if self._graph is None:
-            raise RuntimeError("cannot freeze CUDA graph capture before a graph is captured")
+            raise RuntimeError(
+                "cannot freeze CUDA graph capture before a graph is captured"
+            )
         self._runtime_capture_enabled = False
 
     @property
@@ -180,7 +183,9 @@ class CudaGraphDecoder:
 
         rope_deltas = self.thinker.rope_deltas
         if rope_deltas is None:
-            raise RuntimeError("thinker.rope_deltas missing after prefill; cannot run decode loop.")
+            raise RuntimeError(
+                "thinker.rope_deltas missing after prefill; cannot run decode loop."
+            )
 
         return self._decode_after_prefill(
             input_ids=input_ids,
@@ -228,7 +233,9 @@ class CudaGraphDecoder:
 
         draft = [int(x) for x in draft_ids][:max_new_tokens]
         if not draft:
-            raise ValueError("generate_with_draft requires a non-empty draft; use generate() instead.")
+            raise ValueError(
+                "generate_with_draft requires a non-empty draft; use generate() instead."
+            )
 
         eos_set = set(_resolve_eos_token_ids(self.thinker, eos_token_id))
 
@@ -240,8 +247,10 @@ class CudaGraphDecoder:
         draft_t = torch.tensor([draft], dtype=input_ids.dtype, device=self.device)
         ext_input_ids = torch.cat([input_ids, draft_t], dim=1)
         ext_attention_mask = torch.cat(
-            [attention_mask,
-             torch.ones((1, K), dtype=attention_mask.dtype, device=self.device)],
+            [
+                attention_mask,
+                torch.ones((1, K), dtype=attention_mask.dtype, device=self.device),
+            ],
             dim=1,
         )
         ext_len = prompt_len + K
@@ -259,8 +268,8 @@ class CudaGraphDecoder:
             use_cache=True,
             return_dict=True,
         )
-        verify_logits = prefill_out.logits[0, :, :]                         # [K+1, V]
-        preds = verify_logits.argmax(dim=-1).tolist()                       # [K+1]
+        verify_logits = prefill_out.logits[0, :, :]  # [K+1, V]
+        preds = verify_logits.argmax(dim=-1).tolist()  # [K+1]
 
         accepted = 0
         for j in range(K):
@@ -285,7 +294,9 @@ class CudaGraphDecoder:
 
         rope_deltas = self.thinker.rope_deltas
         if rope_deltas is None:
-            raise RuntimeError("thinker.rope_deltas missing after prefill; cannot run decode loop.")
+            raise RuntimeError(
+                "thinker.rope_deltas missing after prefill; cannot run decode loop."
+            )
 
         effective_len = prompt_len + accepted
         prefill_cache.crop(effective_len)
@@ -330,7 +341,9 @@ class CudaGraphDecoder:
         """
         batch = 1
         prompt_len = int(prompt_attention_mask.shape[1])
-        buffers = self._ensure_decode_buffers(max_len=max_len, batch=batch, ref_ids=input_ids)
+        buffers = self._ensure_decode_buffers(
+            max_len=max_len, batch=batch, ref_ids=input_ids
+        )
         graph_len = int(buffers.attention_mask.shape[1])
         buffers.attention_mask[:, :prompt_len] = prompt_attention_mask
         buffers.attention_mask[:, prompt_len:].zero_()
@@ -409,14 +422,18 @@ class CudaGraphDecoder:
 
     # ---------- internals ----------
 
-    def _copy_dynamic_to_static(self, dyn: DynamicCache, static: StaticCache, prompt_len: int) -> None:
+    def _copy_dynamic_to_static(
+        self, dyn: DynamicCache, static: StaticCache, prompt_len: int
+    ) -> None:
         if self._profile_callback is None:
             self._copy_dynamic_to_static_impl(dyn, static, prompt_len)
             return
         with self._profile_section("cuda_graph.cache_copy_dynamic_to_static"):
             self._copy_dynamic_to_static_impl(dyn, static, prompt_len)
 
-    def _copy_dynamic_to_static_impl(self, dyn: DynamicCache, static: StaticCache, prompt_len: int) -> None:
+    def _copy_dynamic_to_static_impl(
+        self, dyn: DynamicCache, static: StaticCache, prompt_len: int
+    ) -> None:
         for layer_idx in range(self.num_layers):
             dyn_layer = dyn.layers[layer_idx]
             k, v = dyn_layer.keys, dyn_layer.values
@@ -455,7 +472,11 @@ class CudaGraphDecoder:
     def _ensure_static_cache(self, *, max_len: int, batch: int) -> StaticCache:
         max_len = self._reserve_len(max_len)
         cache = self._static_cache
-        if cache is None or cache.max_cache_len < max_len or cache.max_batch_size < batch:
+        if (
+            cache is None
+            or cache.max_cache_len < max_len
+            or cache.max_batch_size < batch
+        ):
             if not self._runtime_capture_enabled:
                 cached_len = 0 if cache is None else int(cache.max_cache_len)
                 raise CudaGraphCaptureRequired(
@@ -475,7 +496,9 @@ class CudaGraphDecoder:
         cache.reset()
         return cache
 
-    def _ensure_decode_buffers(self, *, max_len: int, batch: int, ref_ids: torch.Tensor) -> DecodeBuffers:
+    def _ensure_decode_buffers(
+        self, *, max_len: int, batch: int, ref_ids: torch.Tensor
+    ) -> DecodeBuffers:
         max_len = self._reserve_len(max_len)
         buffers = self._buffers
         if (
@@ -484,17 +507,25 @@ class CudaGraphDecoder:
             or buffers.attention_mask.shape[1] < max_len
         ):
             if not self._runtime_capture_enabled:
-                cached_len = 0 if buffers is None else int(buffers.attention_mask.shape[1])
+                cached_len = (
+                    0 if buffers is None else int(buffers.attention_mask.shape[1])
+                )
                 raise CudaGraphCaptureRequired(
                     f"frozen CUDA graph buffers are too small: requested max_len={max_len}, "
                     f"cached max_len={cached_len}"
                 )
             self.reset_graph()
             self._buffers = DecodeBuffers(
-                input_ids=torch.zeros(batch, 1, dtype=ref_ids.dtype, device=self.device),
-                attention_mask=torch.zeros(batch, max_len, dtype=torch.long, device=self.device),
+                input_ids=torch.zeros(
+                    batch, 1, dtype=ref_ids.dtype, device=self.device
+                ),
+                attention_mask=torch.zeros(
+                    batch, max_len, dtype=torch.long, device=self.device
+                ),
                 cache_position=torch.zeros(1, dtype=torch.long, device=self.device),
-                position_ids=torch.zeros(3, batch, 1, dtype=torch.long, device=self.device),
+                position_ids=torch.zeros(
+                    3, batch, 1, dtype=torch.long, device=self.device
+                ),
             )
             return self._buffers
         return buffers
@@ -506,11 +537,15 @@ class CudaGraphDecoder:
         max_len = int(max_len)
         return ((max_len + bucket - 1) // bucket) * bucket
 
-    def _update_position_ids(self, buffers: DecodeBuffers, rope_deltas: torch.Tensor) -> None:
+    def _update_position_ids(
+        self, buffers: DecodeBuffers, rope_deltas: torch.Tensor
+    ) -> None:
         # Match thinker.forward's decode branch: position = cache_position[0] + rope_deltas
         # with seq_length=1 so every cell of [3,1,1] holds the same scalar.
         delta = buffers.cache_position[0] + rope_deltas.view(-1)[0]
-        buffers.position_ids.copy_(delta.to(buffers.position_ids.dtype).expand_as(buffers.position_ids))
+        buffers.position_ids.copy_(
+            delta.to(buffers.position_ids.dtype).expand_as(buffers.position_ids)
+        )
 
     def _decode_forward(
         self,
@@ -572,13 +607,17 @@ class CudaGraphDecoder:
             self._graph = graph
             self._graph_max_len = int(buffers.attention_mask.shape[1])
 
-    def _build_output(self, input_ids: torch.Tensor, generated: Sequence[int]) -> torch.Tensor:
+    def _build_output(
+        self, input_ids: torch.Tensor, generated: Sequence[int]
+    ) -> torch.Tensor:
         prompt_len = input_ids.shape[1]
         total = prompt_len + len(generated)
         out = torch.empty(1, total, dtype=input_ids.dtype, device=self.device)
         out[:, :prompt_len] = input_ids
         if generated:
-            out[0, prompt_len:] = torch.tensor(list(generated), dtype=input_ids.dtype, device=self.device)
+            out[0, prompt_len:] = torch.tensor(
+                list(generated), dtype=input_ids.dtype, device=self.device
+            )
         return out
 
 

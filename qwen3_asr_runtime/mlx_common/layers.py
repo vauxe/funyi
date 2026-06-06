@@ -5,6 +5,7 @@ RMSNorm keeps the reference's float32 variance accumulation via the fused
 mx.fast.rms_norm kernel; numerically equivalent to a hand-rolled variant but
 much faster because there are many RMSNorm calls per token.
 """
+
 from __future__ import annotations
 
 import mlx.core as mx

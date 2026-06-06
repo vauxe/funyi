@@ -1,5 +1,6 @@
 # coding=utf-8
 """Opt-in W8A16 linears for the fused text decoder."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -169,7 +170,9 @@ class W8A16Linear(nn.Module):
         if linear.bias is not None:
             raise RuntimeError("W8A16Linear only supports bias=False linears")
         if prefill_gemm not in ("triton", "cublas"):
-            raise ValueError(f"prefill_gemm must be 'triton' or 'cublas', got {prefill_gemm!r}")
+            raise ValueError(
+                f"prefill_gemm must be 'triton' or 'cublas', got {prefill_gemm!r}"
+            )
         # Multi-token (prefill) GEMM path. 'triton' is the fp32-ieee Triton kernel
         # (kept for the ASR offline path, numerically matched to the GEMV). 'cublas'
         # dequantizes to the activation dtype and uses cuBLAS BF16 — faster for
@@ -183,7 +186,11 @@ class W8A16Linear(nn.Module):
         with torch.no_grad():
             weight = linear.weight.detach()
             scales = (weight.abs().amax(dim=1).float() / 127.0).clamp_min(1e-8)
-            weight_q = torch.round(weight.float() / scales[:, None]).clamp(-128, 127).to(torch.int8)
+            weight_q = (
+                torch.round(weight.float() / scales[:, None])
+                .clamp(-128, 127)
+                .to(torch.int8)
+            )
         self.register_buffer("weight_q", weight_q.contiguous(), persistent=False)
         self.register_buffer("scales", scales.contiguous(), persistent=False)
 
@@ -205,7 +212,9 @@ class W8A16Linear(nn.Module):
             and x.dtype in (torch.bfloat16, torch.float16)
         ):
             if self._prefill_gemm == "cublas":
-                weight = self.weight_q.to(x.dtype) * self.scales.to(x.dtype).unsqueeze(1)
+                weight = self.weight_q.to(x.dtype) * self.scales.to(x.dtype).unsqueeze(
+                    1
+                )
                 return torch.nn.functional.linear(x, weight)
             return _w8a16_gemm(x.contiguous(), self.weight_q, self.scales)
         raise RuntimeError(
@@ -274,8 +283,14 @@ def patch_linears_w8a16(
             and mod.weight.dtype in (torch.bfloat16, torch.float16)
             and name.endswith(tuple(suffixes))
         ):
-            parent = model.get_submodule(name.rsplit(".", 1)[0]) if "." in name else model
-            setattr(parent, name.rsplit(".", 1)[-1], W8A16Linear(mod, prefill_gemm=prefill_gemm))
+            parent = (
+                model.get_submodule(name.rsplit(".", 1)[0]) if "." in name else model
+            )
+            setattr(
+                parent,
+                name.rsplit(".", 1)[-1],
+                W8A16Linear(mod, prefill_gemm=prefill_gemm),
+            )
             count += 1
     if warmup and count:
         warmup_quantized_linears(model)

@@ -4,6 +4,7 @@ Profile decode step with record_function spans on named sub-blocks of the
 text decoder so we know which block (rotary, rmsnorm, attention, mlp,
 lm_head, cache.update) dominates.
 """
+
 from __future__ import annotations
 
 import sys
@@ -25,12 +26,17 @@ from transformers.cache_utils import DynamicCache
 
 def main() -> None:
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--flashinfer", action="store_true")
     parser.add_argument("--fused-rmsnorm", action="store_true")
     parser.add_argument("--fused-linears", action="store_true")
     parser.add_argument("--quantized-linears", action="store_true")
-    parser.add_argument("--audio", required=True, help="Local 16 kHz audio file used to build the profile prompt.")
+    parser.add_argument(
+        "--audio",
+        required=True,
+        help="Local 16 kHz audio file used to build the profile prompt.",
+    )
     parser.add_argument("--start-sec", type=float, default=0.0)
     parser.add_argument("--duration-sec", type=float, default=60.0)
     cli = parser.parse_args()
@@ -56,9 +62,11 @@ def main() -> None:
     # Wrap known submodules with record_function spans.
     def wrap_call(obj, name):
         orig = obj.forward
+
         def patched(*args, **kwargs):
             with record_function(name):
                 return orig(*args, **kwargs)
+
         obj.forward = patched
 
     wrap_call(thinker.model.rotary_emb, "rotary_emb")
@@ -97,8 +105,16 @@ def main() -> None:
     if wav.ndim > 1:
         wav = wav.mean(axis=1)
     prompt = model._build_text_prompt(context="", force_language=None)
-    inputs = processor(text=[prompt], audio=[wav.astype(np.float32)],
-                       return_tensors="pt", padding=True).to("cuda:0").to(torch.bfloat16)
+    inputs = (
+        processor(
+            text=[prompt],
+            audio=[wav.astype(np.float32)],
+            return_tensors="pt",
+            padding=True,
+        )
+        .to("cuda:0")
+        .to(torch.bfloat16)
+    )
     prompt_len = int(inputs["input_ids"].shape[1])
 
     thinker.rope_deltas = None
@@ -121,12 +137,26 @@ def main() -> None:
         for _ in range(3):  # warmup
             cur_len = int(attention_mask.shape[1])
             cp = torch.tensor([cur_len], device="cuda:0", dtype=torch.long)
-            pd = torch.arange(1, device="cuda:0").view(1, -1).add(
-                cp[0] + rope_deltas.view(-1)[0]).unsqueeze(0).expand(3, 1, 1)
-            out = thinker(input_ids=next_tok, attention_mask=attention_mask, position_ids=pd,
-                          past_key_values=cache, cache_position=cp, use_cache=True, return_dict=True)
+            pd = (
+                torch.arange(1, device="cuda:0")
+                .view(1, -1)
+                .add(cp[0] + rope_deltas.view(-1)[0])
+                .unsqueeze(0)
+                .expand(3, 1, 1)
+            )
+            out = thinker(
+                input_ids=next_tok,
+                attention_mask=attention_mask,
+                position_ids=pd,
+                past_key_values=cache,
+                cache_position=cp,
+                use_cache=True,
+                return_dict=True,
+            )
             next_tok = out.logits[:, -1, :].argmax(dim=-1).view(1, 1)
-            attention_mask = torch.cat([attention_mask, attention_mask.new_ones((1, 1))], dim=-1)
+            attention_mask = torch.cat(
+                [attention_mask, attention_mask.new_ones((1, 1))], dim=-1
+            )
         torch.cuda.synchronize()
 
         N = 20
@@ -134,42 +164,82 @@ def main() -> None:
             for _ in range(N):
                 cur_len = int(attention_mask.shape[1])
                 cp = torch.tensor([cur_len], device="cuda:0", dtype=torch.long)
-                pd = torch.arange(1, device="cuda:0").view(1, -1).add(
-                    cp[0] + rope_deltas.view(-1)[0]).unsqueeze(0).expand(3, 1, 1)
+                pd = (
+                    torch.arange(1, device="cuda:0")
+                    .view(1, -1)
+                    .add(cp[0] + rope_deltas.view(-1)[0])
+                    .unsqueeze(0)
+                    .expand(3, 1, 1)
+                )
                 with record_function("STEP"):
-                    out = thinker(input_ids=next_tok, attention_mask=attention_mask, position_ids=pd,
-                                  past_key_values=cache, cache_position=cp, use_cache=True, return_dict=True)
+                    out = thinker(
+                        input_ids=next_tok,
+                        attention_mask=attention_mask,
+                        position_ids=pd,
+                        past_key_values=cache,
+                        cache_position=cp,
+                        use_cache=True,
+                        return_dict=True,
+                    )
                     next_tok = out.logits[:, -1, :].argmax(dim=-1).view(1, 1)
-                    attention_mask = torch.cat([attention_mask, attention_mask.new_ones((1, 1))], dim=-1)
+                    attention_mask = torch.cat(
+                        [attention_mask, attention_mask.new_ones((1, 1))], dim=-1
+                    )
             torch.cuda.synchronize()
 
     # Filter to our named regions + STEP
     events = prof.key_averages()
     # Also dump the top aten ops globally to account for the 'missing' 40%.
     print("=== TOP ATEN OPS BY CUDA TIME ===")
-    all_rows = sorted(events, key=lambda e: -(getattr(e, "self_device_time_total", 0) or 0))
+    all_rows = sorted(
+        events, key=lambda e: -(getattr(e, "self_device_time_total", 0) or 0)
+    )
     for e in all_rows[:25]:
         cu = getattr(e, "self_device_time_total", 0) or getattr(e, "cuda_time_total", 0)
-        print(f"  {e.key[:40]:40s}  cuda_ms={cu/1000:.2f}  count={e.count}")
+        print(f"  {e.key[:40]:40s}  cuda_ms={cu / 1000:.2f}  count={e.count}")
     print()
-    wanted = {"STEP", "rotary_emb", "lm_head", "rmsnorm", "qk_norm", "self_attn", "mlp",
-              "q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"}
+    wanted = {
+        "STEP",
+        "rotary_emb",
+        "lm_head",
+        "rmsnorm",
+        "qk_norm",
+        "self_attn",
+        "mlp",
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    }
     rows = [e for e in events if e.key in wanted]
+
     def cuda_us(e):
         # Works on both FunctionEventAvg and FunctionEvent
-        for attr in ("self_device_time_total", "device_time_total", "self_cuda_time_total", "cuda_time_total"):
+        for attr in (
+            "self_device_time_total",
+            "device_time_total",
+            "self_cuda_time_total",
+            "cuda_time_total",
+        ):
             v = getattr(e, attr, None)
             if v:
                 return v
         return 0.0
 
     rows.sort(key=lambda e: -cuda_us(e))
-    print(f"{'region':12s} {'cuda_ms_total':>14s} {'cuda_ms_avg':>12s} {'cpu_ms_total':>13s} {'count':>6s}")
+    print(
+        f"{'region':12s} {'cuda_ms_total':>14s} {'cuda_ms_avg':>12s} {'cpu_ms_total':>13s} {'count':>6s}"
+    )
     for e in rows:
         cu = cuda_us(e)
         cp = getattr(e, "cpu_time_total", 0.0) or getattr(e, "self_cpu_time_total", 0.0)
-        print(f"{e.key:12s} {cu/1000:>14.2f} {cu/max(1,e.count)/1000:>12.3f} "
-              f"{cp/1000:>13.2f} {e.count:>6d}")
+        print(
+            f"{e.key:12s} {cu / 1000:>14.2f} {cu / max(1, e.count) / 1000:>12.3f} "
+            f"{cp / 1000:>13.2f} {e.count:>6d}"
+        )
 
 
 if __name__ == "__main__":

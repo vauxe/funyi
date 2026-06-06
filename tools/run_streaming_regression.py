@@ -20,28 +20,75 @@ from tools.streaming_regression_common import (
     parse_name_filter,
     run_streaming_case,
 )
-from tools.runtime_helpers import _default_attn_implementation, _dispose_model, _resolve_dtype, _set_seed
+from tools.runtime_helpers import (
+    _default_attn_implementation,
+    _dispose_model,
+    _resolve_dtype,
+    _set_seed,
+)
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run runtime streaming regression against a local golden.")
-    parser.add_argument("--golden", default="local_goldens/streaming_regression.json", help="Streaming regression golden JSON")
+    parser = argparse.ArgumentParser(
+        description="Run runtime streaming regression against a local golden."
+    )
+    parser.add_argument(
+        "--golden",
+        default="local_goldens/streaming_regression.json",
+        help="Streaming regression golden JSON",
+    )
     parser.add_argument("--model", default=None, help="Optional model override")
     parser.add_argument("--audio", default=None, help="Optional audio override")
-    parser.add_argument("--dtype", default=None, choices=["float32", "float16", "bfloat16"], help="Optional dtype override")
-    parser.add_argument("--device-map", default=None, help="Optional device_map override")
-    parser.add_argument("--attn-implementation", default=None, help="Optional attn_implementation override")
+    parser.add_argument(
+        "--dtype",
+        default=None,
+        choices=["float32", "float16", "bfloat16"],
+        help="Optional dtype override",
+    )
+    parser.add_argument(
+        "--device-map", default=None, help="Optional device_map override"
+    )
+    parser.add_argument(
+        "--attn-implementation",
+        default=None,
+        help="Optional attn_implementation override",
+    )
     parser.add_argument("--seed", type=int, default=None, help="Optional seed override")
     parser.add_argument("--max-new-tokens", type=int, default=None)
     parser.add_argument("--max-inference-batch-size", type=int, default=None)
-    parser.add_argument("--cases", default=None, help="Comma separated case names to run. Default: all")
-    parser.add_argument("--step-ms", default=None, help="Comma separated push step sizes. Default: golden config")
-    parser.add_argument("--cuda-graph", action="store_true", help="Use CUDA graph decode loop.")
-    parser.add_argument("--cuda-graph-len-bucket", type=int, default=1, help="Round CUDA graph/cache length up to this token bucket.")
-    parser.add_argument("--flashinfer", action="store_true", help="Use FlashInfer decode attention.")
-    parser.add_argument("--fused-rmsnorm", action="store_true", help="Patch RMSNorm modules to F.rms_norm.")
-    parser.add_argument("--fused-linears", action="store_true", help="Fuse q/k/v and gate/up linears.")
-    parser.add_argument("--quantized-linears", action="store_true", help="Use W8A16 for fused qkv/gate_up.")
+    parser.add_argument(
+        "--cases", default=None, help="Comma separated case names to run. Default: all"
+    )
+    parser.add_argument(
+        "--step-ms",
+        default=None,
+        help="Comma separated push step sizes. Default: golden config",
+    )
+    parser.add_argument(
+        "--cuda-graph", action="store_true", help="Use CUDA graph decode loop."
+    )
+    parser.add_argument(
+        "--cuda-graph-len-bucket",
+        type=int,
+        default=1,
+        help="Round CUDA graph/cache length up to this token bucket.",
+    )
+    parser.add_argument(
+        "--flashinfer", action="store_true", help="Use FlashInfer decode attention."
+    )
+    parser.add_argument(
+        "--fused-rmsnorm",
+        action="store_true",
+        help="Patch RMSNorm modules to F.rms_norm.",
+    )
+    parser.add_argument(
+        "--fused-linears", action="store_true", help="Fuse q/k/v and gate/up linears."
+    )
+    parser.add_argument(
+        "--quantized-linears",
+        action="store_true",
+        help="Use W8A16 for fused qkv/gate_up.",
+    )
     return parser.parse_args()
 
 
@@ -50,13 +97,17 @@ def _assert_equal(name: str, expected: Any, actual: Any) -> None:
         return
     if isinstance(expected, list) and isinstance(actual, list):
         idx = first_diff_index(expected, actual)
-        exp_item = expected[idx] if idx is not None and idx < len(expected) else "<missing>"
+        exp_item = (
+            expected[idx] if idx is not None and idx < len(expected) else "<missing>"
+        )
         act_item = actual[idx] if idx is not None and idx < len(actual) else "<missing>"
         raise AssertionError(
             f"{name} mismatch at index {idx}:\nEXPECTED: {exp_item!r}\nACTUAL  : {act_item!r}\n"
             f"EXPECTED_LEN: {len(expected)} ACTUAL_LEN: {len(actual)}"
         )
-    raise AssertionError(f"{name} mismatch:\nEXPECTED: {expected!r}\nACTUAL  : {actual!r}")
+    raise AssertionError(
+        f"{name} mismatch:\nEXPECTED: {expected!r}\nACTUAL  : {actual!r}"
+    )
 
 
 def _steps_by_ms(case_payload: dict[str, Any]) -> dict[int, dict[str, Any]]:
@@ -84,7 +135,9 @@ def main() -> None:
 
     attn_implementation = args.attn_implementation
     if attn_implementation is None:
-        attn_implementation = load_kwargs.get("attn_implementation") or _default_attn_implementation(load_kwargs.get("device_map"))
+        attn_implementation = load_kwargs.get(
+            "attn_implementation"
+        ) or _default_attn_implementation(load_kwargs.get("device_map"))
     load_kwargs["attn_implementation"] = attn_implementation
 
     dtype_name = load_kwargs.pop("dtype")
@@ -100,8 +153,13 @@ def main() -> None:
         available_names = {str(case["name"]) for case in golden["cases"]}
         unknown_names = sorted(selected_names.difference(available_names))
         if unknown_names:
-            raise ValueError(f"Unknown streaming cases: {unknown_names}. Available: {sorted(available_names)}")
-    default_step_ms = tuple(int(item) for item in golden.get("streaming_config", {}).get("step_ms", DEFAULT_STEP_MS))
+            raise ValueError(
+                f"Unknown streaming cases: {unknown_names}. Available: {sorted(available_names)}"
+            )
+    default_step_ms = tuple(
+        int(item)
+        for item in golden.get("streaming_config", {}).get("step_ms", DEFAULT_STEP_MS)
+    )
     selected_steps = set(parse_int_list(args.step_ms, default=default_step_ms))
     streaming_config = golden["streaming_config"]
     max_window_sec = streaming_config.get("max_window_sec")
@@ -131,7 +189,11 @@ def main() -> None:
     model.eval()
     ran: list[str] = []
     try:
-        _assert_equal("supported_languages", golden["supported_languages"], model.get_supported_languages())
+        _assert_equal(
+            "supported_languages",
+            golden["supported_languages"],
+            model.get_supported_languages(),
+        )
         prompt_specs = {
             "default": {"context": "", "language": None},
             "context_only": {"context": "交易 停滞", "language": None},
@@ -141,16 +203,23 @@ def main() -> None:
             _assert_equal(
                 f"prompt[{name}]",
                 golden["prompts"][name],
-                model._build_text_prompt(context=spec["context"], force_language=spec["language"]),
+                model._build_text_prompt(
+                    context=spec["context"], force_language=spec["language"]
+                ),
             )
 
         for case_payload in golden["cases"]:
-            if selected_names is not None and case_payload["name"] not in selected_names:
+            if (
+                selected_names is not None
+                and case_payload["name"] not in selected_names
+            ):
                 continue
             step_payloads = _steps_by_ms(case_payload)
             missing_steps = sorted(selected_steps.difference(step_payloads))
             if missing_steps:
-                raise ValueError(f"Case {case_payload['name']} does not contain step_ms entries: {missing_steps}")
+                raise ValueError(
+                    f"Case {case_payload['name']} does not contain step_ms entries: {missing_steps}"
+                )
 
             sliced_audio = load_audio_window(
                 audio_path,
@@ -176,14 +245,30 @@ def main() -> None:
                     chunk_size_sec=float(streaming_config["chunk_size_sec"]),
                     unfixed_chunk_num=int(streaming_config["unfixed_chunk_num"]),
                     unfixed_token_num=int(streaming_config["unfixed_token_num"]),
-                    max_window_sec=float(max_window_sec) if max_window_sec is not None else None,
-                    max_prefix_tokens=int(max_prefix_tokens) if max_prefix_tokens is not None else None,
+                    max_window_sec=float(max_window_sec)
+                    if max_window_sec is not None
+                    else None,
+                    max_prefix_tokens=int(max_prefix_tokens)
+                    if max_prefix_tokens is not None
+                    else None,
                     timed=False,
                 )
                 expected = step_payloads[step_ms]
-                _assert_equal(f"case[{case.name}][{step_ms}].snapshots", expected["snapshots"], actual["snapshots"])
-                _assert_equal(f"case[{case.name}][{step_ms}].final", expected["final"], actual["final"])
-                _assert_equal(f"case[{case.name}][{step_ms}].metrics", expected["metrics"], actual["metrics"])
+                _assert_equal(
+                    f"case[{case.name}][{step_ms}].snapshots",
+                    expected["snapshots"],
+                    actual["snapshots"],
+                )
+                _assert_equal(
+                    f"case[{case.name}][{step_ms}].final",
+                    expected["final"],
+                    actual["final"],
+                )
+                _assert_equal(
+                    f"case[{case.name}][{step_ms}].metrics",
+                    expected["metrics"],
+                    actual["metrics"],
+                )
                 ran.append(f"{case.name}:{step_ms}")
     finally:
         model = None

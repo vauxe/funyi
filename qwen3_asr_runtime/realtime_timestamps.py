@@ -60,8 +60,12 @@ class AudioTimelineBuffer:
         self._chunks.append(chunk)
         self._sample_count += int(chunk.shape[0])
 
-    def crop(self, *, start_sample: int, end_sample: int, pad_samples: int = 0) -> tuple[np.ndarray, int]:
-        crop_start = max(int(self.start_sample), int(start_sample) - max(0, int(pad_samples)))
+    def crop(
+        self, *, start_sample: int, end_sample: int, pad_samples: int = 0
+    ) -> tuple[np.ndarray, int]:
+        crop_start = max(
+            int(self.start_sample), int(start_sample) - max(0, int(pad_samples))
+        )
         crop_end = min(int(self.end_sample), int(end_sample) + max(0, int(pad_samples)))
         if crop_end <= crop_start:
             return np.zeros((0,), dtype=np.float32), crop_start
@@ -118,7 +122,9 @@ class AudioTimelineBuffer:
 class TimestampModelActor:
     """Owns all calls into one forced-aligner model instance."""
 
-    def __init__(self, aligner: Any, *, executor: ThreadPoolExecutor | None = None) -> None:
+    def __init__(
+        self, aligner: Any, *, executor: ThreadPoolExecutor | None = None
+    ) -> None:
         self.aligner = aligner
         self._owns_executor = executor is None
         self._executor = executor or ThreadPoolExecutor(
@@ -136,7 +142,9 @@ class TimestampModelActor:
 
     def warmup(self, audio: np.ndarray, *, text: str, language: str) -> None:
         audio = normalize_pcm(audio)
-        future = self._executor.submit(self.aligner.align, audio=(audio, SAMPLE_RATE), text=text, language=language)
+        future = self._executor.submit(
+            self.aligner.align, audio=(audio, SAMPLE_RATE), text=text, language=language
+        )
         future.result()
 
     async def align_segment(
@@ -147,7 +155,9 @@ class TimestampModelActor:
         language: str,
         timeout_sec: float | None,
     ) -> tuple[float | None, float | None, str | None]:
-        result, error = await self.align_items(audio, text=text, language=language, timeout_sec=timeout_sec)
+        result, error = await self.align_items(
+            audio, text=text, language=language, timeout_sec=timeout_sec
+        )
         if error is not None or result is None:
             return None, None, error or "failed"
         items = list(getattr(result, "items", []) or [])
@@ -186,7 +196,9 @@ class TimestampModelActor:
         try:
             result = await _wait_future_result(
                 future,
-                timeout_sec=None if timeout_sec is None else max(0.001, float(timeout_sec)),
+                timeout_sec=None
+                if timeout_sec is None
+                else max(0.001, float(timeout_sec)),
             )
         except asyncio.TimeoutError:
             future.cancel()
@@ -201,7 +213,9 @@ class TimestampModelActor:
             self._executor.shutdown(wait=wait, cancel_futures=True)
 
     def _call_align(self, audio: np.ndarray, *, text: str, language: str) -> Any:
-        results = self.aligner.align(audio=(audio, SAMPLE_RATE), text=text, language=language)
+        results = self.aligner.align(
+            audio=(audio, SAMPLE_RATE), text=text, language=language
+        )
         if not results:
             raise RuntimeError("forced aligner returned no result")
         return results[0]
@@ -294,9 +308,15 @@ class RealtimeTimestampRuntime:
         for job in queued_jobs + list(jobs):
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
-                events.append(await self._timing_event(job, start_ms=None, end_ms=None, timing_status="failed"))
+                events.append(
+                    await self._timing_event(
+                        job, start_ms=None, end_ms=None, timing_status="failed"
+                    )
+                )
                 continue
-            events.append(await self._run_job(job, publish=False, timeout_sec=remaining))
+            events.append(
+                await self._run_job(job, publish=False, timeout_sec=remaining)
+            )
         return events
 
     async def _worker_loop(self) -> None:
@@ -312,7 +332,9 @@ class RealtimeTimestampRuntime:
                         job = self._stable_queue.popleft()
                 if job is None:
                     break
-                await self._run_job(job, publish=True, timeout_sec=self._finish_timeout_sec())
+                await self._run_job(
+                    job, publish=True, timeout_sec=self._finish_timeout_sec()
+                )
 
     async def _run_job(
         self,
@@ -322,7 +344,9 @@ class RealtimeTimestampRuntime:
         timeout_sec: float,
     ) -> dict[str, Any]:
         if job.source_language not in QWEN3_FORCED_ALIGNER_MODEL_CARD_LANGUAGES:
-            event = await self._timing_event(job, start_ms=None, end_ms=None, timing_status="failed")
+            event = await self._timing_event(
+                job, start_ms=None, end_ms=None, timing_status="failed"
+            )
         else:
             audio, crop_start_sample = self.audio_buffer.crop(
                 start_sample=job.start_sample,
@@ -339,7 +363,9 @@ class RealtimeTimestampRuntime:
                     int(self.audio_buffer.start_sample),
                     int(self.audio_buffer.end_sample),
                 )
-                event = await self._timing_event(job, start_ms=None, end_ms=None, timing_status="failed")
+                event = await self._timing_event(
+                    job, start_ms=None, end_ms=None, timing_status="failed"
+                )
             else:
                 start_sec, end_sec, _error_code = await self.model_actor.align_segment(
                     audio,
@@ -348,17 +374,28 @@ class RealtimeTimestampRuntime:
                     timeout_sec=timeout_sec,
                 )
                 if start_sec is None or end_sec is None:
-                    event = await self._timing_event(job, start_ms=None, end_ms=None, timing_status="failed")
+                    event = await self._timing_event(
+                        job, start_ms=None, end_ms=None, timing_status="failed"
+                    )
                 else:
-                    crop_start_ms = int(round(1000 * int(crop_start_sample) / SAMPLE_RATE))
+                    crop_start_ms = int(
+                        round(1000 * int(crop_start_sample) / SAMPLE_RATE)
+                    )
                     start_ms = crop_start_ms + int(round(start_sec * 1000))
                     end_ms = crop_start_ms + int(round(end_sec * 1000))
-                    event = await self._timing_event(job, start_ms=start_ms, end_ms=end_ms, timing_status="aligned")
+                    event = await self._timing_event(
+                        job, start_ms=start_ms, end_ms=end_ms, timing_status="aligned"
+                    )
 
         async with self._lock:
             self._mark_job_completed(job)
             should_publish = publish and not self._closed and not self._finish_mode
-            if publish and not should_publish and self._finish_mode and not self._closed:
+            if (
+                publish
+                and not should_publish
+                and self._finish_mode
+                and not self._closed
+            ):
                 self._finish_events.append(event)
         if should_publish:
             await self._publish_or_defer(event)
@@ -369,7 +406,9 @@ class RealtimeTimestampRuntime:
             self.event_queue.put_nowait(event)
             return
         except asyncio.QueueFull:
-            _LOGGER.warning("Realtime timestamp event queue is full; deferring timing update until finish.")
+            _LOGGER.warning(
+                "Realtime timestamp event queue is full; deferring timing update until finish."
+            )
         async with self._lock:
             if not self._closed:
                 self._finish_events.append(event)
@@ -383,7 +422,9 @@ class RealtimeTimestampRuntime:
             (int(queued.start_sample) for queued in self._stable_queue),
             default=int(self._completed_floor_sample),
         )
-        trim_floor = min(int(self._completed_floor_sample), pending_floor) - self._pad_samples()
+        trim_floor = (
+            min(int(self._completed_floor_sample), pending_floor) - self._pad_samples()
+        )
         self.audio_buffer.trim_before(trim_floor)
 
     async def _timing_event(
@@ -433,7 +474,9 @@ def _consume_future(future: Any) -> None:
         pass
 
 
-async def _wait_future_result(future: asyncio.Future[Any], *, timeout_sec: float | None) -> Any:
+async def _wait_future_result(
+    future: asyncio.Future[Any], *, timeout_sec: float | None
+) -> Any:
     # ``future`` is a ``loop.run_in_executor`` future; it is resolved through
     # ``call_soon_threadsafe`` when the worker thread finishes, so awaiting it
     # wakes the event loop immediately. Awaiting directly (instead of polling on

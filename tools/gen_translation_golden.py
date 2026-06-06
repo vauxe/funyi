@@ -17,6 +17,7 @@ the prompt. Quality flags and chrF are computed with the exact gate functions so
 The golden is audio-free public-text-derived output; it lives in `local_goldens/`
 (git-ignored) per project convention.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -52,10 +53,22 @@ from tools.gate_translation import (  # noqa: E402
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate the stock-model HY-MT translation golden.")
-    parser.add_argument("--dataset", required=True, help="JSONL case file (gate schema).")
-    parser.add_argument("--output", required=True, help="Golden JSON path (usable as --quality-baseline-json).")
-    parser.add_argument("--cases", default=None, help="Comma-separated case ids or groups. Default: all.")
+    parser = argparse.ArgumentParser(
+        description="Generate the stock-model HY-MT translation golden."
+    )
+    parser.add_argument(
+        "--dataset", required=True, help="JSONL case file (gate schema)."
+    )
+    parser.add_argument(
+        "--output",
+        required=True,
+        help="Golden JSON path (usable as --quality-baseline-json).",
+    )
+    parser.add_argument(
+        "--cases",
+        default=None,
+        help="Comma-separated case ids or groups. Default: all.",
+    )
     parser.add_argument("--model", default=DEFAULT_HYMT_MODEL)
     parser.add_argument(
         "--model-revision",
@@ -63,7 +76,9 @@ def _parse_args() -> argparse.Namespace:
         help="Pin the model to an immutable commit for a reproducible golden (recorded in the payload).",
     )
     parser.add_argument("--device", default="cuda:0")
-    parser.add_argument("--dtype", default="bfloat16", choices=["float32", "float16", "bfloat16"])
+    parser.add_argument(
+        "--dtype", default="bfloat16", choices=["float32", "float16", "bfloat16"]
+    )
     parser.add_argument(
         "--attn-implementation",
         default="sdpa",
@@ -72,7 +87,11 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--max-new-tokens", type=int, default=512)
     parser.add_argument("--repetition-penalty", type=float, default=1.05)
-    parser.add_argument("--allow-download", action="store_true", help="Allow model download (default local-only).")
+    parser.add_argument(
+        "--allow-download",
+        action="store_true",
+        help="Allow model download (default local-only).",
+    )
     parser.add_argument("--trust-remote-code", action="store_true")
     return parser.parse_args()
 
@@ -85,10 +104,16 @@ def main() -> None:
     if not cases:
         raise ValueError("no golden cases selected")
 
-    dtype = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}[args.dtype]
+    dtype = {
+        "float32": torch.float32,
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+    }[args.dtype]
     local_only = not args.allow_download
     model_revision = _normalize_model_revision(args.model_revision)
-    model_path = _resolve_model_path(args.model, local_files_only=local_only, model_revision=model_revision)
+    model_path = _resolve_model_path(
+        args.model, local_files_only=local_only, model_revision=model_revision
+    )
     revision_kwargs = _revision_kwargs(model_path, model_revision)
     load_started = time.perf_counter()
     tokenizer = AutoTokenizer.from_pretrained(
@@ -129,7 +154,12 @@ def main() -> None:
             pad_token_id=pad_token_id,
             eos_token_id=eos_token_id,
         )
-        issues = _evaluate_quality(case, output, generated_tokens=generated_tokens, max_new_tokens=args.max_new_tokens)
+        issues = _evaluate_quality(
+            case,
+            output,
+            generated_tokens=generated_tokens,
+            max_new_tokens=args.max_new_tokens,
+        )
         chrf = _reference_similarity(case, output)
         rows.append(
             {
@@ -139,8 +169,12 @@ def main() -> None:
                 "target_language": case["target_language"],
                 "output": output,
                 "generated_tokens": generated_tokens,
-                "errors": [issue.__dict__ for issue in issues if issue.severity == "error"],
-                "warnings": [issue.__dict__ for issue in issues if issue.severity == "warning"],
+                "errors": [
+                    issue.__dict__ for issue in issues if issue.severity == "error"
+                ],
+                "warnings": [
+                    issue.__dict__ for issue in issues if issue.severity == "warning"
+                ],
                 **({"reference_similarity": chrf} if chrf is not None else {}),
             }
         )
@@ -180,7 +214,9 @@ def main() -> None:
     }
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    out.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     error_cases = sum(1 for row in rows if row["errors"])
     print(
         f"wrote {len(rows)} golden cases to {out} | gross-error cases {error_cases} | generate {wall_sec:.1f}s",

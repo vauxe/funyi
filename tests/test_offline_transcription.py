@@ -23,7 +23,10 @@ from qwen3_asr_runtime.offline_transcription import (
     stream_transcribe_file,
     transcribe_file,
 )
-from qwen3_asr_runtime.transcription_document import TranscriptSegment, TranscriptTranslationUnit
+from qwen3_asr_runtime.transcription_document import (
+    TranscriptSegment,
+    TranscriptTranslationUnit,
+)
 from qwen3_asr_runtime.utils import SAMPLE_RATE
 
 
@@ -129,7 +132,9 @@ class FakeMixedTimestampActor:
         if call_index in self.invalid_item_calls:
             return SimpleNamespace(
                 items=[
-                    SimpleNamespace(text=text[:1], start_time=float("nan"), end_time=1.0),
+                    SimpleNamespace(
+                        text=text[:1], start_time=float("nan"), end_time=1.0
+                    ),
                     SimpleNamespace(text=text[1:2], start_time=0.1, end_time=0.2),
                 ]
             ), None
@@ -196,7 +201,9 @@ def test_layout_source_cues_expands_zero_duration_cues() -> None:
         tokens=(TimedToken("对。", 1000, 1000),),
     )
 
-    assert [(cue.text, cue.start_ms, cue.end_ms) for cue in layout_source_cues(unit)] == [("对。", 920, 1000)]
+    assert [
+        (cue.text, cue.start_ms, cue.end_ms) for cue in layout_source_cues(unit)
+    ] == [("对。", 920, 1000)]
 
 
 def test_append_source_unit_moves_short_cue_after_existing_segment() -> None:
@@ -220,8 +227,12 @@ def test_append_source_unit_moves_short_cue_after_existing_segment() -> None:
 
     appended, _ = offline_transcription._append_source_unit(segments, unit)
 
-    assert [(segment.text, segment.start_ms, segment.end_ms) for segment in appended] == [("对。", 2000, 2080)]
-    assert [(segment.text, segment.start_ms, segment.end_ms) for segment in segments] == [
+    assert [
+        (segment.text, segment.start_ms, segment.end_ms) for segment in appended
+    ] == [("对。", 2000, 2080)]
+    assert [
+        (segment.text, segment.start_ms, segment.end_ms) for segment in segments
+    ] == [
         ("前一句。", 1000, 2000),
         ("对。", 2000, 2080),
     ]
@@ -233,7 +244,9 @@ def test_source_unit_builder_preserves_ascii_word_boundary_across_chunks() -> No
     assert builder.add_tokens([TimedToken("hello", 0, 500)], language="English") == []
     units = builder.add_tokens([TimedToken("world.", 500, 1000)], language="English")
 
-    assert [(unit.text, unit.language) for unit in units] == [("hello world.", "English")]
+    assert [(unit.text, unit.language) for unit in units] == [
+        ("hello world.", "English")
+    ]
     assert [cue.text for cue in layout_source_cues(units[0])] == ["hello world."]
     assert builder.flush() == []
 
@@ -249,7 +262,9 @@ def test_source_unit_builder_keeps_true_repeated_text_across_batches() -> None:
 
 def test_source_unit_builder_uses_ascii_period_as_sentence_boundary() -> None:
     builder = SourceUnitBuilder()
-    tokens = estimated_timed_tokens_from_text("Hello world. Next sentence.", base_ms=0, duration_ms=4000)
+    tokens = estimated_timed_tokens_from_text(
+        "Hello world. Next sentence.", base_ms=0, duration_ms=4000
+    )
 
     units = builder.add_tokens(tokens, language="English") + builder.flush()
 
@@ -258,7 +273,9 @@ def test_source_unit_builder_uses_ascii_period_as_sentence_boundary() -> None:
 
 def test_source_unit_builder_uses_attached_alpha_period_as_sentence_boundary() -> None:
     builder = SourceUnitBuilder()
-    tokens = estimated_timed_tokens_from_text("Hello.Next sentence.", base_ms=0, duration_ms=3000)
+    tokens = estimated_timed_tokens_from_text(
+        "Hello.Next sentence.", base_ms=0, duration_ms=3000
+    )
 
     units = builder.add_tokens(tokens, language="English") + builder.flush()
 
@@ -286,7 +303,9 @@ def test_source_unit_builder_uses_aligned_ascii_period_as_sentence_boundary() ->
 
 def test_source_unit_builder_keeps_attached_decimal_period_inside_sentence() -> None:
     builder = SourceUnitBuilder()
-    tokens = estimated_timed_tokens_from_text("Pi is 3.14. Next sentence.", base_ms=0, duration_ms=4000)
+    tokens = estimated_timed_tokens_from_text(
+        "Pi is 3.14. Next sentence.", base_ms=0, duration_ms=4000
+    )
 
     units = builder.add_tokens(tokens, language="English") + builder.flush()
 
@@ -316,7 +335,10 @@ def test_source_unit_builder_keeps_aligned_decimal_period_inside_sentence() -> N
 
 def test_source_unit_builder_keeps_long_sentence_as_one_translation_unit() -> None:
     text = "今天讨论字幕显示问题，并且保持翻译输入完整，还要避免把一句普通话切成半截，只有真正太长的时候才拆开。"
-    tokens = [TimedToken(char, index * 220, (index + 1) * 220) for index, char in enumerate(text)]
+    tokens = [
+        TimedToken(char, index * 220, (index + 1) * 220)
+        for index, char in enumerate(text)
+    ]
     builder = SourceUnitBuilder()
 
     units = builder.add_tokens(tokens, language="Chinese") + builder.flush()
@@ -331,9 +353,13 @@ def test_source_unit_builder_keeps_long_sentence_as_one_translation_unit() -> No
 
 
 def test_layout_estimated_cues_are_bounded_and_sequential_without_chunk_gaps() -> None:
-    text = "今天讨论字幕显示问题，并且保持翻译输入完整，还要避免一个短展示块覆盖整段音频。"
+    text = (
+        "今天讨论字幕显示问题，并且保持翻译输入完整，还要避免一个短展示块覆盖整段音频。"
+    )
     tokens = estimated_timed_tokens_from_text(text, base_ms=0, duration_ms=60_000)
-    unit = SourceUnit(text=text, language="Chinese", timing_status="estimated", tokens=tuple(tokens))
+    unit = SourceUnit(
+        text=text, language="Chinese", timing_status="estimated", tokens=tuple(tokens)
+    )
 
     cues = layout_source_cues(unit, max_cue_ms=6000, max_cue_width=24)
 
@@ -342,7 +368,9 @@ def test_layout_estimated_cues_are_bounded_and_sequential_without_chunk_gaps() -
     assert [cue.start_ms for cue in cues[1:]] == [cue.end_ms for cue in cues[:-1]]
 
 
-def test_source_unit_builder_closes_estimated_long_unpunctuated_unit_before_final_flush() -> None:
+def test_source_unit_builder_closes_estimated_long_unpunctuated_unit_before_final_flush() -> (
+    None
+):
     builder = SourceUnitBuilder()
     text = " ".join(f"word{index}" for index in range(1, 22))
     tokens = estimated_timed_tokens_from_text(text, base_ms=0, duration_ms=21_000)
@@ -356,9 +384,13 @@ def test_source_unit_builder_closes_estimated_long_unpunctuated_unit_before_fina
     assert builder.flush()[0].text.endswith("word21")
 
 
-def test_source_unit_builder_bounds_oversized_sentence_before_late_punctuation() -> None:
+def test_source_unit_builder_bounds_oversized_sentence_before_late_punctuation() -> (
+    None
+):
     builder = SourceUnitBuilder(max_unit_ms=3000)
-    tokens = estimated_timed_tokens_from_text("one two three four five.", base_ms=0, duration_ms=5000)
+    tokens = estimated_timed_tokens_from_text(
+        "one two three four five.", base_ms=0, duration_ms=5000
+    )
 
     units = builder.add_tokens(tokens, language="English")
 
@@ -369,7 +401,9 @@ def test_source_unit_builder_bounds_oversized_sentence_before_late_punctuation()
 
 
 @pytest.mark.parametrize("chunk_sec", [0.0, -1.0, float("nan"), float("inf"), "bad"])
-def test_iter_source_audio_chunks_rejects_invalid_chunk_sec_before_chunking(chunk_sec: object) -> None:
+def test_iter_source_audio_chunks_rejects_invalid_chunk_sec_before_chunking(
+    chunk_sec: object,
+) -> None:
     with pytest.raises(ValueError, match="chunk_sec must be a finite positive number"):
         list(
             offline_transcription._iter_source_audio_chunks(
@@ -385,12 +419,20 @@ def test_iter_source_audio_chunks_uses_fixed_windows(tmp_path) -> None:
     audio_path = tmp_path / "clip.wav"
     sf.write(audio_path, wav, SAMPLE_RATE)
 
-    chunks = list(offline_transcription._iter_source_audio_chunks(str(audio_path), chunk_sec=60.0))
+    chunks = list(
+        offline_transcription._iter_source_audio_chunks(str(audio_path), chunk_sec=60.0)
+    )
 
-    assert [chunk[2] for chunk in chunks] == [60 * SAMPLE_RATE, 60 * SAMPLE_RATE, 5 * SAMPLE_RATE]
+    assert [chunk[2] for chunk in chunks] == [
+        60 * SAMPLE_RATE,
+        60 * SAMPLE_RATE,
+        5 * SAMPLE_RATE,
+    ]
 
 
-def test_iter_source_audio_chunks_streams_unreadable_media_through_ffmpeg(monkeypatch, tmp_path) -> None:
+def test_iter_source_audio_chunks_streams_unreadable_media_through_ffmpeg(
+    monkeypatch, tmp_path
+) -> None:
     # A file libsndfile cannot open (stand-in for a video container).
     media_path = tmp_path / "clip.mp4"
     media_path.write_bytes(b"\x00\x01\x02 not real media bytes")
@@ -404,11 +446,15 @@ def test_iter_source_audio_chunks_streams_unreadable_media_through_ffmpeg(monkey
 
     monkeypatch.setattr(offline_transcription, "_iter_ffmpeg_pcm_blocks", fake_blocks)
 
-    chunks = list(offline_transcription._iter_source_audio_chunks(str(media_path), chunk_sec=1.0))
+    chunks = list(
+        offline_transcription._iter_source_audio_chunks(str(media_path), chunk_sec=1.0)
+    )
 
     assert [chunk[2] for chunk in chunks] == [SAMPLE_RATE, int(SAMPLE_RATE * 0.5)]
     assert chunks[-1][3] is True
-    assert chunks[-1][4] == int(SAMPLE_RATE * 1.5)  # cumulative total reaches the true length at EOF
+    assert chunks[-1][4] == int(
+        SAMPLE_RATE * 1.5
+    )  # cumulative total reaches the true length at EOF
 
 
 def test_take_boundary_provisional_unit_requires_pending_boundary_nearness() -> None:
@@ -439,7 +485,9 @@ def test_iter_ffmpeg_pcm_blocks_requires_ffmpeg_on_path(monkeypatch, tmp_path) -
     media_path.write_bytes(b"not real media")
     monkeypatch.setattr(offline_transcription.shutil, "which", lambda _name: None)
 
-    with pytest.raises(offline_transcription.OfflineTranscriptionInputError, match="ffmpeg is required"):
+    with pytest.raises(
+        offline_transcription.OfflineTranscriptionInputError, match="ffmpeg is required"
+    ):
         list(offline_transcription._iter_ffmpeg_pcm_blocks(media_path))
 
 
@@ -449,7 +497,9 @@ def test_iter_ffmpeg_pcm_blocks_rejects_undecodable_media(tmp_path) -> None:
     media_path = tmp_path / "clip.mp4"
     media_path.write_bytes(b"\x00\x01\x02 not real media bytes")
 
-    with pytest.raises(offline_transcription.OfflineTranscriptionInputError, match="media file"):
+    with pytest.raises(
+        offline_transcription.OfflineTranscriptionInputError, match="media file"
+    ):
         list(offline_transcription._iter_ffmpeg_pcm_blocks(media_path))
 
 
@@ -461,10 +511,27 @@ async def test_stream_transcribe_file_decodes_real_video_with_ffmpeg(tmp_path) -
     try:
         subprocess.run(
             [
-                "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-                "-f", "lavfi", "-i", "testsrc=size=128x96:rate=15:duration=2",
-                "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
-                "-shortest", "-c:v", "mpeg4", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                "ffmpeg",
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=128x96:rate=15:duration=2",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=2",
+                "-shortest",
+                "-c:v",
+                "mpeg4",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
                 str(video_path),
             ],
             check=True,
@@ -486,16 +553,24 @@ async def test_stream_transcribe_file_decodes_real_video_with_ffmpeg(tmp_path) -
         )
     ]
 
-    segments = [event.segment for event in events if event.kind == "segment" and event.segment is not None]
+    segments = [
+        event.segment
+        for event in events
+        if event.kind == "segment" and event.segment is not None
+    ]
     assert segments, "expected the video audio track to decode into transcript segments"
     assert any(event.kind == "complete" for event in events)
-    assert model.calls and all(call["sample_rate"] == SAMPLE_RATE for call in model.calls)
+    assert model.calls and all(
+        call["sample_rate"] == SAMPLE_RATE for call in model.calls
+    )
 
 
 @pytest.mark.asyncio
 async def test_transcribe_file_redecodes_provisional_tail_before_emitting() -> None:
     wav = np.ones((int(SAMPLE_RATE * 61.0),), dtype=np.float32) * 0.1
-    model = FakeOfflineModel(["你知道，对一个十八岁。", "你知道，对一个十八岁的小男生，目标有了。", ""])
+    model = FakeOfflineModel(
+        ["你知道，对一个十八岁。", "你知道，对一个十八岁的小男生，目标有了。", ""]
+    )
 
     class TailTimestampActor:
         async def align_items(
@@ -512,7 +587,9 @@ async def test_transcribe_file_redecodes_provisional_tail_before_emitting() -> N
             for char in text:
                 if char in "，。！？,.!? ":
                     continue
-                items.append(SimpleNamespace(text=char, start_time=clock, end_time=clock + 0.05))
+                items.append(
+                    SimpleNamespace(text=char, start_time=clock, end_time=clock + 0.05)
+                )
                 clock += 0.05
             return SimpleNamespace(items=items), None
 
@@ -524,12 +601,16 @@ async def test_transcribe_file_redecodes_provisional_tail_before_emitting() -> N
         chunk_sec=30.0,
     )
 
-    assert [segment.text for segment in document.segments] == ["你知道，对一个十八岁的小男生，目标有了。"]
+    assert [segment.text for segment in document.segments] == [
+        "你知道，对一个十八岁的小男生，目标有了。"
+    ]
     assert len(model.calls) == 3
 
 
 @pytest.mark.asyncio
-async def test_transcribe_file_backfills_aligned_provisional_tail_when_next_window_does_not_replace_it() -> None:
+async def test_transcribe_file_backfills_aligned_provisional_tail_when_next_window_does_not_replace_it() -> (
+    None
+):
     wav = np.ones((int(SAMPLE_RATE * 61.0),), dtype=np.float32) * 0.1
     model = FakeOfflineModel(["边界句。", "后续句。", ""])
 
@@ -548,7 +629,9 @@ async def test_transcribe_file_backfills_aligned_provisional_tail_when_next_wind
             for char in text:
                 if char in "，。！？,.!? ":
                     continue
-                items.append(SimpleNamespace(text=char, start_time=clock, end_time=clock + 0.05))
+                items.append(
+                    SimpleNamespace(text=char, start_time=clock, end_time=clock + 0.05)
+                )
                 clock += 0.05
             return SimpleNamespace(items=items), None
 
@@ -564,7 +647,9 @@ async def test_transcribe_file_backfills_aligned_provisional_tail_when_next_wind
 
 
 @pytest.mark.asyncio
-async def test_transcribe_file_retries_main_window_when_refeed_decode_is_empty() -> None:
+async def test_transcribe_file_retries_main_window_when_refeed_decode_is_empty() -> (
+    None
+):
     wav = np.ones((int(SAMPLE_RATE * 61.0),), dtype=np.float32) * 0.1
     model = FakeOfflineModel(["边界句。", "", "当前句。", ""])
 
@@ -583,7 +668,9 @@ async def test_transcribe_file_retries_main_window_when_refeed_decode_is_empty()
             for char in text:
                 if char in "，。！？,.!? ":
                     continue
-                items.append(SimpleNamespace(text=char, start_time=clock, end_time=clock + 0.05))
+                items.append(
+                    SimpleNamespace(text=char, start_time=clock, end_time=clock + 0.05)
+                )
                 clock += 0.05
             return SimpleNamespace(items=items), None
 
@@ -618,7 +705,9 @@ async def test_transcribe_file_replaces_provisional_pending_prefix() -> None:
             for char in text:
                 if char in "，。！？,.!? ":
                     continue
-                items.append(SimpleNamespace(text=char, start_time=clock, end_time=clock + 0.2))
+                items.append(
+                    SimpleNamespace(text=char, start_time=clock, end_time=clock + 0.2)
+                )
                 clock += 0.2
             return SimpleNamespace(items=items), None
 
@@ -647,12 +736,16 @@ async def test_transcribe_file_keeps_estimated_prefix_text_without_timestamps() 
     )
 
     assert document.text == "今天讨论字幕显今天讨论字幕显示问题。"
-    assert [segment.text for segment in document.segments] == ["今天讨论字幕显今天讨论字幕显示问题。"]
+    assert [segment.text for segment in document.segments] == [
+        "今天讨论字幕显今天讨论字幕显示问题。"
+    ]
     assert [segment.timing_status for segment in document.segments] == ["estimated"]
 
 
 @pytest.mark.asyncio
-async def test_transcribe_file_keeps_specific_estimated_repeat_after_previous_unit_flushed() -> None:
+async def test_transcribe_file_keeps_specific_estimated_repeat_after_previous_unit_flushed() -> (
+    None
+):
     wav = np.ones((int(SAMPLE_RATE * 61.0),), dtype=np.float32) * 0.1
     model = FakeOfflineModel(["前段结束。重叠句子。", "重叠句子。后续内容。"])
 
@@ -664,7 +757,12 @@ async def test_transcribe_file_keeps_specific_estimated_repeat_after_previous_un
     )
 
     assert document.text == "前段结束。重叠句子。重叠句子。后续内容。"
-    assert [segment.text for segment in document.segments] == ["前段结束。", "重叠句子。", "重叠句子。", "后续内容。"]
+    assert [segment.text for segment in document.segments] == [
+        "前段结束。",
+        "重叠句子。",
+        "重叠句子。",
+        "后续内容。",
+    ]
     assert [segment.timing_status for segment in document.segments] == [
         "estimated",
         "estimated",
@@ -691,7 +789,9 @@ async def test_transcribe_file_keeps_short_true_repeated_estimated_prefix() -> N
 
 
 @pytest.mark.asyncio
-async def test_transcribe_file_bounds_estimated_short_cue_duration_without_timestamps() -> None:
+async def test_transcribe_file_bounds_estimated_short_cue_duration_without_timestamps() -> (
+    None
+):
     wav = np.ones((int(SAMPLE_RATE * 120.0),), dtype=np.float32) * 0.1
     model = FakeOfflineModel(["短句。"])
 
@@ -704,11 +804,15 @@ async def test_transcribe_file_bounds_estimated_short_cue_duration_without_times
 
     assert [segment.text for segment in document.segments] == ["短句。"]
     assert [segment.timing_status for segment in document.segments] == ["estimated"]
-    assert max(segment.end_ms - segment.start_ms for segment in document.segments) <= 6000
+    assert (
+        max(segment.end_ms - segment.start_ms for segment in document.segments) <= 6000
+    )
 
 
 @pytest.mark.asyncio
-async def test_transcribe_file_keeps_estimated_tail_text_not_repeated_by_next_window() -> None:
+async def test_transcribe_file_keeps_estimated_tail_text_not_repeated_by_next_window() -> (
+    None
+):
     wav = np.ones((int(SAMPLE_RATE * 61.0),), dtype=np.float32) * 0.1
     text = "一二三四五六七八九十十一十二十三十四十五十六十七十八十九二十。"
     model = FakeOfflineModel([text, ""])
@@ -726,7 +830,9 @@ async def test_transcribe_file_keeps_estimated_tail_text_not_repeated_by_next_wi
 
 
 @pytest.mark.asyncio
-async def test_transcribe_file_does_not_redecode_final_window_trailing_silence() -> None:
+async def test_transcribe_file_does_not_redecode_final_window_trailing_silence() -> (
+    None
+):
     wav = np.ones((int(SAMPLE_RATE * 1.0),), dtype=np.float32) * 0.1
     model = FakeOfflineModel(["hello.", "tail hallucination."])
 
@@ -740,7 +846,11 @@ async def test_transcribe_file_does_not_redecode_final_window_trailing_silence()
             timeout_sec: float | None,
         ) -> tuple[object | None, str | None]:
             del audio, language, timeout_sec
-            return SimpleNamespace(items=[SimpleNamespace(text=text.rstrip("."), start_time=0.0, end_time=0.2)]), None
+            return SimpleNamespace(
+                items=[
+                    SimpleNamespace(text=text.rstrip("."), start_time=0.0, end_time=0.2)
+                ]
+            ), None
 
     document = await transcribe_file(
         model,
@@ -755,7 +865,9 @@ async def test_transcribe_file_does_not_redecode_final_window_trailing_silence()
 
 
 @pytest.mark.asyncio
-async def test_transcribe_file_returns_document_with_alignment_and_translation() -> None:
+async def test_transcribe_file_returns_document_with_alignment_and_translation() -> (
+    None
+):
     wav = np.ones((int(SAMPLE_RATE * 2.0),), dtype=np.float32) * 0.1
     wav[int(SAMPLE_RATE * 0.95) : int(SAMPLE_RATE * 1.05)] = 0.0
     model = FakeOfflineModel(["第一句。", "第二句。"])
@@ -782,7 +894,10 @@ async def test_transcribe_file_returns_document_with_alignment_and_translation()
         ("第一句。", "first"),
         ("第二句。", "second"),
     ]
-    assert [segment.timing_status for segment in document.segments] == ["aligned", "aligned"]
+    assert [segment.timing_status for segment in document.segments] == [
+        "aligned",
+        "aligned",
+    ]
     assert all(
         segment.start_ms is not None
         and segment.end_ms is not None
@@ -803,7 +918,9 @@ async def test_transcribe_file_returns_document_with_alignment_and_translation()
 
 
 @pytest.mark.asyncio
-async def test_transcribe_file_streams_local_file_without_full_decode(monkeypatch, tmp_path) -> None:
+async def test_transcribe_file_streams_local_file_without_full_decode(
+    monkeypatch, tmp_path
+) -> None:
     wav = np.ones((int(SAMPLE_RATE * 2.0),), dtype=np.float32) * 0.1
     wav[int(SAMPLE_RATE * 0.95) : int(SAMPLE_RATE * 1.05)] = 0.0
     audio_path = tmp_path / "clip.wav"
@@ -812,14 +929,20 @@ async def test_transcribe_file_streams_local_file_without_full_decode(monkeypatc
     timestamps = FakeItemTimestampActor()
 
     def fail_normalize_audios(_audio: object) -> list[np.ndarray]:
-        raise AssertionError("local file transcription should not decode the whole file before chunking")
+        raise AssertionError(
+            "local file transcription should not decode the whole file before chunking"
+        )
 
-    monkeypatch.setattr(offline_transcription, "normalize_audios", fail_normalize_audios)
+    monkeypatch.setattr(
+        offline_transcription, "normalize_audios", fail_normalize_audios
+    )
     monkeypatch.setattr(
         offline_transcription.librosa,
         "load",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("local file transcription should stream windows instead of offset-loading each chunk")
+            AssertionError(
+                "local file transcription should stream windows instead of offset-loading each chunk"
+            )
         ),
     )
 
@@ -833,7 +956,10 @@ async def test_transcribe_file_streams_local_file_without_full_decode(monkeypatc
 
     assert document.duration_ms == 2000
     assert [segment.text for segment in document.segments] == ["第一句。", "第二句。"]
-    assert [segment.timing_status for segment in document.segments] == ["aligned", "aligned"]
+    assert [segment.timing_status for segment in document.segments] == [
+        "aligned",
+        "aligned",
+    ]
     assert all(
         segment.start_ms is not None
         and segment.end_ms is not None
@@ -852,7 +978,9 @@ async def test_transcribe_file_translates_aligned_and_estimated_units() -> None:
     document = await transcribe_file(
         model,
         (wav, SAMPLE_RATE),
-        options=OfflineTranscriptionOptions(language="Chinese", target_language="English"),
+        options=OfflineTranscriptionOptions(
+            language="Chinese", target_language="English"
+        ),
         timestamp_actor=timestamps,
         translation_actor=translation,
         chunk_sec=1.0,
@@ -924,7 +1052,9 @@ async def test_translate_units_records_failures_on_anchor_segments() -> None:
 
 
 @pytest.mark.asyncio
-async def test_translate_units_returns_document_units_in_source_order_for_mixed_languages() -> None:
+async def test_translate_units_returns_document_units_in_source_order_for_mixed_languages() -> (
+    None
+):
     segments = [
         TranscriptSegment(
             id=f"seg_{index:06d}",
@@ -970,11 +1100,17 @@ async def test_translate_units_returns_document_units_in_source_order_for_mixed_
     )
 
     assert [unit.text for unit in translated_units] == ["first", "middle", "second"]
-    assert [unit.source_segment_indices for unit in translated_units] == [(1, 2), (3, 4), (5, 6)]
+    assert [unit.source_segment_indices for unit in translated_units] == [
+        (1, 2),
+        (3, 4),
+        (5, 6),
+    ]
 
 
 @pytest.mark.asyncio
-async def test_transcribe_file_uses_unit_language_for_mixed_language_translation() -> None:
+async def test_transcribe_file_uses_unit_language_for_mixed_language_translation() -> (
+    None
+):
     wav = np.ones((int(SAMPLE_RATE * 2.0),), dtype=np.float32) * 0.1
     model = FakeLanguageResultModel([("hello.", "English"), ("第二句。", "Chinese")])
     timestamps = FakeMixedTimestampActor()
@@ -989,7 +1125,10 @@ async def test_transcribe_file_uses_unit_language_for_mixed_language_translation
         chunk_sec=1.0,
     )
 
-    assert [(segment.text, segment.language, segment.translation) for segment in document.segments] == [
+    assert [
+        (segment.text, segment.language, segment.translation)
+        for segment in document.segments
+    ] == [
         ("hello.", "English", "bonjour"),
         ("第二句。", "Chinese", "second sentence"),
     ]
@@ -1008,12 +1147,16 @@ async def test_transcribe_file_exposes_grouped_translation_units_in_document() -
     text = "今天讨论字幕显示问题，并且保持翻译输入完整，还要避免把一句普通话切成半截，只有真正太长的时候才拆开。"
     model = FakeOfflineModel([text])
     timestamps = FakeItemTimestampActor()
-    translation = FakeTranslationActor(["We discuss subtitle display while preserving translation context."])
+    translation = FakeTranslationActor(
+        ["We discuss subtitle display while preserving translation context."]
+    )
 
     document = await transcribe_file(
         model,
         (wav, SAMPLE_RATE),
-        options=OfflineTranscriptionOptions(language="Chinese", target_language="English"),
+        options=OfflineTranscriptionOptions(
+            language="Chinese", target_language="English"
+        ),
         timestamp_actor=timestamps,
         translation_actor=translation,
         chunk_sec=9.0,
@@ -1021,14 +1164,21 @@ async def test_transcribe_file_exposes_grouped_translation_units_in_document() -
 
     assert len(document.segments) > 1
     assert document.text == text
-    assert [segment.translation for segment in document.segments[:-1]] == [None] * (len(document.segments) - 1)
-    assert document.segments[-1].translation == "We discuss subtitle display while preserving translation context."
+    assert [segment.translation for segment in document.segments[:-1]] == [None] * (
+        len(document.segments) - 1
+    )
+    assert (
+        document.segments[-1].translation
+        == "We discuss subtitle display while preserving translation context."
+    )
     assert document.translation_units == [
         TranscriptTranslationUnit(
             text="We discuss subtitle display while preserving translation context.",
             target_language="English",
             source_segment_ids=tuple(segment.id for segment in document.segments),
-            source_segment_indices=tuple(segment.index for segment in document.segments),
+            source_segment_indices=tuple(
+                segment.index for segment in document.segments
+            ),
         )
     ]
     assert document.to_payload()["translationUnits"] == [
@@ -1067,11 +1217,19 @@ async def test_stream_transcribe_file_yields_segments_before_final_document() ->
         "translation_unit",
         "complete",
     ]
-    assert [event.segment.text for event in events if event.segment is not None] == ["第一句。", "第二句。"]
-    assert [event.segment.translation for event in events if event.segment is not None] == [None, None]
+    assert [event.segment.text for event in events if event.segment is not None] == [
+        "第一句。",
+        "第二句。",
+    ]
+    assert [
+        event.segment.translation for event in events if event.segment is not None
+    ] == [None, None]
     assert events[-1].document is not None
     assert events[-1].document.text == "第一句。第二句。"
-    assert [segment.translation for segment in events[-1].document.segments] == [None, None]
+    assert [segment.translation for segment in events[-1].document.segments] == [
+        None,
+        None,
+    ]
 
 
 @pytest.mark.asyncio
@@ -1092,18 +1250,22 @@ async def test_stream_transcribe_file_falls_back_when_item_timing_is_invalid() -
     ]
 
     segments = [event.segment for event in events if event.kind == "segment"]
-    assert [event.kind for event in events] == ["segment", "translation_unit", "complete"]
+    assert [event.kind for event in events] == [
+        "segment",
+        "translation_unit",
+        "complete",
+    ]
     assert [
         (segment.text, segment.start_ms, segment.end_ms, segment.timing_status)
         for segment in segments
         if segment
-    ] == [
-        ("第一句", 0, 1000, "estimated")
-    ]
+    ] == [("第一句", 0, 1000, "estimated")]
 
 
 @pytest.mark.asyncio
-async def test_stream_transcribe_file_keeps_complete_estimated_sentence_when_alignment_is_invalid() -> None:
+async def test_stream_transcribe_file_keeps_complete_estimated_sentence_when_alignment_is_invalid() -> (
+    None
+):
     wav = np.ones((int(SAMPLE_RATE * 4.0),), dtype=np.float32) * 0.1
     text = "今天讨论字幕显示问题，并且保持翻译输入完整。"
     model = FakeOfflineModel([text])
@@ -1137,7 +1299,11 @@ async def test_stream_transcribe_file_keeps_complete_estimated_sentence_when_ali
     ]
 
     segments = [event.segment for event in events if event.kind == "segment"]
-    assert [event.kind for event in events] == ["segment", "translation_unit", "complete"]
+    assert [event.kind for event in events] == [
+        "segment",
+        "translation_unit",
+        "complete",
+    ]
     assert [
         (segment.text, segment.start_ms, segment.end_ms, segment.timing_status)
         for segment in segments
@@ -1148,7 +1314,9 @@ async def test_stream_transcribe_file_keeps_complete_estimated_sentence_when_ali
 
 
 @pytest.mark.asyncio
-async def test_stream_transcribe_file_flushes_pending_unit_with_original_language_on_fallback() -> None:
+async def test_stream_transcribe_file_flushes_pending_unit_with_original_language_on_fallback() -> (
+    None
+):
     wav = np.ones((int(SAMPLE_RATE * 2.0),), dtype=np.float32) * 0.1
     model = FakeLanguageResultModel([("hello", "English"), ("第二句", "Chinese")])
 
@@ -1162,9 +1330,15 @@ async def test_stream_transcribe_file_flushes_pending_unit_with_original_languag
             timeout_sec: float | None,
         ) -> tuple[object | None, str | None]:
             if language == "English":
-                self.calls.append({"samples": int(audio.shape[0]), "text": text, "language": language})
-                return SimpleNamespace(items=[SimpleNamespace(text=text, start_time=0.0, end_time=0.5)]), None
-            return await super().align_items(audio, text=text, language=language, timeout_sec=timeout_sec)
+                self.calls.append(
+                    {"samples": int(audio.shape[0]), "text": text, "language": language}
+                )
+                return SimpleNamespace(
+                    items=[SimpleNamespace(text=text, start_time=0.0, end_time=0.5)]
+                ), None
+            return await super().align_items(
+                audio, text=text, language=language, timeout_sec=timeout_sec
+            )
 
     timestamps = LanguageSwitchTimestampActor(invalid_item_calls={2})
 
@@ -1179,15 +1353,23 @@ async def test_stream_transcribe_file_flushes_pending_unit_with_original_languag
         )
     ]
 
-    segments = [event.segment for event in events if event.kind == "segment" and event.segment is not None]
-    assert [(segment.text, segment.language, segment.timing_status) for segment in segments] == [
+    segments = [
+        event.segment
+        for event in events
+        if event.kind == "segment" and event.segment is not None
+    ]
+    assert [
+        (segment.text, segment.language, segment.timing_status) for segment in segments
+    ] == [
         ("hello", "English", "aligned"),
         ("第二句", "Chinese", "estimated"),
     ]
 
 
 @pytest.mark.asyncio
-async def test_stream_transcribe_file_splits_long_sentence_into_subtitle_cues_and_translation_unit() -> None:
+async def test_stream_transcribe_file_splits_long_sentence_into_subtitle_cues_and_translation_unit() -> (
+    None
+):
     wav = np.ones((int(SAMPLE_RATE * 9.0),), dtype=np.float32) * 0.1
     text = "今天讨论字幕显示问题，并且保持翻译输入完整，还要避免把一句普通话切成半截，只有真正太长的时候才拆开。"
     model = FakeOfflineModel([text])
@@ -1205,7 +1387,9 @@ async def test_stream_transcribe_file_splits_long_sentence_into_subtitle_cues_an
     ]
 
     segments = [event.segment for event in events if event.kind == "segment"]
-    translation_units = [event.translation_unit for event in events if event.kind == "translation_unit"]
+    translation_units = [
+        event.translation_unit for event in events if event.kind == "translation_unit"
+    ]
 
     assert [event.kind for event in events] == [
         "segment",
@@ -1221,14 +1405,23 @@ async def test_stream_transcribe_file_splits_long_sentence_into_subtitle_cues_an
         "还要避免把一句普通话切成半截，",
         "只有真正太长的时候才拆开。",
     ]
-    assert [segment.timing_status for segment in segments if segment is not None] == ["aligned"] * 4
-    assert max(
-        int((segment.end_ms or 0) - (segment.start_ms or 0)) for segment in segments if segment is not None
-    ) <= 6000
+    assert [segment.timing_status for segment in segments if segment is not None] == [
+        "aligned"
+    ] * 4
+    assert (
+        max(
+            int((segment.end_ms or 0) - (segment.start_ms or 0))
+            for segment in segments
+            if segment is not None
+        )
+        <= 6000
+    )
     assert len(translation_units) == 1
     assert translation_units[0] is not None
     assert translation_units[0].source_text == text
-    assert translation_units[0].source_segment_ids == tuple(segment.id for segment in segments if segment is not None)
+    assert translation_units[0].source_segment_ids == tuple(
+        segment.id for segment in segments if segment is not None
+    )
     assert translation_units[0].source_segment_indices == tuple(
         segment.index for segment in segments if segment is not None
     )
@@ -1256,7 +1449,9 @@ async def test_stream_transcribe_file_flushes_unpunctuated_unit_at_final() -> No
             timeout_sec: float | None,
         ) -> tuple[object | None, str | None]:
             del audio, language, timeout_sec
-            return SimpleNamespace(items=[SimpleNamespace(text=text, start_time=0.0, end_time=0.1)]), None
+            return SimpleNamespace(
+                items=[SimpleNamespace(text=text, start_time=0.0, end_time=0.1)]
+            ), None
 
     events = [
         event
@@ -1269,13 +1464,19 @@ async def test_stream_transcribe_file_flushes_unpunctuated_unit_at_final() -> No
         )
     ]
 
-    assert [event.kind for event in events] == ["segment", "translation_unit", "complete"]
+    assert [event.kind for event in events] == [
+        "segment",
+        "translation_unit",
+        "complete",
+    ]
     assert events[0].segment is not None
     assert events[0].segment.text == "hello"
 
 
 @pytest.mark.asyncio
-async def test_stream_transcribe_file_keeps_unclosed_source_unit_across_chunks(tmp_path) -> None:
+async def test_stream_transcribe_file_keeps_unclosed_source_unit_across_chunks(
+    tmp_path,
+) -> None:
     wav = np.ones((int(SAMPLE_RATE * 2.0),), dtype=np.float32) * 0.1
     wav[int(SAMPLE_RATE * 0.95) : int(SAMPLE_RATE * 1.05)] = 0.0
     audio_path = tmp_path / "clip.wav"
@@ -1295,9 +1496,13 @@ async def test_stream_transcribe_file_keeps_unclosed_source_unit_across_chunks(t
     ]
 
     segments = [event.segment for event in events if event.kind == "segment"]
-    translation_units = [event.translation_unit for event in events if event.kind == "translation_unit"]
+    translation_units = [
+        event.translation_unit for event in events if event.kind == "translation_unit"
+    ]
 
-    assert [segment.text for segment in segments if segment is not None] == ["今天讨论字幕显示问题。"]
+    assert [segment.text for segment in segments if segment is not None] == [
+        "今天讨论字幕显示问题。"
+    ]
     assert len(segments) == 1
     assert segments[0] is not None
     assert segments[0].start_ms == 0
@@ -1308,7 +1513,9 @@ async def test_stream_transcribe_file_keeps_unclosed_source_unit_across_chunks(t
 
 
 @pytest.mark.asyncio
-async def test_stream_transcribe_file_keeps_unclosed_source_unit_across_timing_fallback() -> None:
+async def test_stream_transcribe_file_keeps_unclosed_source_unit_across_timing_fallback() -> (
+    None
+):
     wav = np.ones((int(SAMPLE_RATE * 2.0),), dtype=np.float32) * 0.1
     model = FakeOfflineModel(["今天讨论字幕", "显示问题。"])
     timestamps = FakeMixedTimestampActor(fail_item_calls={2})
@@ -1324,8 +1531,14 @@ async def test_stream_transcribe_file_keeps_unclosed_source_unit_across_timing_f
         )
     ]
 
-    segments = [event.segment for event in events if event.kind == "segment" and event.segment is not None]
-    translation_units = [event.translation_unit for event in events if event.kind == "translation_unit"]
+    segments = [
+        event.segment
+        for event in events
+        if event.kind == "segment" and event.segment is not None
+    ]
+    translation_units = [
+        event.translation_unit for event in events if event.kind == "translation_unit"
+    ]
 
     assert [(segment.text, segment.timing_status) for segment in segments] == [
         ("今天讨论字幕显示问题。", "estimated")
@@ -1336,7 +1549,9 @@ async def test_stream_transcribe_file_keeps_unclosed_source_unit_across_timing_f
 
 
 @pytest.mark.asyncio
-async def test_stream_transcribe_file_clamps_item_timestamps_to_real_file_duration(tmp_path) -> None:
+async def test_stream_transcribe_file_clamps_item_timestamps_to_real_file_duration(
+    tmp_path,
+) -> None:
     wav = np.ones((int(SAMPLE_RATE * 0.2),), dtype=np.float32) * 0.1
     audio_path = tmp_path / "short.wav"
     sf.write(audio_path, wav, SAMPLE_RATE)
@@ -1376,7 +1591,9 @@ async def test_stream_transcribe_file_clamps_item_timestamps_to_real_file_durati
     segments = [event.segment for event in events if event.segment is not None]
     assert events[-1].document is not None
     assert events[-1].document.duration_ms == 200
-    assert [(segment.text, segment.start_ms, segment.end_ms) for segment in segments] == [("hello.", 0, 200)]
+    assert [
+        (segment.text, segment.start_ms, segment.end_ms) for segment in segments
+    ] == [("hello.", 0, 200)]
 
 
 @pytest.mark.asyncio
@@ -1385,7 +1602,9 @@ async def test_stream_transcribe_file_rejects_translation_options() -> None:
     events = stream_transcribe_file(
         FakeOfflineModel(["第一句"]),
         (wav, SAMPLE_RATE),
-        options=OfflineTranscriptionOptions(language="Chinese", target_language="English"),
+        options=OfflineTranscriptionOptions(
+            language="Chinese", target_language="English"
+        ),
         chunk_sec=1.0,
     )
 

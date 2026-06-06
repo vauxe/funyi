@@ -26,27 +26,58 @@ from qwen3_asr_runtime.translation import (
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Benchmark HY-MT translation inference on a provided JSONL case file.")
+    parser = argparse.ArgumentParser(
+        description="Benchmark HY-MT translation inference on a provided JSONL case file."
+    )
     parser.add_argument("--dataset", required=True, help="JSONL case file path.")
-    parser.add_argument("--cases", default=None, help="Comma-separated case ids or groups. Default: all.")
-    parser.add_argument("--model", default=DEFAULT_HYMT_MODEL, help="HY-MT model path or Hugging Face id.")
+    parser.add_argument(
+        "--cases",
+        default=None,
+        help="Comma-separated case ids or groups. Default: all.",
+    )
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_HYMT_MODEL,
+        help="HY-MT model path or Hugging Face id.",
+    )
     parser.add_argument("--device", default="cuda:0", help="cuda:0, cpu, or auto.")
-    parser.add_argument("--dtype", default=None, choices=["auto", "float32", "float16", "bfloat16"])
+    parser.add_argument(
+        "--dtype", default=None, choices=["auto", "float32", "float16", "bfloat16"]
+    )
     parser.add_argument(
         "--attn-implementation",
         default=DEFAULT_HYMT_ATTN_IMPLEMENTATION,
         help="Transformers attention implementation. Use 'none' to let transformers choose.",
     )
-    parser.add_argument("--decode-backend", default=DEFAULT_HYMT_DECODE_BACKEND, choices=["fixed_mask", "generate"])
-    parser.add_argument("--max-new-tokens", type=int, default=DEFAULT_HYMT_MAX_NEW_TOKENS)
+    parser.add_argument(
+        "--decode-backend",
+        default=DEFAULT_HYMT_DECODE_BACKEND,
+        choices=["fixed_mask", "generate"],
+    )
+    parser.add_argument(
+        "--max-new-tokens", type=int, default=DEFAULT_HYMT_MAX_NEW_TOKENS
+    )
     parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--top-p", type=float, default=0.6)
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--repetition-penalty", type=float, default=1.05)
     decode_group = parser.add_mutually_exclusive_group()
-    decode_group.add_argument("--sample", action="store_true", help="Enable sampling. Default is deterministic greedy decode.")
-    decode_group.add_argument("--greedy", action="store_true", help="Use deterministic greedy decode. This is the default.")
-    parser.add_argument("--seed", type=int, default=0, help="Torch RNG seed for repeatable sampling benchmarks.")
+    decode_group.add_argument(
+        "--sample",
+        action="store_true",
+        help="Enable sampling. Default is deterministic greedy decode.",
+    )
+    decode_group.add_argument(
+        "--greedy",
+        action="store_true",
+        help="Use deterministic greedy decode. This is the default.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Torch RNG seed for repeatable sampling benchmarks.",
+    )
     parser.add_argument(
         "--seed-mode",
         choices=["case", "run"],
@@ -58,7 +89,11 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Optional JSON object. Omit to use runtime defaults.",
     )
-    parser.add_argument("--warmup", default="1", help="Warmup count, or 'all' to warm up every selected case.")
+    parser.add_argument(
+        "--warmup",
+        default="1",
+        help="Warmup count, or 'all' to warm up every selected case.",
+    )
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument(
         "--allow-download",
@@ -66,9 +101,19 @@ def _parse_args() -> argparse.Namespace:
         help="Allow transformers to download model files during startup. Default is local-only.",
     )
     parser.add_argument("--trust-remote-code", action="store_true")
-    parser.add_argument("--output-json", default=None, help="Optional path to write benchmark JSON.")
-    parser.add_argument("--include-output", action="store_true", help="Include full translated text in each case row.")
-    parser.add_argument("--include-dataset-path", action="store_true", help="Include the dataset path in benchmark JSON.")
+    parser.add_argument(
+        "--output-json", default=None, help="Optional path to write benchmark JSON."
+    )
+    parser.add_argument(
+        "--include-output",
+        action="store_true",
+        help="Include full translated text in each case row.",
+    )
+    parser.add_argument(
+        "--include-dataset-path",
+        action="store_true",
+        help="Include the dataset path in benchmark JSON.",
+    )
     return parser.parse_args()
 
 
@@ -89,7 +134,9 @@ def main() -> None:
         "do_sample": do_sample,
     }
     if args.extra_generate_kwargs is not None:
-        config_kwargs["extra_generate_kwargs"] = _parse_json_object(args.extra_generate_kwargs)
+        config_kwargs["extra_generate_kwargs"] = _parse_json_object(
+            args.extra_generate_kwargs
+        )
     generation_config = HYMTGenerationConfig(**config_kwargs)
     load_started = time.perf_counter()
     translator = HYMTTranslator(
@@ -119,7 +166,9 @@ def main() -> None:
     # Warmup consumes sampling RNG; measured outputs should not depend on warmup count.
     torch.manual_seed(int(args.seed))
 
-    if torch.cuda.is_available() and ("cuda" in str(args.device) or args.device == "auto"):
+    if torch.cuda.is_available() and (
+        "cuda" in str(args.device) or args.device == "auto"
+    ):
         torch.cuda.reset_peak_memory_stats()
 
     rows = []
@@ -139,7 +188,12 @@ def main() -> None:
         "model": args.model,
         "case_count": len(rows),
         "device": args.device,
-        "dtype": args.dtype or ("bfloat16" if args.device.startswith("cuda") or args.device == "auto" else "auto"),
+        "dtype": args.dtype
+        or (
+            "bfloat16"
+            if args.device.startswith("cuda") or args.device == "auto"
+            else "auto"
+        ),
         "attn_implementation": translator.attn_implementation,
         "decode_backend": translator.decode_backend,
         "max_new_tokens": args.max_new_tokens,
@@ -171,7 +225,9 @@ def main() -> None:
 def _load_cases(path: Path) -> list[dict[str, Any]]:
     cases: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for line_number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for line_number, raw in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -180,7 +236,9 @@ def _load_cases(path: Path) -> list[dict[str, Any]]:
             raise ValueError(f"{path}:{line_number}: case must be a JSON object")
         for field in ("id", "target_language", "text"):
             if not str(item.get(field) or "").strip():
-                raise ValueError(f"{path}:{line_number}: missing required field {field!r}")
+                raise ValueError(
+                    f"{path}:{line_number}: missing required field {field!r}"
+                )
         case_id = str(item["id"])
         if case_id in seen:
             raise ValueError(f"{path}:{line_number}: duplicate case id {case_id!r}")
@@ -189,7 +247,9 @@ def _load_cases(path: Path) -> list[dict[str, Any]]:
     return cases
 
 
-def _select_cases(cases: list[dict[str, Any]], spec: str | None) -> list[dict[str, Any]]:
+def _select_cases(
+    cases: list[dict[str, Any]], spec: str | None
+) -> list[dict[str, Any]]:
     if not spec:
         return cases
     wanted = {item.strip() for item in spec.split(",") if item.strip()}
@@ -268,7 +328,9 @@ def _run_case(
         "encode_wall_sec_median": round(median_encode, 4),
         "generate_wall_sec_median": round(median_generate, 4),
         "decode_wall_sec_median": round(median_decode, 4),
-        "decode_tokens_per_sec": round(median_generated_tokens / median_generate, 2) if median_generate > 0 else 0.0,
+        "decode_tokens_per_sec": round(median_generated_tokens / median_generate, 2)
+        if median_generate > 0
+        else 0.0,
         "output_chars": len(output),
     }
     if include_output:
@@ -293,9 +355,15 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "generate_wall_sec_sum": round(generate_wall_sec_sum, 4),
         "decode_wall_sec_sum": round(sum(decodes), 4),
         "generated_tokens_sum": round(generated_tokens_sum, 1),
-        "decode_tokens_per_sec_total": _tokens_per_sec(generated_tokens_sum, generate_wall_sec_sum),
-        "end_to_end_tokens_per_sec_total": _tokens_per_sec(generated_tokens_sum, total_wall_sec_sum),
-        "decode_tokens_per_sec_median": round(median(float(row["decode_tokens_per_sec"]) for row in rows), 2),
+        "decode_tokens_per_sec_total": _tokens_per_sec(
+            generated_tokens_sum, generate_wall_sec_sum
+        ),
+        "end_to_end_tokens_per_sec_total": _tokens_per_sec(
+            generated_tokens_sum, total_wall_sec_sum
+        ),
+        "decode_tokens_per_sec_median": round(
+            median(float(row["decode_tokens_per_sec"]) for row in rows), 2
+        ),
         "prompt_tokens_median": round(median(prompt_tokens), 1),
         "generated_tokens_median": round(median(generated_tokens), 1),
         "correlation": {
@@ -325,7 +393,9 @@ def _pearson(xs: list[float], ys: list[float]) -> float | None:
 
 
 def _cuda_peak_allocated_mb(device: str) -> float | None:
-    if not torch.cuda.is_available() or ("cuda" not in str(device) and device != "auto"):
+    if not torch.cuda.is_available() or (
+        "cuda" not in str(device) and device != "auto"
+    ):
         return None
     return round(torch.cuda.max_memory_allocated() / 1024 / 1024, 1)
 

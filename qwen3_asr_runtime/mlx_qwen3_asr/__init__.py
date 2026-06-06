@@ -12,6 +12,7 @@ and is gated for correctness against that upstream model
 (``tools/parity_mlx_vs_hf.py``). The inference-speed optimizations use standard
 MLX patterns (pre-allocated step-growing KV cache, fused kernels).
 """
+
 from __future__ import annotations
 
 from .config import MLXQwen3ASRConfig

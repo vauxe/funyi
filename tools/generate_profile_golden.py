@@ -14,7 +14,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.audio_window import load_audio_window
-from tools.runtime_helpers import _default_attn_implementation, _dispose_model, _resolve_dtype, _set_seed
+from tools.runtime_helpers import (
+    _default_attn_implementation,
+    _dispose_model,
+    _resolve_dtype,
+    _set_seed,
+)
 
 
 @dataclass(frozen=True)
@@ -30,11 +35,15 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generate a runtime offline regression golden for a selected case set."
     )
-    parser.add_argument("--source-golden", default="local_goldens/offline_regression.json")
+    parser.add_argument(
+        "--source-golden", default="local_goldens/offline_regression.json"
+    )
     parser.add_argument("--output", required=True)
     parser.add_argument("--model", default=None)
     parser.add_argument("--audio", default=None)
-    parser.add_argument("--dtype", default="float32", choices=["float32", "float16", "bfloat16"])
+    parser.add_argument(
+        "--dtype", default="float32", choices=["float32", "float16", "bfloat16"]
+    )
     parser.add_argument("--device-map", default="cuda:0")
     parser.add_argument("--attn-implementation", default=None)
     parser.add_argument("--seed", type=int, default=None)
@@ -83,7 +92,9 @@ def main() -> None:
 
     model_name = args.model or source_golden["model"]
     audio_path = args.audio or source_golden["audio"]
-    attn_implementation = args.attn_implementation or _default_attn_implementation(args.device_map)
+    attn_implementation = args.attn_implementation or _default_attn_implementation(
+        args.device_map
+    )
     source_load_kwargs = dict(source_golden.get("load_kwargs", {}))
     if args.max_new_tokens is not None:
         max_new_tokens = int(args.max_new_tokens)
@@ -104,7 +115,9 @@ def main() -> None:
             "pass --max-inference-batch-size explicitly."
         )
 
-    requested_case_names = {item.strip() for item in args.cases.split(",") if item.strip()}
+    requested_case_names = {
+        item.strip() for item in args.cases.split(",") if item.strip()
+    }
     selected_cases = []
     if requested_case_names:
         selected_cases.extend(
@@ -205,7 +218,9 @@ def main() -> None:
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(golden, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    output_path.write_text(
+        json.dumps(golden, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     print(
         "Generated profile golden.",
         {

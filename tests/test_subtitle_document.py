@@ -52,7 +52,7 @@ class TestSubtitleDocument:
         )
         window = document.window()
         assert window.previous is None
-        assert window.current.text == '正在处理'  # type: ignore[union-attr]
+        assert window.current.text == "正在处理"  # type: ignore[union-attr]
 
         document.apply_event(
             {
@@ -60,14 +60,16 @@ class TestSubtitleDocument:
                 "revision": 2,
                 "stable_base": 0,
                 "stable_count": 1,
-                "stable_appends": [stable_segment(1, "正在处理", start_ms=0, end_ms=1000)],
+                "stable_appends": [
+                    stable_segment(1, "正在处理", start_ms=0, end_ms=1000)
+                ],
                 "partial": partial_segment("下一句", start_ms=1000, end_ms=1600),
             }
         )
 
         window = document.window()
-        assert window.previous.text == '正在处理'  # type: ignore[union-attr]
-        assert window.current.text == '下一句'  # type: ignore[union-attr]
+        assert window.previous.text == "正在处理"  # type: ignore[union-attr]
+        assert window.current.text == "下一句"  # type: ignore[union-attr]
 
     def test_malformed_timing_value_does_not_break_replay(self) -> None:
         document = SubtitleDocument()
@@ -77,7 +79,9 @@ class TestSubtitleDocument:
                 "revision": 1,
                 "stable_base": 0,
                 "stable_count": 1,
-                "stable_appends": [stable_segment(1, "第一句", start_ms=0, end_ms=1200)],
+                "stable_appends": [
+                    stable_segment(1, "第一句", start_ms=0, end_ms=1200)
+                ],
                 "partial": None,
             }
         )
@@ -104,12 +108,14 @@ class TestSubtitleDocument:
                 "revision": 1,
                 "stable_base": 0,
                 "stable_count": 1,
-                "stable_appends": [stable_segment(1, "第一句", start_ms=0, end_ms=1200)],
+                "stable_appends": [
+                    stable_segment(1, "第一句", start_ms=0, end_ms=1200)
+                ],
                 "partial": partial_segment("不应进入详情", start_ms=1200, end_ms=1800),
             }
         )
 
-        assert document.to_srt() == '1\n00:00:00,000 --> 00:00:01,200\n第一句\n'
+        assert document.to_srt() == "1\n00:00:00,000 --> 00:00:01,200\n第一句\n"
 
     def test_window_returns_complete_latest_lines(self) -> None:
         document = SubtitleDocument()
@@ -121,7 +127,9 @@ class TestSubtitleDocument:
                 "revision": 1,
                 "stable_base": 0,
                 "stable_count": 1,
-                "stable_appends": [stable_segment(1, stable_text, start_ms=0, end_ms=2300)],
+                "stable_appends": [
+                    stable_segment(1, stable_text, start_ms=0, end_ms=2300)
+                ],
                 "partial": partial_segment(partial_text, start_ms=2300, end_ms=3300),
             }
         )
@@ -155,8 +163,8 @@ class TestSubtitleDocument:
 
         window = document.window()
         assert window.previous.start_ms is None  # type: ignore[union-attr]
-        assert window.previous.timing_status == 'pending'  # type: ignore[union-attr]
-        assert document.to_srt() == ''
+        assert window.previous.timing_status == "pending"  # type: ignore[union-attr]
+        assert document.to_srt() == ""
 
         document.apply_event(
             {
@@ -170,8 +178,8 @@ class TestSubtitleDocument:
 
         assert document.stable_lines[0].start_ms == 120
         assert document.stable_lines[0].end_ms == 860
-        assert document.stable_lines[0].timing_status == 'aligned'
-        assert document.to_srt() == '1\n00:00:00,120 --> 00:00:00,860\n第一句\n'
+        assert document.stable_lines[0].timing_status == "aligned"
+        assert document.to_srt() == "1\n00:00:00,120 --> 00:00:00,860\n第一句\n"
 
     def test_translation_events_are_annotations_not_scroll_inputs(self) -> None:
         document = SubtitleDocument()
@@ -181,7 +189,9 @@ class TestSubtitleDocument:
                 "revision": 1,
                 "stable_base": 0,
                 "stable_count": 1,
-                "stable_appends": [stable_segment(1, "稳定行", start_ms=0, end_ms=1000)],
+                "stable_appends": [
+                    stable_segment(1, "稳定行", start_ms=0, end_ms=1000)
+                ],
                 "partial": partial_segment("当前行", start_ms=1000, end_ms=1800),
             }
         )
@@ -213,11 +223,14 @@ class TestSubtitleDocument:
         )
 
         window = document.window()
-        assert window.previous.text == '稳定行'  # type: ignore[union-attr]
-        assert window.previous.translation == 'stable line'  # type: ignore[union-attr]
-        assert window.current.text == '当前行'  # type: ignore[union-attr]
-        assert window.current.translation == 'current line'  # type: ignore[union-attr]
-        assert document.to_srt() == '1\n00:00:00,000 --> 00:00:01,000\n稳定行\nstable line\n'
+        assert window.previous.text == "稳定行"  # type: ignore[union-attr]
+        assert window.previous.translation == "stable line"  # type: ignore[union-attr]
+        assert window.current.text == "当前行"  # type: ignore[union-attr]
+        assert window.current.translation == "current line"  # type: ignore[union-attr]
+        assert (
+            document.to_srt()
+            == "1\n00:00:00,000 --> 00:00:01,000\n稳定行\nstable line\n"
+        )
 
     def test_translation_status_clears_existing_translation(self) -> None:
         document = SubtitleDocument()
@@ -227,7 +240,9 @@ class TestSubtitleDocument:
                 "revision": 1,
                 "stable_base": 0,
                 "stable_count": 1,
-                "stable_appends": [stable_segment(1, "稳定行", start_ms=0, end_ms=1000)],
+                "stable_appends": [
+                    stable_segment(1, "稳定行", start_ms=0, end_ms=1000)
+                ],
                 "partial": None,
             }
         )
@@ -267,8 +282,12 @@ class TestSubtitleDocument:
                 "stable_base": 0,
                 "stable_count": 2,
                 "stable_appends": [
-                    stable_segment(1, "今天讨论字幕显示问题，", start_ms=0, end_ms=2000),
-                    stable_segment(2, "并且保持翻译输入完整。", start_ms=2000, end_ms=3800),
+                    stable_segment(
+                        1, "今天讨论字幕显示问题，", start_ms=0, end_ms=2000
+                    ),
+                    stable_segment(
+                        2, "并且保持翻译输入完整。", start_ms=2000, end_ms=3800
+                    ),
                 ],
                 "partial": None,
             }
@@ -286,7 +305,10 @@ class TestSubtitleDocument:
             }
         )
 
-        assert document.stable_lines[1].translation == "We discuss subtitle display while preserving translation context."
+        assert (
+            document.stable_lines[1].translation
+            == "We discuss subtitle display while preserving translation context."
+        )
 
     def test_translation_can_be_hidden_without_changing_source_state(self) -> None:
         document = SubtitleDocument(translation_enabled=False)
@@ -296,7 +318,9 @@ class TestSubtitleDocument:
                 "revision": 1,
                 "stable_base": 0,
                 "stable_count": 1,
-                "stable_appends": [stable_segment(1, "稳定行", start_ms=0, end_ms=1000)],
+                "stable_appends": [
+                    stable_segment(1, "稳定行", start_ms=0, end_ms=1000)
+                ],
                 "partial": partial_segment("当前行", start_ms=1000, end_ms=1800),
             }
         )
@@ -312,9 +336,9 @@ class TestSubtitleDocument:
         )
 
         window = document.window()
-        assert window.previous.text == '稳定行'  # type: ignore[union-attr]
+        assert window.previous.text == "稳定行"  # type: ignore[union-attr]
         assert window.previous.translation is None  # type: ignore[union-attr]
-        assert document.to_srt() == '1\n00:00:00,000 --> 00:00:01,000\n稳定行\n'
+        assert document.to_srt() == "1\n00:00:00,000 --> 00:00:01,000\n稳定行\n"
 
     def test_rejects_stale_stable_base(self) -> None:
         document = SubtitleDocument()
@@ -324,7 +348,9 @@ class TestSubtitleDocument:
                 "revision": 1,
                 "stable_base": 0,
                 "stable_count": 1,
-                "stable_appends": [stable_segment(1, "第一句", start_ms=0, end_ms=1000)],
+                "stable_appends": [
+                    stable_segment(1, "第一句", start_ms=0, end_ms=1000)
+                ],
                 "partial": None,
             }
         )
@@ -336,7 +362,9 @@ class TestSubtitleDocument:
                     "revision": 2,
                     "stable_base": 0,
                     "stable_count": 2,
-                    "stable_appends": [stable_segment(2, "第二句", start_ms=1000, end_ms=2000)],
+                    "stable_appends": [
+                        stable_segment(2, "第二句", start_ms=1000, end_ms=2000)
+                    ],
                     "partial": None,
                 }
             )
@@ -349,7 +377,9 @@ class TestSubtitleDocument:
                 "revision": 1,
                 "stable_base": 0,
                 "stable_count": 1,
-                "stable_appends": [stable_segment(1, "第一句", start_ms=0, end_ms=1000)],
+                "stable_appends": [
+                    stable_segment(1, "第一句", start_ms=0, end_ms=1000)
+                ],
                 "partial": partial_segment("临时", start_ms=1000, end_ms=1400),
             }
         )
@@ -374,11 +404,13 @@ class TestSubtitleDocument:
         )
 
         window = document.window()
-        assert window.previous.text == '第一句'  # type: ignore[union-attr]
-        assert window.previous.translation == 'first line'  # type: ignore[union-attr]
+        assert window.previous.text == "第一句"  # type: ignore[union-attr]
+        assert window.previous.translation == "first line"  # type: ignore[union-attr]
         assert window.current is None
 
-    def test_final_snapshot_preserves_stable_translation_by_index_when_ids_change(self) -> None:
+    def test_final_snapshot_preserves_stable_translation_by_index_when_ids_change(
+        self,
+    ) -> None:
         document = SubtitleDocument()
         document.apply_event(
             {
@@ -386,7 +418,9 @@ class TestSubtitleDocument:
                 "revision": 1,
                 "stable_base": 0,
                 "stable_count": 1,
-                "stable_appends": [stable_segment(1, "第一句", start_ms=0, end_ms=1000)],
+                "stable_appends": [
+                    stable_segment(1, "第一句", start_ms=0, end_ms=1000)
+                ],
                 "partial": None,
             }
         )
@@ -416,7 +450,9 @@ class TestSubtitleDocument:
         assert window.previous.translation == "first line"  # type: ignore[union-attr]
         assert window.current is None
 
-    def test_final_snapshot_prefers_segment_translation_over_replayed_state(self) -> None:
+    def test_final_snapshot_prefers_segment_translation_over_replayed_state(
+        self,
+    ) -> None:
         document = SubtitleDocument()
         document.apply_event(
             {
@@ -424,7 +460,9 @@ class TestSubtitleDocument:
                 "revision": 1,
                 "stable_base": 0,
                 "stable_count": 1,
-                "stable_appends": [stable_segment(1, "第一句", start_ms=0, end_ms=1000)],
+                "stable_appends": [
+                    stable_segment(1, "第一句", start_ms=0, end_ms=1000)
+                ],
                 "partial": None,
             }
         )
@@ -461,8 +499,12 @@ class TestSubtitleDocument:
                 "revision": 1,
                 "stable_count": 2,
                 "segments": [
-                    stable_segment(1, "今天讨论字幕显示问题，", start_ms=0, end_ms=2000),
-                    stable_segment(2, "并且保持翻译输入完整。", start_ms=2000, end_ms=3800),
+                    stable_segment(
+                        1, "今天讨论字幕显示问题，", start_ms=0, end_ms=2000
+                    ),
+                    stable_segment(
+                        2, "并且保持翻译输入完整。", start_ms=2000, end_ms=3800
+                    ),
                 ],
                 "document": {
                     "translationUnits": [
@@ -477,11 +519,18 @@ class TestSubtitleDocument:
             }
         )
 
-        assert document.stable_lines[1].translation == "We discuss subtitle display while preserving translation context."
+        assert (
+            document.stable_lines[1].translation
+            == "We discuss subtitle display while preserving translation context."
+        )
 
-    def test_final_snapshot_anchors_translation_unit_with_paired_index_fallback(self) -> None:
+    def test_final_snapshot_anchors_translation_unit_with_paired_index_fallback(
+        self,
+    ) -> None:
         document = SubtitleDocument()
-        second_segment = stable_segment(2, "并且保持翻译输入完整。", start_ms=2000, end_ms=3800)
+        second_segment = stable_segment(
+            2, "并且保持翻译输入完整。", start_ms=2000, end_ms=3800
+        )
         second_segment["id"] = "rebuilt_seg_2"
 
         document.apply_event(
@@ -490,7 +539,9 @@ class TestSubtitleDocument:
                 "revision": 1,
                 "stable_count": 2,
                 "segments": [
-                    stable_segment(1, "今天讨论字幕显示问题，", start_ms=0, end_ms=2000),
+                    stable_segment(
+                        1, "今天讨论字幕显示问题，", start_ms=0, end_ms=2000
+                    ),
                     second_segment,
                 ],
                 "document": {
@@ -507,9 +558,14 @@ class TestSubtitleDocument:
         )
 
         assert document.stable_lines[0].translation is None
-        assert document.stable_lines[1].translation == "We discuss subtitle display while preserving translation context."
+        assert (
+            document.stable_lines[1].translation
+            == "We discuss subtitle display while preserving translation context."
+        )
 
-    def test_final_snapshot_prefers_segment_translation_status_over_replayed_state(self) -> None:
+    def test_final_snapshot_prefers_segment_translation_status_over_replayed_state(
+        self,
+    ) -> None:
         document = SubtitleDocument()
         document.apply_event(
             {
@@ -517,7 +573,9 @@ class TestSubtitleDocument:
                 "revision": 1,
                 "stable_base": 0,
                 "stable_count": 1,
-                "stable_appends": [stable_segment(1, "第一句", start_ms=0, end_ms=1000)],
+                "stable_appends": [
+                    stable_segment(1, "第一句", start_ms=0, end_ms=1000)
+                ],
                 "partial": None,
             }
         )
@@ -549,7 +607,9 @@ class TestSubtitleDocument:
         assert window.previous.translation_status == "timeout"  # type: ignore[union-attr]
         assert window.previous.translation_message == "translation failed"  # type: ignore[union-attr]
 
-    def test_final_marker_without_snapshot_clears_current_and_keeps_replayed_stable_history(self) -> None:
+    def test_final_marker_without_snapshot_clears_current_and_keeps_replayed_stable_history(
+        self,
+    ) -> None:
         document = SubtitleDocument()
         document.apply_event(
             {
@@ -557,7 +617,9 @@ class TestSubtitleDocument:
                 "revision": 1,
                 "stable_base": 0,
                 "stable_count": 1,
-                "stable_appends": [stable_segment(1, "第一句", start_ms=0, end_ms=1000)],
+                "stable_appends": [
+                    stable_segment(1, "第一句", start_ms=0, end_ms=1000)
+                ],
                 "partial": partial_segment("临时", start_ms=1000, end_ms=1400),
             }
         )

@@ -6,7 +6,9 @@ from typing import Any, Callable
 import numpy as np
 
 
-def slice_audio(wav: np.ndarray, sample_rate: int, start_sec: float, duration_sec: float) -> tuple[np.ndarray, int]:
+def slice_audio(
+    wav: np.ndarray, sample_rate: int, start_sec: float, duration_sec: float
+) -> tuple[np.ndarray, int]:
     start_sample = int(round(float(start_sec) * sample_rate))
     end_sample = start_sample + int(round(float(duration_sec) * sample_rate))
     return wav[start_sample:end_sample], sample_rate
