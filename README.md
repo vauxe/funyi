@@ -34,18 +34,22 @@ The desktop client currently runs on Windows and macOS.
 ## Supported Models
 
 Models are selected when the backend starts. CUDA uses the local transformers
-backend; Apple Silicon uses MLX by default. The ids below are validated
-defaults/examples; local model directories with the same architecture and
-compatible config may also load, but should be gated locally before release use.
+backend; Apple Silicon uses MLX by default. The loader is not a repo-id
+allowlist: Hugging Face ids or local model directories with the same supported
+architecture and compatible config/weights may load. The ids below are the
+validated defaults/examples; gate any unlisted checkpoint locally before release
+use.
 
-| Role | Validated model ids |
-|---|---|
-| ASR | `Qwen/Qwen3-ASR-1.7B` (default), `Qwen/Qwen3-ASR-0.6B`, `mlx-community/Qwen3-ASR-1.7B-4bit`, `mlx-community/Qwen3-ASR-0.6B-4bit` |
-| Timestamps | `Qwen/Qwen3-ForcedAligner-0.6B` (required), `mlx-community/Qwen3-ForcedAligner-0.6B-4bit` |
-| Translation | `tencent/Hy-MT2-1.8B` (default), `mlx-community/Hy-MT2-1.8B-4bit`; disable with `FUNYI_TRANSLATION_MODEL=` |
+| Role | Model ids | Switch with | Notes |
+|---|---|---|---|
+| ASR | `Qwen/Qwen3-ASR-1.7B` (default), `Qwen/Qwen3-ASR-0.6B`, compatible Qwen3-ASR checkpoints | `FUNYI_ASR_MODEL` or `--model` | CUDA/transformers path. Compatible checkpoints must use the Qwen3-ASR architecture, such as `model_type=qwen3_asr`, with matching config and weights. |
+| ASR | `mlx-community/Qwen3-ASR-1.7B-4bit`, `mlx-community/Qwen3-ASR-0.6B-4bit` | `FUNYI_ASR_MODEL` or `--model` | Apple Silicon MLX path only. |
+| Timestamps | `Qwen/Qwen3-ForcedAligner-0.6B` (required), `mlx-community/Qwen3-ForcedAligner-0.6B-4bit` | `FUNYI_TIMESTAMP_MODEL` or `--timestamp-model` | Keep this as a forced-aligner model; do not replace it with an ASR model. |
+| Translation | `tencent/Hy-MT2-1.8B` (default), `mlx-community/Hy-MT2-1.8B-4bit` | `FUNYI_TRANSLATION_MODEL` or `--translation-model` | Disable translation with `FUNYI_TRANSLATION_MODEL=`. |
 
-The `mlx-community/*-4bit` ids are Apple Silicon MLX paths. See
-`docs/macos_mlx.md` for switching commands.
+The desktop client does not hot-swap models. Stop and restart the backend after
+changing any model variable. The `mlx-community/*-4bit` ids are Apple Silicon
+MLX paths; see `docs/macos_mlx.md` for more MLX commands.
 
 ## Quick Start
 
@@ -125,8 +129,20 @@ usually `ws://127.0.0.1:8000/ws/asr`.
 | `FUNYI_ALLOW_DOWNLOADS=1 ./scripts/start_backend.sh` | Start the full backend and allow forced-aligner/translation model downloads. |
 | `./scripts/start_backend.sh` | Start the full backend from cached or local models. |
 | `FUNYI_TRANSLATION_MODEL= ./scripts/start_backend.sh` | Start ASR plus the required forced aligner, without translation. |
+| `FUNYI_ASR_MODEL=<hf-or-local-qwen3-asr-model> ./scripts/start_backend.sh` | Start with an alternate Qwen3-ASR-compatible ASR checkpoint. |
 | `FUNYI_PORT=8001 ./scripts/start_backend.sh` | Start the backend on another port. |
 | `./scripts/start_backend.sh --no-vad` | Start without VAD speech gating; all received audio is passed to ASR. |
+
+To switch models with environment variables:
+
+```bash
+FUNYI_ASR_MODEL=<hf-or-local-qwen3-asr-model> \
+FUNYI_TIMESTAMP_MODEL=Qwen/Qwen3-ForcedAligner-0.6B \
+./scripts/start_backend.sh
+```
+
+On first use of a Hugging Face model id that is not cached yet, include
+`FUNYI_ALLOW_DOWNLOADS=1` on the same command.
 
 To use local model directories instead of Hugging Face model ids:
 
