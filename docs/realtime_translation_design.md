@@ -62,6 +62,11 @@ block audio ingest. When the aligned ASR CUDA graph path is prewarmed, ASR graph
 replay and HY-MT generation may overlap; graph capture and optimization details
 live in `@docs/performance_optimization.md`.
 
+The service prewarms HY-MT per target language, not globally. Startup prewarms
+the configured common targets; an unlisted target is prewarmed once before first
+use so one-time compile/shape costs stay outside realtime audio processing and
+final stable-translation drain.
+
 ## Public API Surface
 
 `@docs/realtime_asr_service.md` owns target selection, capability errors, and
@@ -298,6 +303,11 @@ to Hugging Face model ids.
 golden / candidate side by side, because the metric cannot tell a benign rephrase
 from a real nuance loss — a human reads those. Each gate row stores its `output`
 text so the comparison is possible at all.
+
+The gate/benchmark default `--warmup profile` warms short/mid/long selected
+cases for every source/target direction before timing. This keeps one-time HY-MT
+compile and prompt-shape generalization out of steady-state speed gates; use a
+numeric `--warmup` only for intentional cold-start experiments.
 
 The service uses `--translation-max-new-tokens 256` as a latency/runaway cap.
 The model quality gate above uses the translator default `512` unless that cap is

@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from qwen3_asr_runtime.translation import (
+from qwen3_asr_runtime.translation import (  # noqa: E402
     DEFAULT_HYMT_ATTN_IMPLEMENTATION,
     DEFAULT_HYMT_DECODE_BACKEND,
     DEFAULT_HYMT_FUSED_RMSNORM,
@@ -27,6 +27,10 @@ from qwen3_asr_runtime.translation import (
     DEFAULT_HYMT_W8A16,
     HYMTGenerationConfig,
     HYMTTranslator,
+)
+from tools.translation_warmup import (  # noqa: E402
+    resolve_translation_warmup_count,
+    select_translation_warmup_cases,
 )
 
 
@@ -104,8 +108,12 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--warmup",
-        default="1",
-        help="Warmup count, or 'all' to warm up every selected case.",
+        default="profile",
+        help=(
+            "Warmup profile. Default 'profile' warms short/mid/long cases per "
+            "source-target direction; use a count for the historical first-N "
+            "behavior, or 'all' to warm up every selected case."
+        ),
     )
     parser.add_argument(
         "--repeats",
@@ -234,10 +242,9 @@ def main() -> None:
             print(f"{issue.severity}: {issue.code}: {issue.message}", file=sys.stderr)
         raise SystemExit(1)
 
-    warmup_count = _resolve_warmup_count(args.warmup, len(cases))
+    warmup_cases = select_translation_warmup_cases(cases, args.warmup)
     warmup_started = time.perf_counter()
-    for index in range(warmup_count):
-        case = cases[index % len(cases)]
+    for case in warmup_cases:
         translator.profile_translate(
             str(case["text"]),
             target_language=str(case["target_language"]),
@@ -362,7 +369,9 @@ def main() -> None:
             "seed_mode": args.seed_mode,
         },
         "load_wall_sec": round(load_wall_sec, 3),
-        "warmup_count": warmup_count,
+        "warmup": str(args.warmup),
+        "warmup_count": len(warmup_cases),
+        "warmup_case_ids": [str(case.get("id") or "") for case in warmup_cases],
         "warmup_wall_sec": round(warmup_wall_sec, 3),
         "summary": summary,
         "gate_issues": [issue.__dict__ for issue in gate_issues],
@@ -428,10 +437,7 @@ def _parse_json_object(value: str) -> dict[str, Any]:
 
 
 def _resolve_warmup_count(value: str, case_count: int) -> int:
-    text = str(value).strip().lower()
-    if text == "all":
-        return case_count
-    return max(0, int(text))
+    return resolve_translation_warmup_count(value, case_count)
 
 
 def _run_case(

@@ -46,6 +46,7 @@ from realtime_server import (
     _should_log_realtime_event,
     _streaming_ready_payload,
     _timestamp_prewarm_audio,
+    _translation_prewarm_target_languages,
     _translation_capture_lock,
     _uvicorn_log_level,
 )
@@ -624,6 +625,7 @@ class TestRealtimeServerCli:
         assert args.translation_preview_debounce_ms == 700
         assert args.translation_stable_timeout_ms == 30000
         assert args.translation_stable_batch_size == 1
+        assert args.translation_prewarm_target_language is None
         assert not args.translation_sample
         assert args.log_level == "info"
         assert not args.save_debug_audio
@@ -800,6 +802,12 @@ class TestRealtimeServerCli:
         ):
             assert _parse_args().translation_stable_batch_size == 4
 
+    def test_translation_prewarm_targets_default_and_normalize(self) -> None:
+        assert _translation_prewarm_target_languages(None) == ("Chinese", "English")
+        assert _translation_prewarm_target_languages(
+            ["english,japanese", "English", ""]
+        ) == ("English", "Japanese")
+
     def test_translation_stable_timeout_can_be_configured(self) -> None:
         with patch.object(
             sys,
@@ -899,7 +907,11 @@ class TestRealtimeServerCli:
 
         _prewarm_translation_runtime(
             actor,  # type: ignore[arg-type]
-            TranslationServiceConfig(max_new_tokens=16, stable_batch_size=2),
+            TranslationServiceConfig(
+                max_new_tokens=16,
+                stable_batch_size=2,
+                prewarm_target_languages=("Chinese", "English"),
+            ),
         )
 
         assert [
@@ -907,6 +919,8 @@ class TestRealtimeServerCli:
         ] == [
             ("Chinese", 1),
             ("Chinese", 2),
+            ("English", 1),
+            ("English", 2),
         ]
         assert all(call["source_language"] == "" for call in actor.calls)
         assert all(call["max_new_tokens"] == 16 for call in actor.calls)

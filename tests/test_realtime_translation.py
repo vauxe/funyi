@@ -1237,6 +1237,52 @@ class TestRealtimeTranslationRuntime:
             await asyncio.sleep(0.005)
         assert translator.warmup_threads == translator.translate_threads
 
+    def test_model_actor_warmup_once_skips_completed_key(self) -> None:
+        class WarmupRecordingTranslator(FakeTranslator):
+            def __init__(self) -> None:
+                super().__init__()
+                self.warmups: list[tuple[str, int]] = []
+
+            def warmup(self, texts: object, **kwargs: object) -> list[object]:
+                text_list = list(texts)  # type: ignore[arg-type]
+                self.warmups.append((str(kwargs["target_language"]), len(text_list)))
+                return [object() for _ in text_list]
+
+        translator = WarmupRecordingTranslator()
+        actor = TranslationModelActor(translator)
+        try:
+            first = actor.warmup_once(
+                ["short", "long"],
+                target_language="English",
+                source_language="Chinese",
+                max_new_tokens=16,
+                sync_cuda=True,
+                cache_key=("target", "English"),
+            )
+            second = actor.warmup_once(
+                ["short", "long"],
+                target_language="English",
+                source_language="Chinese",
+                max_new_tokens=16,
+                sync_cuda=True,
+                cache_key=("target", "English"),
+            )
+            third = actor.warmup_once(
+                ["short"],
+                target_language="Japanese",
+                source_language="Chinese",
+                max_new_tokens=16,
+                sync_cuda=True,
+                cache_key=("target", "Japanese"),
+            )
+        finally:
+            actor.close(wait=True)
+
+        assert len(first) == 2
+        assert second == []
+        assert len(third) == 1
+        assert translator.warmups == [("English", 2), ("Japanese", 1)]
+
     async def test_finish_waits_for_running_preview_model_call_before_stable_history(
         self,
         make_translation_runtime,

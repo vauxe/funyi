@@ -148,10 +148,13 @@ Do not reopen without new evidence:
   loop — and even that must clear the 1.2x micro-bench bar first.
 - `dynamic=True` compile / marking HY-MT prompt length dynamic to cut first-token
   latency: **unnecessary** (2026-05-30). The service prewarms 3 varied-length
-  texts at startup (~40s, off the request path); torch.compile automatic-dynamic
-  then generalizes, so subsequent *unseen* prompt lengths do NOT recompile
-  (6 distinct unseen lengths measured `0.04`–`0.38s` first-call, no 45s stall).
-  There is no per-length recompile problem to fix on the live path.
+  texts for each startup target language (default `Chinese,English`, configurable
+  with repeated/comma-separated `--translation-prewarm-target-language`);
+  torch.compile automatic-dynamic then generalizes, so subsequent *unseen*
+  prompt lengths do NOT recompile (6 distinct unseen lengths measured
+  `0.04`–`0.38s` first-call, no 45s stall). Targets outside the startup set are
+  prewarmed once before first use, so compile cost does not land in audio ingest
+  or final translation drain.
 - fused W8A16 `gate_up + silu * up`
 - W8A16 on `o_proj`/`down_proj` (out=2048 → Triton GEMV under-occupies, ~50% of
   SMs; no decode speedup) and W8A16 on `lm_head` (~4-5% but CER `delta_abs_mean`

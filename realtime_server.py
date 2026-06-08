@@ -86,7 +86,7 @@ _SERVICE_DEBUG_PCM_SUMMARY_INTERVAL_MS = 1000
 # longest real output while halving that worst-case tail and the cache footprint.
 _SERVICE_TRANSLATION_MAX_NEW_TOKENS = 256
 _SERVICE_TRANSLATION_PREVIEW_DEBOUNCE_MS = 700
-_SERVICE_TRANSLATION_PREWARM_TARGET_LANGUAGE = "Chinese"
+_SERVICE_TRANSLATION_PREWARM_TARGET_LANGUAGES = ("Chinese", "English")
 _SERVICE_TRANSLATION_PREWARM_TEXTS = (
     "你好。",
     "这个地方我先试一下。",
@@ -129,6 +129,9 @@ class TranslationServiceConfig:
     stable_timeout_ms: int = 30_000
     max_new_tokens: int | None = None
     stable_batch_size: int = 1
+    prewarm_target_languages: tuple[str, ...] = (
+        _SERVICE_TRANSLATION_PREWARM_TARGET_LANGUAGES
+    )
 
     def __post_init__(self) -> None:
         if int(self.preview_debounce_ms) < 0:
@@ -413,6 +416,15 @@ def build_app(
                     await _write_offline_upload(request, audio_path)
                 except ValueError as exc:
                     return error_response("invalid_request", str(exc), 400)
+                try:
+                    await _ensure_translation_target_prewarmed(
+                        translation_actor, translation_service_config, target
+                    )
+                except Exception:
+                    _LOGGER.exception("Offline translation target prewarm failed.")
+                    return error_response(
+                        "internal_error", "Translation target prewarm failed.", 500
+                    )
 
                 options = OfflineTranscriptionOptions(
                     language=normalized_language,
@@ -496,6 +508,15 @@ def build_app(
                 await _write_offline_upload(request, audio_path)
             except ValueError as exc:
                 return error_response("invalid_request", str(exc), 400)
+            try:
+                await _ensure_translation_target_prewarmed(
+                    translation_actor, translation_service_config, target
+                )
+            except Exception:
+                _LOGGER.exception("Offline stream translation target prewarm failed.")
+                return error_response(
+                    "internal_error", "Translation target prewarm failed.", 500
+                )
 
             stream_tmp_context = tmp_context
 
@@ -637,6 +658,11 @@ def build_app(
             )
             await timestamps.start()
             if translation_actor is not None and session_translation_config is not None:
+                await _ensure_translation_target_prewarmed(
+                    translation_actor,
+                    translation_service_config,
+                    session_translation_config.target_language,
+                )
                 translation = RealtimeTranslationRuntime(
                     translation_actor,
                     config=session_translation_config,
@@ -1280,6 +1306,25 @@ def _normalize_optional_translation_target(target: str | None) -> str | None:
     if not value:
         return None
     return _normalize_translation_target_language(value)
+
+
+def _translation_prewarm_target_languages(
+    values: list[str] | tuple[str, ...] | None,
+) -> tuple[str, ...]:
+    raw_values = values or list(_SERVICE_TRANSLATION_PREWARM_TARGET_LANGUAGES)
+    targets: list[str] = []
+    seen: set[str] = set()
+    for value in raw_values:
+        for raw_value in str(value or "").split(","):
+            raw = raw_value.strip()
+            if not raw:
+                continue
+            target = _normalize_translation_target_language(raw)
+            if target in seen:
+                continue
+            seen.add(target)
+            targets.append(target)
+    return tuple(targets)
 
 
 def decode_pcm_s16le(payload: bytes) -> np.ndarray:
@@ -1984,6 +2029,16 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--translation-stable-timeout-ms", type=int, default=30_000)
     parser.add_argument("--translation-stable-batch-size", type=int, default=1)
     parser.add_argument(
+        "--translation-prewarm-target-language",
+        action="append",
+        default=None,
+        help=(
+            "Target language to prewarm at service startup. Repeat or comma-separate "
+            "to prewarm multiple targets; defaults to Chinese and English for the "
+            "local single-user profile."
+        ),
+    )
+    parser.add_argument(
         "--translation-sample", action=argparse.BooleanOptionalAction, default=False
     )
     parser.add_argument(
@@ -2140,6 +2195,9 @@ def _build_translation(
         stable_timeout_ms=int(args.translation_stable_timeout_ms),
         max_new_tokens=int(args.translation_max_new_tokens),
         stable_batch_size=int(args.translation_stable_batch_size),
+        prewarm_target_languages=_translation_prewarm_target_languages(
+            args.translation_prewarm_target_language
+        ),
     )
     generation_config = HYMTGenerationConfig(
         max_new_tokens=int(args.translation_max_new_tokens),
@@ -2245,30 +2303,77 @@ def _prewarm_translation_runtime(
     actor: TranslationModelActor,
     config: TranslationServiceConfig,
 ) -> None:
+    for target_language in config.prewarm_target_languages:
+        _prewarm_translation_target(actor, config, target_language)
+
+
+def _prewarm_translation_target(
+    actor: TranslationModelActor,
+    config: TranslationServiceConfig,
+    target_language: str,
+) -> None:
+    target = str(target_language or "").strip()
+    if not target:
+        return
     stable_batch_size = int(config.stable_batch_size)
     batch_sizes = (1,) if stable_batch_size == 1 else (1, stable_batch_size)
     for batch_size in batch_sizes:
         started = time.perf_counter()
         _LOGGER.info(
             "Prewarming translation model target_language=%s batch_size=%d texts=%d",
-            _SERVICE_TRANSLATION_PREWARM_TARGET_LANGUAGE,
+            target,
             batch_size,
             len(_SERVICE_TRANSLATION_PREWARM_TEXTS),
         )
-        actor.warmup(
+        warmup_once = getattr(actor, "warmup_once", None)
+        warmup = (
+            warmup_once if warmup_once is not None else getattr(actor, "warmup", None)
+        )
+        if warmup is None:
+            raise RuntimeError(
+                "translation prewarm was requested but this actor does not support warmup"
+            )
+        warmup(
             _SERVICE_TRANSLATION_PREWARM_TEXTS,
-            target_language=_SERVICE_TRANSLATION_PREWARM_TARGET_LANGUAGE,
+            target_language=target,
             source_language="",
             max_new_tokens=config.max_new_tokens,
             sync_cuda=True,
             batch_size=batch_size,
+            **(
+                {
+                    "cache_key": (
+                        "service_translation_target",
+                        target,
+                        int(config.max_new_tokens)
+                        if config.max_new_tokens is not None
+                        else None,
+                        int(batch_size),
+                    )
+                }
+                if warmup_once is not None
+                else {}
+            ),
         )
         _LOGGER.info(
             "Prewarmed translation model target_language=%s batch_size=%d wall_ms=%d",
-            _SERVICE_TRANSLATION_PREWARM_TARGET_LANGUAGE,
+            target,
             batch_size,
             int(round((time.perf_counter() - started) * 1000)),
         )
+
+
+async def _ensure_translation_target_prewarmed(
+    actor: TranslationModelActor | None,
+    config: TranslationServiceConfig | None,
+    target_language: str | None,
+) -> None:
+    target = str(target_language or "").strip()
+    if actor is None or config is None or not target:
+        return
+    if not hasattr(actor, "warmup_once") and not hasattr(actor, "warmup"):
+        return
+    await asyncio.to_thread(_prewarm_translation_target, actor, config, target)
 
 
 def _timestamp_prewarm_audio(

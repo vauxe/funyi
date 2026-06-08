@@ -180,6 +180,8 @@ class TranslationModelActor:
             max_workers=1,
             thread_name_prefix="hymt-translation",
         )
+        self._warmup_once_lock = threading.Lock()
+        self._warmup_once_keys: set[tuple[Any, ...]] = set()
 
     @property
     def model_path(self) -> str:
@@ -213,6 +215,39 @@ class TranslationModelActor:
             ),
         )
         return list(future.result())
+
+    def warmup_once(
+        self,
+        texts: list[str] | tuple[str, ...],
+        *,
+        target_language: str,
+        source_language: str,
+        max_new_tokens: int | None,
+        sync_cuda: bool,
+        batch_size: int = 1,
+        cache_key: tuple[Any, ...] | None = None,
+    ) -> list[Any]:
+        key = cache_key or (
+            tuple(str(text) for text in texts),
+            str(target_language or "").strip(),
+            str(source_language or "").strip(),
+            max_new_tokens,
+            int(batch_size),
+        )
+        with self._warmup_once_lock:
+            if key in self._warmup_once_keys:
+                return []
+        results = self.warmup(
+            texts,
+            target_language=target_language,
+            source_language=source_language,
+            max_new_tokens=max_new_tokens,
+            sync_cuda=sync_cuda,
+            batch_size=batch_size,
+        )
+        with self._warmup_once_lock:
+            self._warmup_once_keys.add(key)
+        return results
 
     async def translate(
         self,

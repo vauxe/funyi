@@ -549,9 +549,12 @@ Protocol-visible service defaults:
   `--translation-model` is passed; `scripts/start_backend.sh` passes the default
   HY-MT2 model unless `FUNYI_TRANSLATION_MODEL=` disables it.
 - startup prewarms enabled model paths before the HTTP/WebSocket interface is
-  created: ASR cuda graph, translation target buckets, and forced-aligner
-  timestamps. Prewarm failure fails startup instead of exposing a cold or
-  partially initialized service.
+  created: ASR cuda graph, HY-MT translation buckets for startup targets
+  (default `Chinese,English`; configure with
+  `--translation-prewarm-target-language`), and forced-aligner timestamps.
+  Translation targets outside the startup set are prewarmed once before first
+  use. Prewarm failure fails startup or the request instead of exposing a cold or
+  partially initialized runtime.
 
 The local service runtime profile uses the live20 model streaming preset
 (`chunk_size_sec=0.5`, `max_window_sec=20`, `max_prefix_tokens=64`,
