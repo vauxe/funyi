@@ -46,26 +46,75 @@ export class SessionControlsView {
   renderStatus({ text, tone, level, volume = 0 }: StatusSummary): void {
     const active = text !== "";
     const audioLevel = level ?? "silent";
-    this.elements.appShell.dataset.statusActive = String(active);
-    this.elements.sessionStatus.textContent = text;
-    this.elements.sessionStatus.dataset.active = String(active);
-    this.elements.sessionStatus.dataset.tone = tone;
-    if (level) {
-      this.elements.sessionStatus.dataset.level = level;
-    } else {
-      delete this.elements.sessionStatus.dataset.level;
-    }
-    this.elements.sessionStatus.title = text;
-    this.elements.sessionStatus.setAttribute("aria-label", text);
+    const activeValue = String(active);
+    setDatasetIfChanged(this.elements.appShell, "statusActive", activeValue);
+    setDatasetIfChanged(this.elements.sessionStatus, "active", activeValue);
+    setTextIfChanged(this.elements.sessionStatus, text);
+    setTitleIfChanged(this.elements.sessionStatus, text);
+    setAttributeIfChanged(this.elements.sessionStatus, "aria-label", text);
+    setDatasetIfChanged(this.elements.sessionStatus, "tone", tone);
+    setOptionalDatasetIfChanged(this.elements.sessionStatus, "level", level ?? null);
     this.renderVolumeIndicator(audioLevel, volume);
   }
 
   private renderVolumeIndicator(level: NonNullable<StatusSummary["level"]>, volume: number): void {
     const normalizedVolume = Math.min(1, Math.max(0, volume));
-    this.elements.volumeIndicator.dataset.level = level;
-    this.elements.volumeIndicator.style.setProperty("--volume-bar-low", volumeBarScale(normalizedVolume, 0.18, 0.42));
-    this.elements.volumeIndicator.style.setProperty("--volume-bar-mid", volumeBarScale(normalizedVolume, 0.12, 0.72));
-    this.elements.volumeIndicator.style.setProperty("--volume-bar-high", volumeBarScale(normalizedVolume, 0.08, 0.92));
+    setDatasetIfChanged(this.elements.volumeIndicator, "level", level);
+    setStylePropertyIfChanged(
+      this.elements.volumeIndicator,
+      "--volume-bar-low",
+      volumeBarScale(normalizedVolume, 0.18, 0.42),
+    );
+    setStylePropertyIfChanged(
+      this.elements.volumeIndicator,
+      "--volume-bar-mid",
+      volumeBarScale(normalizedVolume, 0.12, 0.72),
+    );
+    setStylePropertyIfChanged(
+      this.elements.volumeIndicator,
+      "--volume-bar-high",
+      volumeBarScale(normalizedVolume, 0.08, 0.92),
+    );
+  }
+}
+
+function setTextIfChanged(element: HTMLElement, value: string): void {
+  if (element.textContent !== value) {
+    element.textContent = value;
+  }
+}
+
+function setTitleIfChanged(element: HTMLElement, value: string): void {
+  if (element.title !== value) {
+    element.title = value;
+  }
+}
+
+function setAttributeIfChanged(element: HTMLElement, name: string, value: string): void {
+  if (element.getAttribute(name) !== value) {
+    element.setAttribute(name, value);
+  }
+}
+
+function setDatasetIfChanged(element: HTMLElement, key: string, value: string): void {
+  if (element.dataset[key] !== value) {
+    element.dataset[key] = value;
+  }
+}
+
+function setOptionalDatasetIfChanged(element: HTMLElement, key: string, value: string | null): void {
+  if (value === null) {
+    if (element.dataset[key] !== undefined) {
+      delete element.dataset[key];
+    }
+    return;
+  }
+  setDatasetIfChanged(element, key, value);
+}
+
+function setStylePropertyIfChanged(element: HTMLElement, name: string, value: string): void {
+  if (element.style.getPropertyValue(name) !== value) {
+    element.style.setProperty(name, value);
   }
 }
 

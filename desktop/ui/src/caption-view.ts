@@ -10,10 +10,22 @@ interface CaptionViewElements {
 }
 
 export class CaptionView {
+  private readonly currentCaptionResizeObserver: ResizeObserver | null;
   private renderedHistoryLines: readonly SubtitleLine[] = [];
   private renderedHistoryTranslationEnabled: boolean | null = null;
+  private renderedHistoryTranslationLanguage = "";
+  private renderedHistoryVersion: number | null = null;
 
-  constructor(private readonly elements: CaptionViewElements) {}
+  constructor(private readonly elements: CaptionViewElements) {
+    this.currentCaptionResizeObserver = observeCurrentCaptionLayout(
+      elements.currentSource,
+      elements.currentTranslation,
+    );
+  }
+
+  disconnect(): void {
+    this.currentCaptionResizeObserver?.disconnect();
+  }
 
   render(
     document: SubtitleDocument,
@@ -33,6 +45,8 @@ export class CaptionView {
     this.elements.historyList.replaceChildren();
     this.renderedHistoryLines = [];
     this.renderedHistoryTranslationEnabled = null;
+    this.renderedHistoryTranslationLanguage = "";
+    this.renderedHistoryVersion = null;
   }
 
   scrollHistoryToLatest(behavior: ScrollBehavior): void {
@@ -49,9 +63,19 @@ export class CaptionView {
   }
 
   private renderHistory(document: SubtitleDocument, historyVisible: boolean, translationLanguage: string): void {
+    const historyVersion = document.stableRenderVersion;
+    if (
+      this.renderedHistoryVersion === historyVersion &&
+      this.renderedHistoryTranslationEnabled === document.translationEnabled &&
+      this.renderedHistoryTranslationLanguage === translationLanguage
+    ) {
+      return;
+    }
+
     const lines = document.stableLines;
     const hadNewLine = lines.length > this.renderedHistoryLines.length;
     const translationChanged = this.renderedHistoryTranslationEnabled !== document.translationEnabled;
+    const translationLanguageChanged = this.renderedHistoryTranslationLanguage !== translationLanguage;
 
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
@@ -63,7 +87,7 @@ export class CaptionView {
       if (!item) {
         this.elements.historyList.append(historyItem);
       }
-      if (translationChanged || this.renderedHistoryLines[index] !== line) {
+      if (translationChanged || translationLanguageChanged || this.renderedHistoryLines[index] !== line) {
         updateHistoryItem(
           historyItem,
           line,
@@ -77,6 +101,8 @@ export class CaptionView {
     trimHistoryItems(this.elements.historyList, lines.length);
     this.renderedHistoryLines = lines.slice();
     this.renderedHistoryTranslationEnabled = document.translationEnabled;
+    this.renderedHistoryTranslationLanguage = translationLanguage;
+    this.renderedHistoryVersion = historyVersion;
     if (historyVisible && hadNewLine) {
       this.scrollHistoryToLatest("smooth");
     }
@@ -143,21 +169,46 @@ function updateHistoryItem(
   setTextIfChanged(translation, translationEnabled ? visibleTranslation(line) || "" : "");
 }
 
-function setTextIfChanged(element: HTMLElement | undefined, value: string): void {
+function setTextIfChanged(element: HTMLElement | undefined, value: string): boolean {
   if (element && element.textContent !== value) {
     element.textContent = value;
+    return true;
   }
+  return false;
 }
 
 function trimHistoryItems(historyList: HTMLElement, lineCount: number): void {
-  const children = Array.from(historyList.children) as HTMLElement[];
-  if (children.length > lineCount) {
-    historyList.replaceChildren(...children.slice(0, lineCount));
+  if (historyList.children.length <= lineCount) {
+    return;
   }
+  const children = Array.from(historyList.children) as HTMLElement[];
+  historyList.replaceChildren(...children.slice(0, lineCount));
 }
 
 function setCaptionText(element: HTMLElement, value: string): void {
-  setTextIfChanged(element, value);
+  if (setTextIfChanged(element, value)) {
+    anchorCaptionTail(element);
+  }
+}
+
+function observeCurrentCaptionLayout(...elements: HTMLElement[]): ResizeObserver | null {
+  if (typeof ResizeObserver === "undefined") {
+    return null;
+  }
+  const observer = new ResizeObserver((entries) => {
+    for (const entry of entries) {
+      if (entry.target instanceof HTMLElement) {
+        anchorCaptionTail(entry.target);
+      }
+    }
+  });
+  for (const element of elements) {
+    observer.observe(element);
+  }
+  return observer;
+}
+
+function anchorCaptionTail(element: HTMLElement): void {
   element.scrollTop = element.scrollHeight;
 }
 

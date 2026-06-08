@@ -61,6 +61,55 @@ function partialSegment(text: string, { startMs, endMs }: SegmentOptions = {}) {
   };
 }
 
+test("stable render version changes only for stable history render updates", () => {
+  const document = new SubtitleDocument();
+  const initialVersion = document.stableRenderVersion;
+
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 0,
+    stable_appends: [],
+    partial: partialSegment("typing"),
+  });
+  assert.equal(document.stableRenderVersion, initialVersion);
+
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 2,
+    stable_base: 0,
+    stable_count: 1,
+    stable_appends: [stableSegment(1, "stable", { startMs: 0, endMs: 1000 })],
+    partial: null,
+  });
+  const stableVersion = document.stableRenderVersion;
+  assert.ok(stableVersion > initialVersion);
+
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 3,
+    stable_base: 1,
+    stable_count: 1,
+    stable_appends: [],
+    partial: partialSegment("next"),
+  });
+  assert.equal(document.stableRenderVersion, stableVersion);
+
+  document.applyEvent({
+    type: "transcript_timing_update",
+    source_segment_id: "seg_000001",
+    start_ms: 100,
+    end_ms: 1100,
+    timing_status: "aligned",
+  });
+  const timedVersion = document.stableRenderVersion;
+  assert.ok(timedVersion > stableVersion);
+
+  document.applyEvent({ type: "translation_stable", source_segment_id: "seg_000001", text: "translated" });
+  assert.ok(document.stableRenderVersion > timedVersion);
+});
+
 test("window scrolls when current partial becomes stable", () => {
   const document = new SubtitleDocument();
   document.applyEvent({

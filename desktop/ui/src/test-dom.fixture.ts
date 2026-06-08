@@ -44,6 +44,7 @@ export class FakeElement {
   };
 
   readonly style = {
+    getPropertyValue: (name: string): string => this.styleValues.get(name) || "",
     setProperty: (name: string, value: string): void => {
       this.styleValues.set(name, value);
     },
@@ -104,6 +105,10 @@ export class FakeElement {
 
   hasPointerCapture(pointerId: number): boolean {
     return this.pointerCapture === pointerId;
+  }
+
+  getAttribute(name: string): string | null {
+    return this.attributes.get(name) ?? null;
   }
 
   releasePointerCapture(pointerId: number): void {

@@ -56,6 +56,7 @@ export class SubtitleDocument {
   private stableLineOffsetById: Map<string, number>;
   private stableLineOffsetByIndex: Map<number, number>;
   private stableProjection: SubtitleLine[] | null;
+  private stableRenderRevision: number;
   private stableTranslationUnitIndex: Map<string, number>;
   private stableTranslationUnits: StableTranslationUnit[];
   private pendingStableUnitIds: string[];
@@ -69,6 +70,7 @@ export class SubtitleDocument {
     this.stableLineOffsetById = new Map();
     this.stableLineOffsetByIndex = new Map();
     this.stableProjection = null;
+    this.stableRenderRevision = 0;
     this.stableTranslationUnitIndex = new Map();
     this.stableTranslationUnits = [];
     this.pendingStableUnitIds = [];
@@ -77,6 +79,10 @@ export class SubtitleDocument {
 
   get stableLines(): readonly SubtitleLine[] {
     return this.projectedStableLines();
+  }
+
+  get stableRenderVersion(): number {
+    return this.stableRenderRevision;
   }
 
   exportLines(): readonly SubtitleLine[] {
@@ -409,6 +415,7 @@ export class SubtitleDocument {
   }
 
   private invalidateStableProjection(): void {
+    this.stableRenderRevision += 1;
     this.stableProjection = null;
   }
 
@@ -426,6 +433,7 @@ export class SubtitleDocument {
       translationStatus: unit.translationStatus,
       translationMessage: unit.translationMessage,
     });
+    this.stableRenderRevision += 1;
     return true;
   }
 

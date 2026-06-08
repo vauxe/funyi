@@ -97,6 +97,18 @@ test("renders volume indicator from audio level summaries", () => {
   assert.equal(elements.volumeIndicator.styleValues.get("--volume-bar-high"), "0.77");
 });
 
+test("does not rewrite unchanged status and volume DOM state", () => {
+  const elements = createElements();
+  const view = new SessionControlsView(sessionControlsElements(elements));
+
+  const summary = { text: "Audio lagging", tone: "warn" as const, level: "live" as const, volume: 0.75 };
+  view.renderStatus(summary);
+  const writes = trackDomWrites(elements.appShell, elements.sessionStatus, elements.volumeIndicator);
+  view.renderStatus(summary);
+
+  assert.deepEqual(writes, []);
+});
+
 function createElements(): Record<
   | "appShell"
   | "audioSource"
@@ -135,5 +147,58 @@ function sessionControlsElements(
     transportButton: asDomElement<HTMLButtonElement>(elements.transportButton),
     translationTargetLanguage: asDomElement<HTMLSelectElement>(elements.translationTargetLanguage),
     volumeIndicator: asDomElement(elements.volumeIndicator),
+  };
+}
+
+function trackDomWrites(...elements: FakeElement[]): string[] {
+  const writes: string[] = [];
+  for (const element of elements) {
+    trackPropertyWrites(element, "textContent", writes);
+    trackPropertyWrites(element, "title", writes);
+    trackDatasetWrites(element, writes);
+    trackAttributeWrites(element, writes);
+    trackStyleWrites(element, writes);
+  }
+  return writes;
+}
+
+function trackPropertyWrites(element: FakeElement, property: "textContent" | "title", writes: string[]): void {
+  let value = element[property];
+  Object.defineProperty(element, property, {
+    configurable: true,
+    get: () => value,
+    set: (next: string) => {
+      writes.push(`${property}=${next}`);
+      value = next;
+    },
+  });
+}
+
+function trackDatasetWrites(element: FakeElement, writes: string[]): void {
+  element.dataset = new Proxy(element.dataset, {
+    deleteProperty(target, property) {
+      writes.push(`delete data-${String(property)}`);
+      return Reflect.deleteProperty(target, property);
+    },
+    set(target, property, value) {
+      writes.push(`data-${String(property)}=${String(value)}`);
+      return Reflect.set(target, property, String(value));
+    },
+  });
+}
+
+function trackAttributeWrites(element: FakeElement, writes: string[]): void {
+  const setAttribute = element.setAttribute.bind(element);
+  element.setAttribute = (name: string, value: string): void => {
+    writes.push(`${name}=${value}`);
+    setAttribute(name, value);
+  };
+}
+
+function trackStyleWrites(element: FakeElement, writes: string[]): void {
+  const setProperty = element.style.setProperty;
+  element.style.setProperty = (name: string, value: string): void => {
+    writes.push(`${name}=${value}`);
+    setProperty(name, value);
   };
 }

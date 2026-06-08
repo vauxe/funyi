@@ -19,6 +19,7 @@ test.beforeEach(() => {
 
 test.afterEach(() => {
   clearDomGlobals();
+  Reflect.deleteProperty(globalThis, "ResizeObserver");
 });
 
 test("renders current caption window and stable history", () => {
@@ -102,6 +103,86 @@ test("anchors compact caption text to the latest visible tail", () => {
 
   assert.equal(elements.currentSource.scrollTop, 160);
   assert.equal(elements.currentTranslation.scrollTop, 96);
+});
+
+test("does not force caption scroll when rendered caption text is unchanged", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 0,
+    stable_appends: [],
+    partial: partialSegment("current text"),
+  });
+  const elements = createElements();
+  elements.currentSource.scrollHeight = 160;
+  const view = new CaptionView(captionViewElements(elements));
+
+  view.render(document, { historyVisible: false });
+  elements.currentSource.scrollHeight = 240;
+  view.render(document, { historyVisible: false });
+
+  assert.equal(elements.currentSource.scrollTop, 160);
+});
+
+test("reanchors current caption tails when the caption layout changes", () => {
+  const resizeObservers = installFakeResizeObserver();
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 0,
+    stable_appends: [],
+    partial: partialSegment("current text"),
+  });
+  document.applyEvent({ type: "translation_preview", source_revision: 1, text: "current translation" });
+  const elements = createElements();
+  elements.currentSource.scrollHeight = 160;
+  elements.currentTranslation.scrollHeight = 96;
+  const view = new CaptionView(captionViewElements(elements));
+
+  view.render(document, { historyVisible: false });
+  elements.currentSource.scrollHeight = 240;
+  elements.currentTranslation.scrollHeight = 180;
+  resizeObservers[0]?.trigger();
+
+  assert.equal(elements.currentSource.scrollTop, 240);
+  assert.equal(elements.currentTranslation.scrollTop, 180);
+});
+
+test("skips stable history reads when the stable render version is unchanged", () => {
+  let stableReads = 0;
+  const line = {
+    id: "seg_000001",
+    index: 1,
+    startMs: 0,
+    endMs: 1000,
+    text: "stable",
+    language: "Chinese",
+    sourceRevision: 1,
+    timingStatus: null,
+    translation: null,
+    translationStatus: null,
+    translationMessage: null,
+  };
+  const document = {
+    stableRenderVersion: 1,
+    translationEnabled: true,
+    get stableLines() {
+      stableReads += 1;
+      return [line];
+    },
+    window: () => ({ current: null }),
+  } as unknown as SubtitleDocument;
+  const elements = createElements();
+  const view = new CaptionView(captionViewElements(elements));
+
+  view.render(document, { historyVisible: false });
+  view.render(document, { historyVisible: false });
+
+  assert.equal(stableReads, 1);
 });
 
 test("updates history when translation visibility changes and scrolls visible history", () => {
@@ -405,4 +486,43 @@ function partialSegment(text: string): Record<string, unknown> {
     text,
     language: "Chinese",
   };
+}
+
+function installFakeResizeObserver(): FakeResizeObserver[] {
+  const observers: FakeResizeObserver[] = [];
+  class TestResizeObserver extends FakeResizeObserver {
+    constructor(callback: ResizeObserverCallback) {
+      super(callback);
+      observers.push(this);
+    }
+  }
+  Object.defineProperty(globalThis, "ResizeObserver", {
+    configurable: true,
+    value: TestResizeObserver,
+    writable: true,
+  });
+  return observers;
+}
+
+class FakeResizeObserver {
+  private readonly observed = new Set<Element>();
+
+  constructor(private readonly callback: ResizeObserverCallback) {}
+
+  observe(target: Element): void {
+    this.observed.add(target);
+  }
+
+  unobserve(target: Element): void {
+    this.observed.delete(target);
+  }
+
+  disconnect(): void {
+    this.observed.clear();
+  }
+
+  trigger(): void {
+    const entries = [...this.observed].map((target) => ({ target }) as ResizeObserverEntry);
+    this.callback(entries, this as unknown as ResizeObserver);
+  }
 }
