@@ -144,6 +144,23 @@ class TranslationServiceConfig:
             raise ValueError("stable_batch_size must be > 0")
 
 
+class _ActiveSessionGuard:
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._open = False
+
+    async def acquire(self) -> bool:
+        async with self._lock:
+            if self._open:
+                return False
+            self._open = True
+            return True
+
+    async def release(self) -> None:
+        async with self._lock:
+            self._open = False
+
+
 @dataclass(frozen=True)
 class _OfflineTranslationJob:
     unit: OfflineTranslationUnit
@@ -359,8 +376,7 @@ def build_app(
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
     )
-    active_lock = asyncio.Lock()
-    active_connection = {"open": False}
+    active_session = _ActiveSessionGuard()
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
@@ -371,9 +387,8 @@ def build_app(
             {"error": {"code": code, "message": message}}, status_code=status_code
         )
 
-    async def release_active_connection() -> None:
-        async with active_lock:
-            active_connection["open"] = False
+    def busy_response() -> Any:
+        return error_response("busy", "Another transcription session is active.", 409)
 
     @app.post("/api/transcriptions")
     async def create_transcription(
@@ -385,16 +400,8 @@ def build_app(
         timestamps: bool = True,
         filename: str = "",
     ) -> Any:
-        reject_request = False
-        async with active_lock:
-            if active_connection["open"]:
-                reject_request = True
-            else:
-                active_connection["open"] = True
-        if reject_request:
-            return error_response(
-                "busy", "Another transcription session is active.", 409
-            )
+        if not await active_session.acquire():
+            return busy_response()
 
         try:
             try:
@@ -462,7 +469,7 @@ def build_app(
                     )
             return document.to_payload()
         finally:
-            await release_active_connection()
+            await active_session.release()
 
     @app.post("/api/transcriptions/stream")
     async def create_transcription_stream(
@@ -474,16 +481,8 @@ def build_app(
         timestamps: bool = True,
         filename: str = "",
     ) -> Any:
-        reject_request = False
-        async with active_lock:
-            if active_connection["open"]:
-                reject_request = True
-            else:
-                active_connection["open"] = True
-        if reject_request:
-            return error_response(
-                "busy", "Another transcription session is active.", 409
-            )
+        if not await active_session.acquire():
+            return busy_response()
 
         tmp_context: tempfile.TemporaryDirectory[str] | None = None
         stream_owns_resources = False
@@ -569,7 +568,7 @@ def build_app(
                         try:
                             stream_tmp_context.cleanup()
                         finally:
-                            await release_active_connection()
+                            await active_session.release()
 
             response = StreamingResponse(
                 event_stream(),
@@ -584,7 +583,7 @@ def build_app(
                     if tmp_context is not None:
                         tmp_context.cleanup()
                 finally:
-                    await release_active_connection()
+                    await active_session.release()
 
     @app.websocket("/ws/asr")
     async def websocket_asr(websocket: WebSocket) -> None:
@@ -596,13 +595,7 @@ def build_app(
         timestamps: RealtimeTimestampRuntime | None = None
         audio_recorder: _DebugAudioRecorder | None = None
 
-        reject_connection = False
-        async with active_lock:
-            if active_connection["open"]:
-                reject_connection = True
-            else:
-                active_connection["open"] = True
-        if reject_connection:
+        if not await active_session.acquire():
             with suppress(WebSocketSendTimeout):
                 await _send_error_and_close(
                     websocket, "Another realtime session is active.", code=1013
@@ -919,8 +912,7 @@ def build_app(
                     sender_task.result()
                 except Exception:
                     pass
-            async with active_lock:
-                active_connection["open"] = False
+            await active_session.release()
 
     return app
 
@@ -1333,16 +1325,6 @@ def decode_pcm_s16le(payload: bytes) -> np.ndarray:
     if not payload:
         return np.zeros((0,), dtype=np.int16)
     return np.frombuffer(payload, dtype="<i2").copy()
-
-
-def _format_pcm_debug_stats(audio: np.ndarray) -> str:
-    samples, sum_squares, peak, zero_count = _pcm_debug_metrics(audio)
-    return _format_pcm_debug_metrics(
-        samples=samples,
-        sum_squares=sum_squares,
-        peak=peak,
-        zero_count=zero_count,
-    )
 
 
 def _pcm_debug_metrics(audio: np.ndarray) -> tuple[int, float, float, int]:

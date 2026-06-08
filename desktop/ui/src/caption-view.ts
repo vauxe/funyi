@@ -10,21 +10,13 @@ interface CaptionViewElements {
 }
 
 export class CaptionView {
-  private readonly currentCaptionResizeObserver: ResizeObserver | null;
   private renderedHistoryLines: readonly SubtitleLine[] = [];
   private renderedHistoryTranslationEnabled: boolean | null = null;
   private renderedHistoryTranslationLanguage = "";
   private renderedHistoryVersion: number | null = null;
 
   constructor(private readonly elements: CaptionViewElements) {
-    this.currentCaptionResizeObserver = observeCurrentCaptionLayout(
-      elements.currentSource,
-      elements.currentTranslation,
-    );
-  }
-
-  disconnect(): void {
-    this.currentCaptionResizeObserver?.disconnect();
+    observeCurrentCaptionLayout(elements.currentSource, elements.currentTranslation);
   }
 
   render(
@@ -191,9 +183,9 @@ function setCaptionText(element: HTMLElement, value: string): void {
   }
 }
 
-function observeCurrentCaptionLayout(...elements: HTMLElement[]): ResizeObserver | null {
+function observeCurrentCaptionLayout(...elements: HTMLElement[]): void {
   if (typeof ResizeObserver === "undefined") {
-    return null;
+    return;
   }
   const observer = new ResizeObserver((entries) => {
     for (const entry of entries) {
@@ -205,7 +197,6 @@ function observeCurrentCaptionLayout(...elements: HTMLElement[]): ResizeObserver
   for (const element of elements) {
     observer.observe(element);
   }
-  return observer;
 }
 
 function anchorCaptionTail(element: HTMLElement): void {

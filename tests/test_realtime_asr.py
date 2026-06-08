@@ -28,7 +28,6 @@ from realtime_server import (
     _close_websocket,
     _configure_logging,
     _format_event_log_summary,
-    _format_pcm_debug_stats,
     _parse_args,
     _parse_language_config_update,
     _pcm_s16le_bytes,
@@ -679,9 +678,11 @@ class TestRealtimeServerCli:
 
     def test_pcm_debug_stats_describe_frame_level_audio(self) -> None:
         audio = np.array([0, 32767, -32768], dtype=np.int16)
+        summary = _PcmDebugSummary(session_id="s1", sample_rate=1000, interval_ms=1)
 
-        stats = _format_pcm_debug_stats(audio)
+        stats = summary.accept(audio, byte_count=6)
 
+        assert stats is not None
         assert "samples=3" in stats
         assert "duration_ms=0" in stats
         assert "peak=1.0000" in stats

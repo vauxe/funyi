@@ -513,14 +513,6 @@ class FakeResizeObserver {
     this.observed.add(target);
   }
 
-  unobserve(target: Element): void {
-    this.observed.delete(target);
-  }
-
-  disconnect(): void {
-    this.observed.clear();
-  }
-
   trigger(): void {
     const entries = [...this.observed].map((target) => ({ target }) as ResizeObserverEntry);
     this.callback(entries, this as unknown as ResizeObserver);
