@@ -1,5 +1,5 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import test from "node:test";
 
 import { CaptionView } from "./caption-view.js";
 import { SubtitleDocument } from "./subtitle-document.js";
@@ -52,8 +52,8 @@ test("renders current caption window and stable history", () => {
   assert.equal(historyItem.children[0]?.textContent, "00:01.000 - 00:02.500 aligned");
   assert.equal(historyItem.children[1]?.textContent, "hello");
   assert.equal(historyItem.children[2]?.textContent, "bonjour");
-  assert.equal(historyItem.children[1]?.attributes.get("contenteditable"), "plaintext-only");
-  assert.equal(historyItem.children[2]?.attributes.get("contenteditable"), "plaintext-only");
+  assert.equal(historyItem.children[1]?.attributes.get("contenteditable"), undefined);
+  assert.equal(historyItem.children[2]?.attributes.get("contenteditable"), undefined);
   assert.equal(historyItem.children[1]?.attributes.get("lang"), "zh");
   assert.equal(historyItem.children[2]?.attributes.get("lang"), "fr");
   assert.ok(historyItem.className.split(/\s+/).includes("is-latest"));
@@ -128,7 +128,7 @@ test("updates history when translation visibility changes and scrolls visible hi
   assert.deepEqual(historyItem.scrollCalls, [{ behavior: "smooth", block: "end" }]);
 });
 
-test("preserves user-edited history text when timing updates rerender the same line", () => {
+test("updates read-only history text when timing updates rerender the same line", () => {
   const document = new SubtitleDocument();
   document.applyEvent({
     type: "transcript_update",
@@ -145,8 +145,6 @@ test("preserves user-edited history text when timing updates rerender the same l
   const [historyItem] = elements.historyList.children;
   const source = historyItem?.children[1];
   assert.ok(source);
-  source.textContent = "edited source";
-  source.dispatch("input", {});
 
   document.applyEvent({
     type: "transcript_timing_update",
@@ -158,10 +156,10 @@ test("preserves user-edited history text when timing updates rerender the same l
   view.render(document, { historyVisible: false });
 
   assert.equal(historyItem.children[0]?.textContent, "00:00.100 - 00:01.200 aligned");
-  assert.equal(source.textContent, "edited source");
+  assert.equal(source.textContent, "source");
 });
 
-test("announces only stabilized lines through the live region with language tags", () => {
+test("tags visible caption languages without maintaining a hidden announce log", () => {
   const document = new SubtitleDocument({ translationEnabled: true });
   document.applyEvent({
     type: "transcript_update",
@@ -178,66 +176,12 @@ test("announces only stabilized lines through the live region with language tags
   view.render(document, { historyVisible: false, translationLanguage: "Japanese" });
   view.render(document, { historyVisible: false, translationLanguage: "Japanese" });
 
-  assert.equal(elements.announcer.children.length, 1);
-  const entry = elements.announcer.children[0];
-  assert.equal(entry?.attributes.get("dir"), "auto");
-  const [sourceSpan, translationSpan] = entry?.children ?? [];
-  assert.equal(sourceSpan?.textContent, "hello");
-  assert.equal(sourceSpan?.attributes.get("lang"), "zh");
-  assert.equal(translationSpan?.textContent, " — nihao");
-  assert.equal(translationSpan?.attributes.get("lang"), "ja");
   assert.equal(elements.currentSource.attributes.get("lang"), "zh");
   assert.equal(elements.currentTranslation.attributes.get("lang"), "ja");
   assert.equal(elements.currentSource.textContent, "typing");
 });
 
-test("announces a stable translation that arrives after the source line", () => {
-  const document = new SubtitleDocument({ translationEnabled: true });
-  document.applyEvent({
-    type: "transcript_update",
-    revision: 1,
-    stable_base: 0,
-    stable_count: 1,
-    stable_appends: [stableSegment(1, "hello", { startMs: 0, endMs: 1000 })],
-    partial: null,
-  });
-  const elements = createElements();
-  const view = new CaptionView(captionViewElements(elements));
-
-  view.render(document, { historyVisible: false, translationLanguage: "English" });
-  document.applyEvent({ type: "translation_stable", source_segment_id: "seg_000001", text: "hello translation" });
-  view.render(document, { historyVisible: false, translationLanguage: "English" });
-  view.render(document, { historyVisible: false, translationLanguage: "English" });
-
-  assert.equal(elements.announcer.children.length, 2);
-  assert.equal(elements.announcer.children[0]?.children[0]?.textContent, "hello");
-  assert.equal(elements.announcer.children[1]?.children[0]?.textContent, "hello translation");
-  assert.equal(elements.announcer.children[1]?.children[0]?.attributes.get("lang"), "en");
-});
-
-test("caps the announce log at 40 lines, dropping the oldest", () => {
-  const document = new SubtitleDocument({ translationEnabled: false });
-  const elements = createElements();
-  const view = new CaptionView(captionViewElements(elements));
-
-  for (let index = 1; index <= 45; index += 1) {
-    document.applyEvent({
-      type: "transcript_update",
-      revision: index,
-      stable_base: index - 1,
-      stable_count: index,
-      stable_appends: [stableSegment(index, `line ${index}`, { startMs: index * 1000, endMs: index * 1000 + 500 })],
-      partial: null,
-    });
-    view.render(document, { historyVisible: false });
-  }
-
-  assert.equal(elements.announcer.children.length, 40);
-  assert.equal(elements.announcer.children[0]?.children[0]?.textContent, "line 6");
-  assert.equal(elements.announcer.children.at(-1)?.children[0]?.textContent, "line 45");
-});
-
-test("does not re-announce stable lines when the list is rebuilt on final", () => {
+test("keeps rendered history stable when the list is rebuilt on final", () => {
   const document = new SubtitleDocument({ translationEnabled: false });
   const elements = createElements();
   const view = new CaptionView(captionViewElements(elements));
@@ -254,7 +198,7 @@ test("does not re-announce stable lines when the list is rebuilt on final", () =
     partial: null,
   });
   view.render(document, { historyVisible: false });
-  assert.equal(elements.announcer.children.length, 2);
+  assert.equal(elements.historyList.children.length, 2);
 
   // transcript_final replaces the stable list with fresh objects plus one tail line.
   document.applyEvent({
@@ -268,11 +212,11 @@ test("does not re-announce stable lines when the list is rebuilt on final", () =
   });
   view.render(document, { historyVisible: false });
 
-  assert.equal(elements.announcer.children.length, 3);
-  assert.equal(elements.announcer.children[2]?.children[0]?.textContent, "three");
+  assert.equal(elements.historyList.children.length, 3);
+  assert.equal(elements.historyList.children[2]?.children[1]?.textContent, "three");
 });
 
-test("keeps inline history edits when final rebuild reassigns ids but keeps indexes", () => {
+test("rerenders history from document state when final rebuild reassigns ids but keeps indexes", () => {
   const document = new SubtitleDocument({ translationEnabled: false });
   const elements = createElements();
   const view = new CaptionView(captionViewElements(elements));
@@ -287,11 +231,6 @@ test("keeps inline history edits when final rebuild reassigns ids but keeps inde
   });
   view.render(document, { historyVisible: true });
 
-  const source = elements.historyList.children[0]?.children[1];
-  assert.ok(source);
-  source.textContent = "ONE edited";
-  source.dispatch("input", {});
-
   document.applyEvent({
     type: "transcript_final",
     revision: 2,
@@ -299,11 +238,25 @@ test("keeps inline history edits when final rebuild reassigns ids but keeps inde
   });
   view.render(document, { historyVisible: true });
 
-  assert.equal(elements.historyList.children[0]?.children[1]?.textContent, "ONE edited");
-  assert.deepEqual(view.collectTranscriptLines(), [{ startMs: 0, text: "ONE edited", translation: null }]);
+  assert.equal(elements.historyList.children[0]?.children[1]?.textContent, "one");
+  assert.deepEqual(document.exportLines(), [
+    {
+      id: "rebuilt_seg_1",
+      index: 1,
+      startMs: 0,
+      endMs: 500,
+      text: "one",
+      language: "Chinese",
+      sourceRevision: 2,
+      timingStatus: null,
+      translation: null,
+      translationStatus: null,
+      translationMessage: null,
+    },
+  ]);
 });
 
-test("collectTranscriptLines reflects inline history edits", () => {
+test("exportLines comes from the document projection, not mutable DOM text", () => {
   const document = new SubtitleDocument({ translationEnabled: true });
   document.applyEvent({
     type: "transcript_update",
@@ -331,16 +284,18 @@ test("collectTranscriptLines reflects inline history edits", () => {
 
   const firstSource = elements.historyList.children[0]?.children[1];
   assert.ok(firstSource);
-  firstSource.textContent = "ONE edited";
-  firstSource.dispatch("input", {});
+  firstSource.textContent = "accidental DOM mutation";
 
-  assert.deepEqual(view.collectTranscriptLines(), [
-    { startMs: 0, text: "ONE edited", translation: "uno" },
-    { startMs: 500, text: "two", translation: null },
-  ]);
+  assert.deepEqual(
+    document.exportLines().map(({ startMs, text, translation }) => ({ startMs, text, translation })),
+    [
+      { startMs: 0, text: "one", translation: "uno" },
+      { startMs: 500, text: "two", translation: null },
+    ],
+  );
 });
 
-test("collectTranscriptLines returns the visible grouped translation", () => {
+test("exportLines returns the grouped translation", () => {
   const document = new SubtitleDocument({ translationEnabled: true });
   document.applyEvent({
     type: "transcript_update",
@@ -366,22 +321,56 @@ test("collectTranscriptLines returns the visible grouped translation", () => {
 
   view.render(document, { historyVisible: true });
 
-  assert.deepEqual(view.collectTranscriptLines(), [
-    { startMs: 0, text: "今天讨论字幕显示问题，", translation: null },
-    {
-      startMs: 2000,
-      text: "并且保持翻译输入完整。",
-      translation: "We discuss subtitle display while preserving translation context.",
-    },
-  ]);
+  assert.deepEqual(
+    document.exportLines().map(({ startMs, text, translation }) => ({ startMs, text, translation })),
+    [
+      {
+        startMs: 0,
+        text: "今天讨论字幕显示问题，并且保持翻译输入完整。",
+        translation: "We discuss subtitle display while preserving translation context.",
+      },
+    ],
+  );
 });
 
-function createElements(): Record<"currentSource" | "currentTranslation" | "historyList" | "announcer", FakeElement> {
+test("grouped translation folds rendered source rows from document state", () => {
+  const document = new SubtitleDocument({ translationEnabled: true });
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 2,
+    stable_appends: [
+      stableSegment(1, "one", { startMs: 0, endMs: 500 }),
+      stableSegment(2, "two", { startMs: 500, endMs: 1000 }),
+    ],
+    partial: null,
+  });
+  const elements = createElements();
+  const view = new CaptionView(captionViewElements(elements));
+  view.render(document, { historyVisible: true });
+
+  document.applyEvent({
+    type: "translation_stable",
+    source_segment_id: "seg_000002",
+    source_segment_index: 2,
+    source_segment_ids: ["seg_000001", "seg_000002"],
+    source_segment_indices: [1, 2],
+    text: "one two translated",
+  });
+  view.render(document, { historyVisible: true });
+
+  assert.deepEqual(
+    document.exportLines().map(({ startMs, text, translation }) => ({ startMs, text, translation })),
+    [{ startMs: 0, text: "one two", translation: "one two translated" }],
+  );
+});
+
+function createElements(): Record<"currentSource" | "currentTranslation" | "historyList", FakeElement> {
   return {
     currentSource: new FakeElement(),
     currentTranslation: new FakeElement(),
     historyList: new FakeElement(),
-    announcer: new FakeElement(),
   };
 }
 
@@ -392,7 +381,6 @@ function captionViewElements(
     currentSource: asDomElement(elements.currentSource),
     currentTranslation: asDomElement(elements.currentTranslation),
     historyList: asDomElement(elements.historyList),
-    announcer: asDomElement(elements.announcer),
   };
 }
 

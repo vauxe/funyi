@@ -2,17 +2,147 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from tools.ws_e2e_leak_check import (
     _compute_timestamp_quality,
     _detect_repetition_loop,
+    _expects_translation,
+    _final_document_contract_coverage,
+    _final_document_translation_coverage_issues,
     _final_event_contract_issues,
     _record_event_contract,
     _repetition_validation_issues,
 )
 
 
+def source_segment(index: int, text: str, **extra: object) -> dict[str, object]:
+    return {"id": f"seg_{index:06d}", "index": index, "text": text, **extra}
+
+
+def replay_source_segments(
+    state: dict[str, object], *segments: dict[str, object]
+) -> None:
+    for revision, segment in enumerate(segments, start=1):
+        _record_event_contract(
+            state,
+            {
+                "type": "transcript_update",
+                "revision": revision,
+                "stable_appends": [segment],
+                "partial": None,
+            },
+        )
+
+
+def record_translation(
+    state: dict[str, object],
+    source_indices: list[int],
+    text: str,
+    *,
+    source_ids: list[str] | None = None,
+    paired_indices: list[int] | None = None,
+) -> list[str]:
+    ids = source_ids or [f"seg_{index:06d}" for index in source_indices]
+    indices = paired_indices or source_indices
+    return _record_event_contract(
+        state,
+        {
+            "type": "translation_stable",
+            "source_segment_id": ids[-1],
+            "source_segment_index": indices[-1],
+            "source_segment_ids": ids,
+            "source_segment_indices": indices,
+            "text": text,
+        },
+    )
+
+
+def record_translation_status(
+    state: dict[str, object],
+    source_indices: list[int],
+    *,
+    code: str = "timeout",
+    source_ids: list[str] | None = None,
+    paired_indices: list[int] | None = None,
+) -> list[str]:
+    ids = source_ids or [f"seg_{index:06d}" for index in source_indices]
+    indices = paired_indices or source_indices
+    return _record_event_contract(
+        state,
+        {
+            "type": "translation_status",
+            "scope": "stable",
+            "code": code,
+            "source_segment_id": ids[-1],
+            "source_segment_index": indices[-1],
+            "source_segment_ids": ids,
+            "source_segment_indices": indices,
+            "message": "translation failed",
+        },
+    )
+
+
+def final_event(
+    segments: list[dict[str, object]],
+    *,
+    translation_units: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    return {
+        "type": "transcript_final",
+        "segments": segments,
+        "document": {
+            "schemaVersion": 1,
+            "durationMs": 1000 * len(segments),
+            "language": "English",
+            "text": " ".join(str(segment.get("text") or "") for segment in segments),
+            "segments": segments,
+            "translationUnits": translation_units or [],
+        },
+    }
+
+
+def translation_unit(
+    source_indices: list[int],
+    text: str,
+    *,
+    source_ids: list[str] | None = None,
+    paired_indices: list[int] | None = None,
+) -> dict[str, object]:
+    return {
+        "sourceSegmentIds": source_ids
+        or [f"seg_{index:06d}" for index in source_indices],
+        "sourceSegmentIndices": paired_indices or source_indices,
+        "targetLanguage": "English",
+        "text": text,
+    }
+
+
 class TestWebSocketE2EInvariant:
+    def test_target_language_implies_translation_validation(self) -> None:
+        assert _expects_translation(
+            SimpleNamespace(expect_translation=False, target_language="English")
+        )
+        assert not _expects_translation(
+            SimpleNamespace(expect_translation=False, target_language="")
+        )
+
+    def test_final_document_contract_coverage_reports_unchecked_realtime_final(
+        self,
+    ) -> None:
+        assert _final_document_contract_coverage(
+            {"type": "transcript_final", "segments": []}
+        ) == {
+            "checked": False,
+            "reason": "transcript_final has no document",
+        }
+        assert _final_document_contract_coverage(
+            {"type": "transcript_final", "segments": [], "document": {}}
+        ) == {
+            "checked": True,
+            "reason": None,
+        }
+
     def test_preview_must_not_lag_behind_latest_transcript_revision(self) -> None:
         state: dict[str, object] = {}
 
@@ -39,149 +169,324 @@ class TestWebSocketE2EInvariant:
 
     def test_stable_translation_history_must_cover_final_source_segments(self) -> None:
         state: dict[str, object] = {}
-        _record_event_contract(
-            state,
-            {
-                "type": "transcript_update",
-                "revision": 1,
-                "stable_appends": [{"id": "seg_000001", "index": 1, "text": "one"}],
-                "partial": None,
-            },
-        )
-        _record_event_contract(
-            state,
-            {
-                "type": "transcript_update",
-                "revision": 2,
-                "stable_appends": [{"id": "seg_000002", "index": 2, "text": "two"}],
-                "partial": None,
-            },
-        )
-        _record_event_contract(
-            state,
-            {
-                "type": "translation_stable",
-                "source_segment_id": "seg_000001",
-                "source_segment_index": 1,
-                "text": "English:one",
-            },
-        )
+        segments = [source_segment(1, "one"), source_segment(2, "two")]
+        replay_source_segments(state, *segments)
+        record_translation(state, [1], "English:one")
 
         issues = _final_event_contract_issues(
             state,
             {
                 "type": "transcript_final",
-                "segments": [
-                    {"id": "seg_000001", "index": 1, "text": "one"},
-                    {"id": "seg_000002", "index": 2, "text": "two"},
-                ],
+                "segments": segments,
             },
             expect_translation=True,
         )
 
-        assert issues == ["missing translation_stable for source segments: seg_000002"]
+        assert issues == [
+            "missing stable translation outcome for source segments: seg_000002"
+        ]
 
     def test_grouped_stable_translation_can_cover_multiple_source_segments(
         self,
     ) -> None:
         state: dict[str, object] = {}
-        _record_event_contract(
-            state,
-            {
-                "type": "transcript_update",
-                "revision": 1,
-                "stable_appends": [{"id": "seg_000001", "index": 1, "text": "one"}],
-                "partial": None,
-            },
-        )
-        _record_event_contract(
-            state,
-            {
-                "type": "transcript_update",
-                "revision": 2,
-                "stable_appends": [{"id": "seg_000002", "index": 2, "text": "two"}],
-                "partial": None,
-            },
-        )
-        assert (
-            _record_event_contract(
-                state,
-                {
-                    "type": "translation_stable",
-                    "source_segment_id": "seg_000002",
-                    "source_segment_index": 2,
-                    "source_segment_ids": ["seg_000001", "seg_000002"],
-                    "source_segment_indices": [1, 2],
-                    "text": "English:one two",
-                },
-            )
-            == []
-        )
+        segments = [source_segment(1, "one"), source_segment(2, "two")]
+        replay_source_segments(state, *segments)
+        assert record_translation(state, [1, 2], "English:one two") == []
 
         issues = _final_event_contract_issues(
             state,
             {
                 "type": "transcript_final",
-                "segments": [
-                    {"id": "seg_000001", "index": 1, "text": "one"},
-                    {"id": "seg_000002", "index": 2, "text": "two"},
-                ],
+                "segments": segments,
             },
             expect_translation=True,
         )
 
         assert issues == []
 
+    def test_empty_stable_translation_does_not_count_as_coverage(self) -> None:
+        state: dict[str, object] = {}
+        segments = [source_segment(1, "one")]
+        replay_source_segments(state, *segments)
+
+        issues = record_translation(state, [1], "   ")
+
+        assert issues == ["translation_stable text is empty"]
+        assert _final_event_contract_issues(
+            state,
+            final_event(segments),
+            expect_translation=True,
+        ) == [
+            "missing stable translation outcome for source segments: seg_000001",
+            "transcript_final document missing translation coverage for source segments: seg_000001",
+        ]
+
+    def test_final_document_accepts_single_segment_translation_on_document_segment(
+        self,
+    ) -> None:
+        state: dict[str, object] = {}
+        segments = [source_segment(1, "one", translation="English:one")]
+        replay_source_segments(state, source_segment(1, "one"))
+        record_translation(state, [1], "English:one")
+
+        issues = _final_event_contract_issues(
+            state,
+            final_event(segments),
+            expect_translation=True,
+        )
+
+        assert issues == []
+
+    def test_final_document_segment_translation_must_match_stable_translation_text(
+        self,
+    ) -> None:
+        state: dict[str, object] = {}
+        segments = [source_segment(1, "one", translation="different")]
+        replay_source_segments(state, source_segment(1, "one"))
+        record_translation(state, [1], "English:one")
+
+        issues = _final_event_contract_issues(
+            state,
+            final_event(segments),
+            expect_translation=True,
+        )
+
+        assert issues == [
+            "transcript_final document.segments translation text mismatch for source coverage: seg_000001"
+        ]
+
+    def test_final_document_translation_units_must_cover_grouped_source(
+        self,
+    ) -> None:
+        state: dict[str, object] = {}
+        segments = [source_segment(1, "one"), source_segment(2, "two")]
+        replay_source_segments(state, *segments)
+        record_translation(state, [1, 2], "English:one two")
+
+        issues = _final_event_contract_issues(
+            state,
+            final_event(segments),
+            expect_translation=True,
+        )
+
+        assert issues == [
+            "transcript_final document missing translation coverage for source segments: seg_000001, seg_000002"
+        ]
+
+    def test_final_document_segment_translations_do_not_cover_grouped_source(
+        self,
+    ) -> None:
+        state: dict[str, object] = {}
+        source_segments = [source_segment(1, "one"), source_segment(2, "two")]
+        translated_segments = [
+            source_segment(1, "one", translation="English:one"),
+            source_segment(2, "two", translation="English:two"),
+        ]
+        replay_source_segments(state, *source_segments)
+        record_translation(state, [1, 2], "English:one two")
+
+        issues = _final_event_contract_issues(
+            state,
+            final_event(translated_segments),
+            expect_translation=True,
+        )
+
+        assert issues == [
+            "transcript_final document missing translationUnits coverage for grouped source segments: seg_000001, seg_000002"
+        ]
+
+    def test_final_document_translation_units_must_match_stable_translation_text(
+        self,
+    ) -> None:
+        state: dict[str, object] = {}
+        segments = [source_segment(1, "one")]
+        replay_source_segments(state, *segments)
+        record_translation(state, [1], "English:one")
+
+        issues = _final_event_contract_issues(
+            state,
+            final_event(
+                segments, translation_units=[translation_unit([1], "different")]
+            ),
+            expect_translation=True,
+        )
+
+        assert issues == [
+            "transcript_final document.translationUnits text mismatch for source coverage: seg_000001"
+        ]
+
+    def test_final_document_translation_units_validate_paired_indices(
+        self,
+    ) -> None:
+        state: dict[str, object] = {}
+        segments = [source_segment(1, "one"), source_segment(2, "two")]
+        replay_source_segments(state, *segments)
+        record_translation(state, [1, 2], "English:one two")
+
+        issues = _final_event_contract_issues(
+            state,
+            final_event(
+                segments,
+                translation_units=[
+                    translation_unit([1, 2], "English:one two", paired_indices=[1, 99])
+                ],
+            ),
+            expect_translation=True,
+        )
+
+        assert issues == [
+            "transcript_final document.translationUnits sourceSegmentIndices[1] 99 does not match source segment seg_000002 index 2"
+        ]
+
+    def test_final_document_translation_units_accept_stale_id_with_index_fallback(
+        self,
+    ) -> None:
+        state: dict[str, object] = {}
+        segments = [source_segment(1, "one"), source_segment(2, "two")]
+        replay_source_segments(state, *segments)
+        record_translation(state, [1, 2], "English:one two")
+
+        issues = _final_event_contract_issues(
+            state,
+            final_event(
+                segments,
+                translation_units=[
+                    translation_unit(
+                        [1, 2],
+                        "English:one two",
+                        source_ids=["seg_000001", "old_seg_000002"],
+                    )
+                ],
+            ),
+            expect_translation=True,
+        )
+
+        assert issues == []
+
+    def test_final_document_translation_units_accept_grouped_status_coverage(
+        self,
+    ) -> None:
+        segments = [source_segment(1, "one"), source_segment(2, "two")]
+
+        issues = _final_document_translation_coverage_issues(
+            {},
+            final_event(
+                segments,
+                translation_units=[
+                    {
+                        "sourceSegmentIds": ["seg_000001", "seg_000002"],
+                        "sourceSegmentIndices": [1, 2],
+                        "targetLanguage": "English",
+                        "text": "",
+                        "translationStatus": "timeout",
+                        "translationMessage": "translation failed",
+                    }
+                ],
+            ),
+            ["seg_000001", "seg_000002"],
+        )
+
+        assert issues == []
+
+    def test_final_contract_accepts_grouped_stable_status_as_terminal_coverage(
+        self,
+    ) -> None:
+        state: dict[str, object] = {}
+        segments = [source_segment(1, "one"), source_segment(2, "two")]
+        replay_source_segments(state, *segments)
+        assert record_translation_status(state, [1, 2]) == []
+
+        issues = _final_event_contract_issues(
+            state,
+            final_event(
+                segments,
+                translation_units=[
+                    {
+                        "sourceSegmentIds": ["seg_000001", "seg_000002"],
+                        "sourceSegmentIndices": [1, 2],
+                        "targetLanguage": "English",
+                        "text": "",
+                        "translationStatus": "timeout",
+                        "translationMessage": "translation failed",
+                    }
+                ],
+            ),
+            expect_translation=True,
+        )
+
+        assert issues == []
+
+    def test_final_document_translation_units_must_match_stable_status(
+        self,
+    ) -> None:
+        state: dict[str, object] = {}
+        segments = [source_segment(1, "one"), source_segment(2, "two")]
+        replay_source_segments(state, *segments)
+        assert record_translation_status(state, [1, 2], code="timeout") == []
+
+        issues = _final_event_contract_issues(
+            state,
+            final_event(
+                segments,
+                translation_units=[
+                    {
+                        "sourceSegmentIds": ["seg_000001", "seg_000002"],
+                        "sourceSegmentIndices": [1, 2],
+                        "targetLanguage": "English",
+                        "text": "",
+                        "translationStatus": "failed",
+                        "translationMessage": "translation failed",
+                    }
+                ],
+            ),
+            expect_translation=True,
+        )
+
+        assert issues == [
+            "transcript_final document.translationUnits status mismatch for source coverage: seg_000001, seg_000002"
+        ]
+
     def test_grouped_stable_translation_rejects_mismatched_coverage_indices(
         self,
     ) -> None:
         state: dict[str, object] = {}
-        _record_event_contract(
-            state,
-            {
-                "type": "transcript_update",
-                "revision": 1,
-                "stable_appends": [{"id": "seg_000001", "index": 1, "text": "one"}],
-                "partial": None,
-            },
-        )
-        _record_event_contract(
-            state,
-            {
-                "type": "transcript_update",
-                "revision": 2,
-                "stable_appends": [{"id": "seg_000002", "index": 2, "text": "two"}],
-                "partial": None,
-            },
+        replay_source_segments(
+            state, source_segment(1, "one"), source_segment(2, "two")
         )
 
-        issues = _record_event_contract(
-            state,
-            {
-                "type": "translation_stable",
-                "source_segment_id": "seg_000002",
-                "source_segment_index": 2,
-                "source_segment_ids": ["seg_000001", "seg_000002"],
-                "source_segment_indices": [1, 99],
-                "text": "English:one two",
-            },
+        issues = record_translation(
+            state, [1, 2], "English:one two", paired_indices=[1, 99]
         )
 
         assert issues == [
             "translation_stable source_segment_indices[1] 99 does not match source segment seg_000002 index 2"
         ]
 
+    def test_grouped_stable_translation_rejects_non_contiguous_coverage(
+        self,
+    ) -> None:
+        state: dict[str, object] = {}
+        replay_source_segments(
+            state,
+            source_segment(1, "one"),
+            source_segment(2, "middle"),
+            source_segment(3, "three"),
+        )
+
+        issues = record_translation(
+            state,
+            [1, 3],
+            "English:one three",
+        )
+
+        assert issues == [
+            "translation_stable source coverage is not contiguous in stable history: seg_000001, seg_000003"
+        ]
+
     def test_final_marker_without_segments_uses_replayed_stable_history(self) -> None:
         state: dict[str, object] = {}
-        _record_event_contract(
-            state,
-            {
-                "type": "transcript_update",
-                "revision": 1,
-                "stable_appends": [{"id": "seg_000001", "index": 1, "text": "one"}],
-                "partial": None,
-            },
-        )
+        replay_source_segments(state, source_segment(1, "one"))
 
         issues = _final_event_contract_issues(
             state,

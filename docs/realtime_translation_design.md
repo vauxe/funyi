@@ -49,7 +49,8 @@ sender task
   -> websocket.send_text(...)
 
 client SubtitleDocument
-  -> stable history / current display line / SRT export
+  -> source history + translation units
+  -> current display line / UI history / copy / SRT projection
 ```
 
 Only the sender task writes to the WebSocket.
@@ -102,7 +103,11 @@ Stable, while a target language is active:
   not timed out by the service; offline file-stream stable jobs use
   `--translation-stable-timeout-ms` so the final file document can complete;
 - translator failures emit `translation_status` for the affected stable
-  translation unit.
+  translation unit. For multi-cue units, the final transcript document also
+  carries a `translationUnits[]` entry with the same coverage and
+  `translationStatus` / `translationMessage`, even when translated `text` is
+  empty, so final replay does not collapse the grouped status onto only the
+  anchor segment.
 
 Preview:
 
@@ -117,16 +122,25 @@ Preview:
 
 Client replay:
 
-- `SubtitleDocument` replays service events into one local document; stable
-  source history remains the source of truth for copy and SRT/detail export.
+- `SubtitleDocument` replays service events into two durable tracks: append-only
+  source history and stable translation units. Source history is the canonical
+  transcript; translation units are annotations over adjacent source segments.
+- UI history, copy, and SRT/detail export are projections from those two tracks.
+  Source-only projection emits each source segment. Bilingual projection folds
+  every covered source range into one subtitle line with the first covered start
+  time, last covered end time, joined source text, and translation-unit
+  text/status. Folding requires coverage to resolve to a complete contiguous
+  source-history range; invalid coverage is left ungrouped so source text is
+  never dropped.
 - `translation_preview` annotates only the matching current revision. When a
   preview covers pending stable source text plus the current partial, the compact
-  subtitle window composes that text into one current display line without
-  folding stable history.
+  subtitle window composes that text into one current display line. Preview
+  output is never durable and must not enter stable history, copy, or SRT export.
 - `translation_stable` and stable `translation_status` replay follow
-  `@docs/realtime_asr_service.md`; coverage lists describe source coverage, and
-  anchor fields identify the source cue that carries the visible translation or
-  status.
+  `@docs/realtime_asr_service.md`; coverage lists describe source coverage.
+  Anchor fields are compatibility lookups for clients that do not consume
+  coverage lists. Successful text and failed status share the same
+  source-coverage identity.
 
 Scheduling:
 

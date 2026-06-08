@@ -1,5 +1,5 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import test from "node:test";
 
 import { SubtitleDocument } from "./subtitle-document.js";
 import { parseTranscriptDocumentSnapshot } from "./transcription-document.js";
@@ -126,7 +126,7 @@ test("offline transcript snapshot replaces document history directly", () => {
   assert.equal(document.stableLines[1]?.timingStatus, "estimated");
 });
 
-test("offline transcript snapshot anchors grouped translation without folding source cues", () => {
+test("offline transcript snapshot folds grouped translation into one bilingual line", () => {
   const document = new SubtitleDocument({ translationEnabled: true });
   const snapshot = parseTranscriptDocumentSnapshot({
     schemaVersion: 1,
@@ -165,15 +165,17 @@ test("offline transcript snapshot anchors grouped translation without folding so
 
   document.replaceSnapshot(snapshot);
 
-  assert.equal(document.stableLines.length, 2);
+  assert.equal(document.stableLines.length, 1);
   assert.deepEqual(
     document.stableLines.map((line) => line.text),
-    ["今天讨论字幕显示问题，", "并且保持翻译输入完整。"],
+    ["今天讨论字幕显示问题，并且保持翻译输入完整。"],
   );
   assert.equal(
-    document.stableLines[1]?.translation,
+    document.stableLines[0]?.translation,
     "We discuss subtitle display while preserving translation context.",
   );
+  assert.equal(document.stableLines[0]?.startMs, 0);
+  assert.equal(document.stableLines[0]?.endMs, 3800);
 });
 
 test("keeps latest stable line visible until a new partial arrives", () => {
@@ -251,7 +253,7 @@ test("translation annotates matching lines and stale preview is ignored", () => 
   assert.equal(window.current?.translation, "current line");
 });
 
-test("grouped stable translation annotates the anchor without folding source segments", () => {
+test("grouped stable translation folds covered source segments for bilingual display", () => {
   const document = new SubtitleDocument();
   document.applyEvent({
     type: "transcript_update",
@@ -274,12 +276,14 @@ test("grouped stable translation annotates the anchor without folding source seg
     text: "Today we discuss this issue",
   });
 
-  assert.equal(document.stableLines.length, 2);
+  assert.equal(document.stableLines.length, 1);
   assert.deepEqual(
     document.stableLines.map((line) => line.text),
-    ["今天我们来讲", "一下这个问题"],
+    ["今天我们来讲一下这个问题"],
   );
-  assert.equal(document.stableLines[1]?.translation, "Today we discuss this issue");
+  assert.equal(document.stableLines[0]?.translation, "Today we discuss this issue");
+  assert.equal(document.stableLines[0]?.startMs, 0);
+  assert.equal(document.stableLines[0]?.endMs, 1800);
 
   document.applyEvent({
     type: "transcript_update",
@@ -292,7 +296,129 @@ test("grouped stable translation annotates the anchor without folding source seg
 
   assert.deepEqual(
     document.stableLines.map((line) => line.text),
-    ["今天我们来讲", "一下这个问题", "下一句"],
+    ["今天我们来讲一下这个问题", "下一句"],
+  );
+});
+
+test("grouped stable translation stays untimed when the covered tail is pending", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 2,
+    stable_appends: [
+      stableSegment(1, "第一句", { startMs: 0, endMs: 1000, timingStatus: "aligned" }),
+      stableSegment(2, "第二句", { timingStatus: "pending" }),
+    ],
+    partial: null,
+  });
+
+  document.applyEvent({
+    type: "translation_stable",
+    source_segment_id: "seg_000002",
+    source_segment_index: 2,
+    source_segment_ids: ["seg_000001", "seg_000002"],
+    source_segment_indices: [1, 2],
+    text: "first second",
+  });
+
+  assert.equal(document.stableLines.length, 1);
+  assert.equal(document.stableLines[0]?.text, "第一句第二句");
+  assert.equal(document.stableLines[0]?.startMs, 0);
+  assert.equal(document.stableLines[0]?.endMs, null);
+  assert.equal(document.stableLines[0]?.timingStatus, null);
+});
+
+test("grouped stable translation separates ASCII sentence boundaries", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 2,
+    stable_appends: [
+      stableSegment(1, "Hello.", { startMs: 0, endMs: 1000 }),
+      stableSegment(2, "World", { startMs: 1000, endMs: 2000 }),
+    ],
+    partial: null,
+  });
+  document.applyEvent({
+    type: "translation_stable",
+    source_segment_id: "seg_000002",
+    source_segment_index: 2,
+    source_segment_ids: ["seg_000001", "seg_000002"],
+    source_segment_indices: [1, 2],
+    text: "Bonjour le monde",
+  });
+
+  assert.equal(document.stableLines[0]?.text, "Hello. World");
+});
+
+test("grouped stable translation ignores non-contiguous coverage instead of dropping source text", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 3,
+    stable_appends: [
+      stableSegment(1, "第一句", { startMs: 0, endMs: 1000 }),
+      stableSegment(2, "中间句", { startMs: 1000, endMs: 2000 }),
+      stableSegment(3, "第三句", { startMs: 2000, endMs: 3000 }),
+    ],
+    partial: null,
+  });
+
+  document.applyEvent({
+    type: "translation_stable",
+    source_segment_id: "seg_000003",
+    source_segment_index: 3,
+    source_segment_ids: ["seg_000001", "seg_000003"],
+    source_segment_indices: [1, 3],
+    text: "first and third",
+  });
+
+  assert.deepEqual(
+    document.stableLines.map((line) => line.text),
+    ["第一句", "中间句", "第三句"],
+  );
+  assert.deepEqual(
+    document.stableLines.map((line) => line.translation),
+    [null, null, null],
+  );
+});
+
+test("grouped stable translation ignores partially unresolved coverage", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 2,
+    stable_appends: [
+      stableSegment(1, "第一句", { startMs: 0, endMs: 1000 }),
+      stableSegment(2, "第二句", { startMs: 1000, endMs: 2000 }),
+    ],
+    partial: null,
+  });
+
+  document.applyEvent({
+    type: "translation_stable",
+    source_segment_id: "seg_000002",
+    source_segment_index: 2,
+    source_segment_ids: ["seg_000001", "seg_missing", "seg_000002"],
+    source_segment_indices: [1, 99, 2],
+    text: "bad coverage",
+  });
+
+  assert.deepEqual(
+    document.stableLines.map((line) => line.text),
+    ["第一句", "第二句"],
+  );
+  assert.deepEqual(
+    document.stableLines.map((line) => line.translation),
+    [null, null],
   );
 });
 
@@ -319,11 +445,15 @@ test("preview display composes pending stable prefix with current partial after 
   assert.equal(document.window().current?.translation, "Today we discuss this");
   assert.deepEqual(
     document.stableLines.map((line) => line.text),
-    [],
+    ["今天我们来讲"],
+  );
+  assert.deepEqual(
+    document.exportLines().map((line) => line.text),
+    ["今天我们来讲"],
   );
 });
 
-test("grouped stable translation restores all pending source cues", () => {
+test("grouped stable translation restores pending source as one bilingual line", () => {
   const document = new SubtitleDocument();
   document.applyEvent({
     type: "transcript_update",
@@ -340,7 +470,7 @@ test("grouped stable translation restores all pending source cues", () => {
 
   assert.deepEqual(
     document.stableLines.map((line) => line.text),
-    [],
+    ["今天我们来讲", "一下这个问题"],
   );
 
   document.applyEvent({
@@ -354,14 +484,14 @@ test("grouped stable translation restores all pending source cues", () => {
 
   assert.deepEqual(
     document.stableLines.map((line) => line.text),
-    ["今天我们来讲", "一下这个问题"],
+    ["今天我们来讲一下这个问题"],
   );
-  assert.equal(document.stableLines[1]?.translation, "Today we discuss this issue");
+  assert.equal(document.stableLines[0]?.translation, "Today we discuss this issue");
   assert.equal(document.window().current?.text, "后面继续");
   assert.equal(document.window().current?.translation, null);
 });
 
-test("grouped stable translation restores pending source cues by index fallback", () => {
+test("grouped stable translation restores pending source by index fallback", () => {
   const document = new SubtitleDocument();
   document.applyEvent({
     type: "transcript_update",
@@ -378,7 +508,7 @@ test("grouped stable translation restores pending source cues by index fallback"
 
   assert.deepEqual(
     document.stableLines.map((line) => line.text),
-    [],
+    ["今天我们来讲", "一下这个问题"],
   );
 
   document.applyEvent({
@@ -390,9 +520,9 @@ test("grouped stable translation restores pending source cues by index fallback"
 
   assert.deepEqual(
     document.stableLines.map((line) => line.text),
-    ["今天我们来讲", "一下这个问题"],
+    ["今天我们来讲一下这个问题"],
   );
-  assert.equal(document.stableLines[1]?.translation, "Today we discuss this issue");
+  assert.equal(document.stableLines[0]?.translation, "Today we discuss this issue");
   assert.equal(document.window().current?.text, "后面继续");
   assert.equal(document.window().current?.translation, null);
 });
@@ -449,7 +579,7 @@ test("source-only history keeps grouped stable translation source cues", () => {
   );
 });
 
-test("stable translation status clears an existing translation", () => {
+test("stable translation status preserves an existing translation", () => {
   const document = new SubtitleDocument();
   document.applyEvent({
     type: "transcript_update",
@@ -475,11 +605,11 @@ test("stable translation status clears an existing translation", () => {
     source_segment_index: 1,
   });
 
-  assert.equal(document.stableLines[0]?.translation, null);
+  assert.equal(document.stableLines[0]?.translation, "bonjour");
   assert.equal(document.stableLines[0]?.translationMessage, "translation failed");
 });
 
-test("stable translation status clears preview carried to a stable line", () => {
+test("stable translation status annotates a stable line after preview clears", () => {
   const document = new SubtitleDocument();
   document.applyEvent({
     type: "transcript_update",
@@ -500,7 +630,7 @@ test("stable translation status clears preview carried to a stable line", () => 
     partial: partialSegment("next line", { startMs: 2200, endMs: 3000 }),
   });
 
-  assert.equal(document.stableLines[0]?.translation, "preview translation");
+  assert.equal(document.stableLines[0]?.translation, null);
 
   document.applyEvent({
     type: "translation_status",
@@ -516,7 +646,7 @@ test("stable translation status clears preview carried to a stable line", () => 
   assert.equal(document.window().current?.translation, null);
 });
 
-test("grouped stable translation status annotates the anchor without folding covered source segments", () => {
+test("grouped stable translation status folds covered source segments", () => {
   const document = new SubtitleDocument();
   document.applyEvent({
     type: "transcript_update",
@@ -541,16 +671,54 @@ test("grouped stable translation status annotates the anchor without folding cov
     source_segment_indices: [1, 2],
   });
 
-  assert.equal(document.stableLines.length, 2);
+  assert.equal(document.stableLines.length, 1);
   assert.deepEqual(
     document.stableLines.map((line) => line.text),
-    ["今天我们来讲", "一下这个问题"],
+    ["今天我们来讲一下这个问题"],
   );
-  assert.equal(document.stableLines[1]?.translation, null);
-  assert.equal(document.stableLines[1]?.translationMessage, "translation failed");
+  assert.equal(document.stableLines[0]?.translation, null);
+  assert.equal(document.stableLines[0]?.translationMessage, "translation failed");
 });
 
-test("stable translation status clears pending stable line visibility", () => {
+test("grouped stable translation status preserves an existing grouped translation", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 2,
+    stable_appends: [
+      stableSegment(1, "今天我们来讲", { startMs: 0, endMs: 1000 }),
+      stableSegment(2, "一下这个问题", { startMs: 1000, endMs: 1800 }),
+    ],
+    partial: null,
+  });
+  document.applyEvent({
+    type: "translation_stable",
+    source_segment_id: "seg_000002",
+    source_segment_index: 2,
+    source_segment_ids: ["seg_000001", "seg_000002"],
+    source_segment_indices: [1, 2],
+    text: "Today we discuss this issue",
+  });
+
+  document.applyEvent({
+    type: "translation_status",
+    scope: "stable",
+    code: "failed",
+    message: "translation failed",
+    source_segment_id: "seg_000002",
+    source_segment_index: 2,
+    source_segment_ids: ["seg_000001", "seg_000002"],
+    source_segment_indices: [1, 2],
+  });
+
+  assert.equal(document.stableLines.length, 1);
+  assert.equal(document.stableLines[0]?.translation, "Today we discuss this issue");
+  assert.equal(document.stableLines[0]?.translationMessage, "translation failed");
+});
+
+test("stable translation status clears pending current preview", () => {
   const document = new SubtitleDocument();
   document.applyEvent({
     type: "transcript_update",
@@ -564,7 +732,7 @@ test("stable translation status clears pending stable line visibility", () => {
 
   assert.deepEqual(
     document.stableLines.map((line) => line.text),
-    [],
+    ["今天我们来讲"],
   );
 
   document.applyEvent({
@@ -673,7 +841,7 @@ test("current translation preview survives repeated partial revisions", () => {
     stable_appends: [stableSegment(1, "current text", { startMs: 1000, endMs: 2200 })],
     partial: partialSegment("next line", { startMs: 2200, endMs: 3000 }),
   });
-  assert.equal(document.stableLines.at(-1)?.translation, "current line");
+  assert.equal(document.stableLines.at(-1)?.translation, null);
   assert.equal(document.window().current?.translation, null);
 
   document.applyEvent({ type: "translation_preview", source_revision: 4, text: "late old line" });
@@ -902,10 +1070,14 @@ test("final snapshot anchors document translation units", () => {
     },
   });
 
+  assert.equal(document.stableLines.length, 1);
+  assert.equal(document.stableLines[0]?.text, "今天讨论字幕显示问题，并且保持翻译输入完整。");
   assert.equal(
-    document.stableLines[1]?.translation,
+    document.stableLines[0]?.translation,
     "We discuss subtitle display while preserving translation context.",
   );
+  assert.equal(document.stableLines[0]?.startMs, 0);
+  assert.equal(document.stableLines[0]?.endMs, 3800);
 });
 
 test("final snapshot anchors translation unit with paired index fallback", () => {
@@ -935,11 +1107,248 @@ test("final snapshot anchors translation unit with paired index fallback", () =>
     },
   });
 
-  assert.equal(document.stableLines[0]?.translation, null);
+  assert.equal(document.stableLines.length, 1);
+  assert.equal(document.stableLines[0]?.text, "今天讨论字幕显示问题，并且保持翻译输入完整。");
   assert.equal(
-    document.stableLines[1]?.translation,
+    document.stableLines[0]?.translation,
     "We discuss subtitle display while preserving translation context.",
   );
+});
+
+test("final snapshot preserves grouped translation status from document unit", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_final",
+    revision: 1,
+    stable_count: 2,
+    segments: [
+      stableSegment(1, "one ", { startMs: 0, endMs: 1000 }),
+      stableSegment(2, "two", { startMs: 1000, endMs: 2000 }),
+    ],
+    document: {
+      schemaVersion: 1,
+      durationMs: 2000,
+      language: "English",
+      text: "one two",
+      segments: [
+        {
+          id: "seg_000001",
+          index: 1,
+          startMs: 0,
+          endMs: 1000,
+          text: "one ",
+          language: "English",
+          timingStatus: "aligned",
+        },
+        {
+          id: "seg_000002",
+          index: 2,
+          startMs: 1000,
+          endMs: 2000,
+          text: "two",
+          language: "English",
+          timingStatus: "aligned",
+          translationStatus: "timeout",
+          translationMessage: "translation failed",
+        },
+      ],
+      translationUnits: [
+        {
+          text: "",
+          targetLanguage: "English",
+          sourceSegmentIds: ["seg_000001", "seg_000002"],
+          sourceSegmentIndices: [1, 2],
+          translationStatus: "timeout",
+          translationMessage: "translation failed",
+        },
+      ],
+    },
+  });
+
+  assert.equal(document.stableLines.length, 1);
+  assert.equal(document.stableLines[0]?.text, "one two");
+  assert.equal(document.stableLines[0]?.translation, null);
+  assert.equal(document.stableLines[0]?.translationStatus, "timeout");
+  assert.equal(document.stableLines[0]?.translationMessage, "translation failed");
+});
+
+test("stable translation status updates rebuilt coverage by index identity", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: 1,
+    stable_appends: [stableSegment(1, "one", { startMs: 0, endMs: 1000 })],
+    partial: null,
+  });
+  document.applyEvent({
+    type: "translation_stable",
+    source_segment_id: "seg_000001",
+    source_segment_index: 1,
+    source_segment_ids: ["seg_000001"],
+    source_segment_indices: [1],
+    text: "old translation",
+  });
+  document.applyEvent({
+    type: "transcript_final",
+    revision: 2,
+    stable_count: 1,
+    segments: [{ ...stableSegment(1, "one", { startMs: 0, endMs: 1000 }), id: "rebuilt_seg_1" }],
+  });
+
+  document.applyEvent({
+    type: "translation_status",
+    scope: "stable",
+    code: "timeout",
+    message: "translation failed",
+    source_segment_id: "rebuilt_seg_1",
+    source_segment_index: 1,
+    source_segment_ids: ["rebuilt_seg_1"],
+    source_segment_indices: [1],
+  });
+
+  assert.equal(document.stableLines.length, 1);
+  assert.equal(document.stableLines[0]?.translation, "old translation");
+  assert.equal(document.stableLines[0]?.translationStatus, "timeout");
+  assert.equal(document.stableLines[0]?.translationMessage, "translation failed");
+});
+
+test("stable translation status preserves segment-owned translation", () => {
+  const document = new SubtitleDocument();
+  document.applyEvent({
+    type: "transcript_final",
+    revision: 1,
+    stable_count: 1,
+    segments: [
+      {
+        ...stableSegment(1, "one", { startMs: 0, endMs: 1000 }),
+        translation: "final translation",
+      },
+    ],
+  });
+
+  document.applyEvent({
+    type: "translation_status",
+    scope: "stable",
+    code: "timeout",
+    message: "translation failed",
+    source_segment_id: "seg_000001",
+    source_segment_index: 1,
+    source_segment_ids: ["seg_000001"],
+    source_segment_indices: [1],
+  });
+
+  assert.equal(document.stableLines.length, 1);
+  assert.equal(document.stableLines[0]?.translation, "final translation");
+  assert.equal(document.stableLines[0]?.translationStatus, "timeout");
+  assert.equal(document.stableLines[0]?.translationMessage, "translation failed");
+});
+
+test("long single-segment translation projection is cached", () => {
+  const segmentCount = 5000;
+  const document = new SubtitleDocument({ translationEnabled: true });
+  document.replaceSnapshot(
+    parseTranscriptDocumentSnapshot({
+      schemaVersion: 1,
+      durationMs: segmentCount,
+      language: "Chinese",
+      text: "",
+      segments: Array.from({ length: segmentCount }, (_, offset) => {
+        const index = offset + 1;
+        return {
+          id: `seg_${String(index).padStart(6, "0")}`,
+          index,
+          startMs: offset,
+          endMs: offset + 1,
+          text: `s${index}`,
+          language: "Chinese",
+        };
+      }),
+      translationUnits: Array.from({ length: segmentCount }, (_, offset) => {
+        const index = offset + 1;
+        return {
+          text: `t${index}`,
+          targetLanguage: "English",
+          sourceSegmentIds: [`seg_${String(index).padStart(6, "0")}`],
+          sourceSegmentIndices: [index],
+        };
+      }),
+    }),
+  );
+
+  const lines = document.stableLines;
+  const again = document.stableLines;
+
+  assert.equal(lines.length, segmentCount);
+  assert.equal(lines.at(-1)?.translation, `t${segmentCount}`);
+  assert.equal(again, lines);
+});
+
+test("long single-segment translation ingest builds one cached projection", () => {
+  const segmentCount = 5000;
+  const document = new SubtitleDocument({ translationEnabled: true });
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: segmentCount,
+    stable_appends: Array.from({ length: segmentCount }, (_, offset) => {
+      const index = offset + 1;
+      return stableSegment(index, `s${index}`, { startMs: offset, endMs: offset + 1 });
+    }),
+    partial: null,
+  });
+
+  for (let index = 1; index <= segmentCount; index += 1) {
+    document.applyEvent({
+      type: "translation_stable",
+      source_segment_id: `seg_${String(index).padStart(6, "0")}`,
+      source_segment_index: index,
+      source_segment_ids: [`seg_${String(index).padStart(6, "0")}`],
+      source_segment_indices: [index],
+      text: `t${index}`,
+    });
+  }
+  const lines = document.stableLines;
+  const again = document.stableLines;
+
+  assert.equal(lines.length, segmentCount);
+  assert.equal(lines.at(-1)?.translation, `t${segmentCount}`);
+  assert.equal(again, lines);
+});
+
+test("long single-segment translation render-after-each-event patches projection", () => {
+  const segmentCount = 3000;
+  const document = new SubtitleDocument({ translationEnabled: true });
+  document.applyEvent({
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: segmentCount,
+    stable_appends: Array.from({ length: segmentCount }, (_, offset) => {
+      const index = offset + 1;
+      return stableSegment(index, `s${index}`, { startMs: offset, endMs: offset + 1 });
+    }),
+    partial: null,
+  });
+  const projection = document.stableLines;
+  assert.equal(projection.length, segmentCount);
+
+  for (let index = 1; index <= segmentCount; index += 1) {
+    document.applyEvent({
+      type: "translation_stable",
+      source_segment_id: `seg_${String(index).padStart(6, "0")}`,
+      source_segment_index: index,
+      source_segment_ids: [`seg_${String(index).padStart(6, "0")}`],
+      source_segment_indices: [index],
+      text: `t${index}`,
+    });
+    const latestProjection = document.stableLines;
+    assert.equal(latestProjection, projection);
+    const latest = latestProjection[index - 1];
+    assert.equal(latest?.translation, `t${index}`);
+  }
 });
 
 test("final snapshot prefers segment translation message over replayed state", () => {

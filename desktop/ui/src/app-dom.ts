@@ -6,7 +6,6 @@ export const APP_ELEMENT_SELECTORS = {
   backgroundButton: "#background-button",
   backgroundClearButton: "#background-clear-button",
   backgroundFile: "#background-file",
-  captionAnnouncer: "#caption-announcer",
   captionOpacity: "#caption-opacity",
   captionOpacityValue: "#caption-opacity-value",
   captionStrip: "#caption-strip",
@@ -31,7 +30,6 @@ export const APP_ELEMENT_SELECTORS = {
 
 export interface AppElements {
   appShell: HTMLElement;
-  captionAnnouncer: HTMLElement;
   captionStrip: HTMLElement;
   serverUrl: HTMLInputElement;
   language: HTMLSelectElement;
@@ -62,7 +60,6 @@ export interface AppElements {
 export function getAppElements(): AppElements {
   return {
     appShell: requireElement<HTMLElement>(APP_ELEMENT_SELECTORS.appShell),
-    captionAnnouncer: requireElement<HTMLElement>(APP_ELEMENT_SELECTORS.captionAnnouncer),
     captionStrip: requireElement<HTMLElement>(APP_ELEMENT_SELECTORS.captionStrip),
     serverUrl: requireElement<HTMLInputElement>(APP_ELEMENT_SELECTORS.serverUrl),
     language: requireElement<HTMLSelectElement>(APP_ELEMENT_SELECTORS.language),

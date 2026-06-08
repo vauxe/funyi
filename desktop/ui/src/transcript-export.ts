@@ -14,7 +14,7 @@ export interface TranscriptExportOptions {
 // Render committed transcript lines as plain text for the clipboard. Each line
 // becomes one block: an optional [mm:ss.mmm] timestamp with the source, and the
 // translation on the next line prefixed with "->" so source and target never blur.
-// Lines come from the view (honoring user edits), not the raw model.
+// Lines come from SubtitleDocument.exportLines(), the same stable projection used by SRT.
 export function formatTranscript(
   lines: readonly TranscriptLine[],
   { translationEnabled }: TranscriptExportOptions,

@@ -24,20 +24,6 @@
   box-sizing: border-box;
 }
 
-/* Visually hidden but kept in the accessibility tree (for the caption live region). */
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
-  border: 0;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-
 body {
   margin: 0;
   min-width: 280px;
@@ -965,39 +951,9 @@ select:disabled {
 .history-translation {
   overflow-wrap: anywhere;
   line-height: 1.36;
-  cursor: text;
-  outline: none;
   user-select: text;
   -webkit-user-select: text;
   white-space: pre-wrap;
-}
-
-.history-source:hover,
-.history-translation:hover {
-  border-radius: 4px;
-  margin: 0 -4px;
-  padding: 0 4px;
-  background: rgba(118, 255, 240, 0.06);
-}
-
-.history-source:focus-visible,
-.history-translation:focus-visible {
-  border-radius: 4px;
-  box-shadow: 0 0 0 2px rgba(var(--miku-pink-rgb), 0.4);
-}
-
-.history-source[data-user-edited="true"],
-.history-translation[data-user-edited="true"] {
-  border-radius: 4px;
-  box-shadow: inset 2px 0 0 rgba(var(--miku-pink-rgb), 0.5);
-}
-
-/* Compose both indicators so an edited cell keeps a visible focus ring. */
-.history-source[data-user-edited="true"]:focus-visible,
-.history-translation[data-user-edited="true"]:focus-visible {
-  box-shadow:
-    0 0 0 2px rgba(var(--miku-pink-rgb), 0.4),
-    inset 2px 0 0 rgba(var(--miku-pink-rgb), 0.5);
 }
 
 .history-source {

@@ -526,10 +526,7 @@ export class OverlayController {
 function isInteractiveTarget(target: EventTarget | null): boolean {
   // #settings-panel is a child of the drag surface; pointerdowns on its padding,
   // labels, or status text must not start a window drag.
-  return (
-    target instanceof Element &&
-    Boolean(target.closest("button,input,select,textarea,a,label,[contenteditable],#settings-panel"))
-  );
+  return target instanceof Element && Boolean(target.closest("button,input,select,textarea,a,label,#settings-panel"));
 }
 
 function blurActiveEditableControl(): void {

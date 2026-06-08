@@ -18,6 +18,8 @@ export interface TranscriptTranslationUnitSnapshot {
   readonly targetLanguage: string;
   readonly sourceSegmentIds: readonly string[];
   readonly sourceSegmentIndices: readonly number[];
+  readonly translationStatus: string | null;
+  readonly translationMessage: string | null;
 }
 
 export interface TranscriptDocumentSnapshot {
@@ -68,6 +70,8 @@ function translationUnitFromRecord(unit: Record<string, unknown>): TranscriptTra
     targetLanguage: stringOrEmpty(unit.targetLanguage),
     sourceSegmentIds: stringArray(unit.sourceSegmentIds),
     sourceSegmentIndices: integerArray(unit.sourceSegmentIndices),
+    translationStatus: optionalString(unit.translationStatus),
+    translationMessage: optionalString(unit.translationMessage),
   };
 }
 

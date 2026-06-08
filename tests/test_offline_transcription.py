@@ -1051,6 +1051,54 @@ async def test_translate_units_records_failures_on_anchor_segments() -> None:
     assert translated[0].translation_message == "translation failed"
 
 
+def test_apply_unit_translation_returns_document_unit_for_grouped_failure() -> None:
+    segments = [
+        TranscriptSegment(
+            id="seg_000001",
+            index=1,
+            start_ms=0,
+            end_ms=1000,
+            text="one ",
+            language="English",
+        ),
+        TranscriptSegment(
+            id="seg_000002",
+            index=2,
+            start_ms=1000,
+            end_ms=2000,
+            text="two",
+            language="English",
+        ),
+    ]
+    unit = offline_transcription.OfflineTranslationUnit(
+        source_text="one two",
+        source_language="English",
+        source_segment_ids=("seg_000001", "seg_000002"),
+        source_segment_indices=(1, 2),
+        anchor_segment_list_index=1,
+    )
+
+    document_unit = offline_transcription.apply_unit_translation(
+        segments,
+        unit,
+        target_language="English",
+        text=None,
+        error="timeout",
+    )
+
+    assert segments[1].translation is None
+    assert segments[1].translation_status == "timeout"
+    assert segments[1].translation_message == "translation failed"
+    assert document_unit == TranscriptTranslationUnit(
+        text="",
+        target_language="English",
+        source_segment_ids=("seg_000001", "seg_000002"),
+        source_segment_indices=(1, 2),
+        translation_status="timeout",
+        translation_message="translation failed",
+    )
+
+
 @pytest.mark.asyncio
 async def test_translate_units_returns_document_units_in_source_order_for_mixed_languages() -> (
     None

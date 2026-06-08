@@ -984,11 +984,10 @@ def apply_unit_translation(
 ) -> TranscriptTranslationUnit | None:
     """Write a source unit's translation onto its anchor segment in place.
 
-    Returns a TranscriptTranslationUnit when a successful translation covers more
-    than one cue, so the grouped translation can travel beside the per-segment
-    anchor; returns None for single-cue or failed translations. Shared by the
-    batch (``_translate_units``) and streaming (service worker) paths so the
-    anchor/grouping rules live in one place.
+    Returns a TranscriptTranslationUnit when grouped coverage must survive a
+    final document rebuild. Successful single-cue and failed single-cue results
+    fit on the anchor segment; grouped success/status needs a document unit so
+    UI/export/SRT can keep the same projected coverage after finalization.
     """
     anchor_index = int(unit.anchor_segment_list_index)
     if not 0 <= anchor_index < len(segments):
@@ -1000,7 +999,16 @@ def apply_unit_translation(
             translation_status=str(error or "failed"),
             translation_message="translation failed",
         )
-        return None
+        if len(unit.source_segment_ids) <= 1 and len(unit.source_segment_indices) <= 1:
+            return None
+        return TranscriptTranslationUnit(
+            text="",
+            target_language=target_language,
+            source_segment_ids=unit.source_segment_ids,
+            source_segment_indices=unit.source_segment_indices,
+            translation_status=str(error or "failed"),
+            translation_message="translation failed",
+        )
     segments[anchor_index] = replace(segments[anchor_index], translation=str(text))
     if len(unit.source_segment_ids) <= 1 and len(unit.source_segment_indices) <= 1:
         return None

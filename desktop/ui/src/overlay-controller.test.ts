@@ -1663,26 +1663,6 @@ test("drag ignores interactive targets inside the drag surface", async () => {
   assert.equal(harness.elements.root.className, "");
 });
 
-test("drag ignores editable history text inside the drag surface", async () => {
-  const harness = createHarness();
-  await bindHarness(harness);
-  const historyText = new FakeElement("div");
-  historyText.setAttribute("contenteditable", "plaintext-only");
-  harness.elements.dragSurface.append(historyText);
-
-  harness.elements.dragSurface.dispatch(
-    "pointerdown",
-    pointerEvent({
-      pointerId: 7,
-      target: historyText,
-    }),
-  );
-  await nextTick();
-
-  assert.deepEqual(harness.invocations, []);
-  assert.equal(harness.elements.root.className, "");
-});
-
 test("drag ignores pointerdowns inside the settings panel", async () => {
   const harness = createHarness();
   await bindHarness(harness);

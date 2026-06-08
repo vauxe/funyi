@@ -140,3 +140,23 @@ def test_transcript_document_payload_can_express_grouped_translation_units() -> 
             "sourceSegmentIndices": [1, 2],
         }
     ]
+
+
+def test_transcript_document_translation_unit_payload_includes_status() -> None:
+    unit = TranscriptTranslationUnit(
+        text="",
+        target_language="English",
+        source_segment_ids=("seg_000001", "seg_000002"),
+        source_segment_indices=(1, 2),
+        translation_status="timeout",
+        translation_message="translation failed",
+    )
+
+    assert unit.to_payload() == {
+        "text": "",
+        "targetLanguage": "English",
+        "sourceSegmentIds": ["seg_000001", "seg_000002"],
+        "sourceSegmentIndices": [1, 2],
+        "translationStatus": "timeout",
+        "translationMessage": "translation failed",
+    }

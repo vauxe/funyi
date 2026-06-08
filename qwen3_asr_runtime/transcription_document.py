@@ -45,9 +45,11 @@ class TranscriptTranslationUnit:
     target_language: str
     source_segment_ids: tuple[str, ...]
     source_segment_indices: tuple[int, ...]
+    translation_status: str | None = None
+    translation_message: str | None = None
 
     def to_payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "text": self.text,
             "targetLanguage": self.target_language,
             "sourceSegmentIds": list(self.source_segment_ids),
@@ -55,6 +57,11 @@ class TranscriptTranslationUnit:
                 int(index) for index in self.source_segment_indices
             ],
         }
+        if self.translation_status is not None:
+            payload["translationStatus"] = self.translation_status
+        if self.translation_message is not None:
+            payload["translationMessage"] = self.translation_message
+        return payload
 
 
 @dataclass(frozen=True)

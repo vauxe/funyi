@@ -2,20 +2,14 @@ import { languageTag } from "./languages.js";
 import { isInteger } from "./runtime-guards.js";
 import type { SubtitleDocument, SubtitleLine } from "./subtitle-document.js";
 import { formatClock } from "./time-format.js";
-import type { TranscriptLine } from "./transcript-export.js";
 
 interface CaptionViewElements {
   currentSource: HTMLElement;
   currentTranslation: HTMLElement;
   historyList: HTMLElement;
-  announcer: HTMLElement;
 }
 
-// Cap the live-region log so a long session does not grow it without bound.
-const MAX_ANNOUNCED_LINES = 40;
-
 export class CaptionView {
-  private readonly announcedKeys = new Set<string>();
   private renderedHistoryLines: readonly SubtitleLine[] = [];
   private renderedHistoryTranslationEnabled: boolean | null = null;
 
@@ -37,8 +31,6 @@ export class CaptionView {
 
   reset(): void {
     this.elements.historyList.replaceChildren();
-    this.elements.announcer.replaceChildren();
-    this.announcedKeys.clear();
     this.renderedHistoryLines = [];
     this.renderedHistoryTranslationEnabled = null;
   }
@@ -56,29 +48,10 @@ export class CaptionView {
     scroll();
   }
 
-  // Build the export transcript from the rendered history so a user's inline edits
-  // (contenteditable rows flagged data-user-edited) are what gets copied, not the
-  // raw model text.
-  collectTranscriptLines(): TranscriptLine[] {
-    return this.renderedHistoryLines.map((line, index) => {
-      const cells = Array.from(this.elements.historyList.children[index]?.children ?? []) as HTMLElement[];
-      return {
-        startMs: line.startMs,
-        text: editedValue(cells[1]) ?? line.text,
-        translation: editedValue(cells[2]) ?? line.translation,
-      };
-    });
-  }
-
   private renderHistory(document: SubtitleDocument, historyVisible: boolean, translationLanguage: string): void {
     const lines = document.stableLines;
     const hadNewLine = lines.length > this.renderedHistoryLines.length;
     const translationChanged = this.renderedHistoryTranslationEnabled !== document.translationEnabled;
-
-    if (lines.length < this.renderedHistoryLines.length) {
-      this.elements.historyList.replaceChildren();
-      this.renderedHistoryLines = [];
-    }
 
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
@@ -101,78 +74,13 @@ export class CaptionView {
       }
       historyItem.classList.toggle("is-latest", index === lines.length - 1);
     }
-    this.announceStableLines(lines, document.translationEnabled, translationLanguage);
+    trimHistoryItems(this.elements.historyList, lines.length);
     this.renderedHistoryLines = lines.slice();
     this.renderedHistoryTranslationEnabled = document.translationEnabled;
     if (historyVisible && hadNewLine) {
       this.scrollHistoryToLatest("smooth");
     }
   }
-
-  // Announce only stabilized lines through the polite log region. The visible
-  // current line is rewritten on every partial, so announcing it would flood the
-  // screen reader; committed segments give one announcement each. Lines are keyed
-  // so a transcript_final rebuild (which replaces the list wholesale) never
-  // re-announces or skips an already-spoken line.
-  private announceStableLines(
-    lines: readonly SubtitleLine[],
-    translationEnabled: boolean,
-    translationLanguage: string,
-  ): void {
-    let appended = false;
-    for (const line of lines) {
-      if (!line) {
-        continue;
-      }
-      const source = line.text.trim();
-      const translation = translationEnabled ? (visibleTranslation(line) || "").trim() : "";
-      if (!source && !translation) {
-        continue;
-      }
-      const key = stableLineKey(line);
-      const sourceKey = `${key}:source:${source}`;
-      const translationKey = `${key}:translation:${translation}`;
-      const announceSource = Boolean(source) && !this.announcedKeys.has(sourceKey);
-      const announceTranslation = Boolean(translation) && !this.announcedKeys.has(translationKey);
-      if (!announceSource && !announceTranslation) {
-        continue;
-      }
-      if (announceSource) {
-        this.announcedKeys.add(sourceKey);
-      }
-      if (announceTranslation) {
-        this.announcedKeys.add(translationKey);
-      }
-      // Source and translation are different languages, so each goes in its own
-      // span with its own `lang` for correct screen-reader pronunciation.
-      const entry = document.createElement("div");
-      entry.setAttribute("dir", "auto");
-      if (announceSource) {
-        entry.append(announceSpan(source, line.language));
-      }
-      if (announceTranslation) {
-        entry.append(announceSpan(`${announceSource ? " — " : ""}${translation}`, translationLanguage));
-      }
-      this.elements.announcer.append(entry);
-      appended = true;
-    }
-    if (appended) {
-      this.trimAnnouncer();
-    }
-  }
-
-  private trimAnnouncer(): void {
-    const children = Array.from(this.elements.announcer.children);
-    if (children.length > MAX_ANNOUNCED_LINES) {
-      this.elements.announcer.replaceChildren(...children.slice(children.length - MAX_ANNOUNCED_LINES));
-    }
-  }
-}
-
-// Returns the inline-edited text of a history cell, or null when the user has not
-// touched it (so the caller falls back to the model value).
-function editedValue(element: HTMLElement | undefined): string | null {
-  return element?.dataset.userEdited === "true" ? (element.textContent ?? "") : null;
 }
 
 function visibleTranslation(line: SubtitleLine): string | null {
@@ -191,13 +99,6 @@ function renderCaptionLine(
   setCaptionText(translationElement, line ? visibleTranslation(line) || "" : "");
 }
 
-function announceSpan(text: string, language: string | undefined): HTMLElement {
-  const span = document.createElement("span");
-  applyLineLanguage(span, language);
-  span.textContent = text;
-  return span;
-}
-
 function createHistoryItem(): HTMLElement {
   const item = document.createElement("article");
   item.className = "history-item";
@@ -205,26 +106,17 @@ function createHistoryItem(): HTMLElement {
   const time = document.createElement("div");
   time.className = "history-time";
 
-  const source = createEditableHistoryText("history-source", "Source transcript");
-  const translation = createEditableHistoryText("history-translation", "Translation");
+  const source = createHistoryText("history-source");
+  const translation = createHistoryText("history-translation");
 
   item.append(time, source, translation);
   return item;
 }
 
-function createEditableHistoryText(className: string, label: string): HTMLElement {
+function createHistoryText(className: string): HTMLElement {
   const element = document.createElement("div");
   element.className = className;
-  element.setAttribute("contenteditable", "plaintext-only");
-  element.setAttribute("role", "textbox");
-  element.setAttribute("aria-label", label);
-  element.setAttribute("aria-multiline", "true");
-  element.setAttribute("spellcheck", "false");
   element.setAttribute("dir", "auto");
-  element.setAttribute("tabindex", "0");
-  element.addEventListener("input", () => {
-    element.dataset.userEdited = "true";
-  });
   return element;
 }
 
@@ -237,8 +129,8 @@ function updateHistoryItem(
 ): void {
   const [time, source, translation] = Array.from(item.children) as HTMLElement[];
   if (previousLine && !isSameHistoryLine(previousLine, line)) {
-    delete source?.dataset.userEdited;
-    delete translation?.dataset.userEdited;
+    setTextIfChanged(source, "");
+    setTextIfChanged(translation, "");
   }
   if (source) {
     applyLineLanguage(source, line.language);
@@ -247,8 +139,8 @@ function updateHistoryItem(
     applyLineLanguage(translation, translationLanguage);
   }
   setTextIfChanged(time, formatRange(line.startMs, line.endMs, line.timingStatus));
-  setEditableTextIfChanged(source, line.text);
-  setEditableTextIfChanged(translation, translationEnabled ? visibleTranslation(line) || "" : "");
+  setTextIfChanged(source, line.text);
+  setTextIfChanged(translation, translationEnabled ? visibleTranslation(line) || "" : "");
 }
 
 function setTextIfChanged(element: HTMLElement | undefined, value: string): void {
@@ -257,11 +149,11 @@ function setTextIfChanged(element: HTMLElement | undefined, value: string): void
   }
 }
 
-function setEditableTextIfChanged(element: HTMLElement | undefined, value: string): void {
-  if (!element || element.dataset.userEdited === "true") {
-    return;
+function trimHistoryItems(historyList: HTMLElement, lineCount: number): void {
+  const children = Array.from(historyList.children) as HTMLElement[];
+  if (children.length > lineCount) {
+    historyList.replaceChildren(...children.slice(0, lineCount));
   }
-  setTextIfChanged(element, value);
 }
 
 function setCaptionText(element: HTMLElement, value: string): void {
@@ -284,16 +176,6 @@ function isSameHistoryLine(left: SubtitleLine, right: SubtitleLine): boolean {
     return left.id === right.id;
   }
   return left === right;
-}
-
-function stableLineKey(line: SubtitleLine): string {
-  if (isInteger(line.index)) {
-    return `index:${line.index}`;
-  }
-  if (line.id) {
-    return `id:${line.id}`;
-  }
-  return `text:${line.text.trim()}`;
 }
 
 function formatRange(startMs: number | null, endMs: number | null, status: string | null): string {

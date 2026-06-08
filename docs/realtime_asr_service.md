@@ -54,9 +54,14 @@ curl -X POST \
 
 Successful responses use `schemaVersion: 1`, `durationMs`, `language`, `text`,
 and `segments[]` with `id`, `index`, `startMs`, `endMs`, `text`, `language`,
-optional `timingStatus`, optional `translation`, and optional
-`translationStatus` / `translationMessage`. Multi-cue translations may also
-include `translationUnits[]`; single-cue translations stay on the segment.
+optional `timingStatus`, optional compatibility `translation`, and optional
+`translationStatus` / `translationMessage`. Multi-cue translations include
+`translationUnits[]`; when present, `translationUnits[]` is the authoritative
+source for grouped bilingual display/export, while per-segment `translation`
+and translation status fields are only anchor/backward-compatibility fields.
+Each translation unit carries source coverage plus either translated `text` or
+status fields (`translationStatus` / `translationMessage`), so grouped failures
+survive final-document replay the same way grouped successful translations do.
 `timingStatus` is `estimated` when cue timing is derived from ASR text and chunk
 duration, and `aligned` after item-level forced alignment. Error responses use
 `{"error":{"code":"...","message":"..."}}`.
@@ -254,10 +259,10 @@ Each stable segment has `id`, `index`, `start_ms`, `end_ms`, `text`, and
 `language`. In realtime timestamp mode, new stable segments may include
 `timing_status: "pending"` with `start_ms` and `end_ms` set to `null`; the
 forced aligner later patches that segment to `aligned` or `failed`.
-`stable_appends` are transcript history segments, not subtitle layout units.
-For offline file streams, those transcript history segments are already
-subtitle-shaped public `TranscriptSegment` values so the final document can be
-exported directly as subtitles.
+`stable_appends` are canonical source-history segments, not the final bilingual
+subtitle layout. For offline file streams, those source segments are already
+subtitle-shaped public `TranscriptSegment` values; bilingual UI, copy, and SRT
+export still project them together with `translationUnits[]`.
 
 Clients append `stable_appends`, replace `partial`, and require `stable_base` to
 match local `stable_count`. Clients that need compact subtitles render the latest
@@ -344,22 +349,31 @@ segment.
 
 Client replay rules:
 
-- Prefer `source_segment_ids` / `source_segment_indices` when present. They
-  describe one translation unit's source coverage; they do not fold the covered
-  source cues into one source line.
-- When both coverage lists are present, they are emitted in the same stable
-  history order, have the same length, and each id/index pair refers to the
-  same source segment. Clients should resolve by id first and use the paired
-  index only as fallback if the id cannot be found.
+- Keep `stable_appends` as append-only canonical source history. Do not merge,
+  remove, or reorder source segments in the replay state.
+- Store stable translations as a separate translation-unit track. Prefer
+  `source_segment_ids` / `source_segment_indices` when present; they describe the
+  full source coverage of one translation unit.
+- When both coverage lists are present, they are emitted in stable history order,
+  have the same length, and each id/index pair refers to the same source segment.
+  Clients should resolve by id first and use the paired index only as fallback if
+  the id cannot be found.
 - `source_segment_id` / `source_segment_index` are the anchor for older clients
-  and for fallback lookup. They do not describe the full covered source text
-  when coverage lists are present.
-- Source history, copy, and subtitle export should keep the source segment list as
-  emitted. Coverage lists describe which source cues a translation belongs to;
-  they do not change the number of source subtitle cues.
-- Covered source segments are adjacent in stable history. A client that renders a
-  grouped translation overlay can use the first covered segment start and the
-  last covered segment end when both are available.
+  and for fallback lookup. They do not describe the full covered source text when
+  coverage lists are present.
+- UI history, copy, and SRT export should use the same projection from source
+  history + translation units. In source-only mode, emit each source segment. In
+  bilingual mode, fold adjacent source segments covered by one translation unit
+  into one subtitle line, using the first covered start time, last covered end
+  time, joined source text, and the translation-unit text/status.
+- Clients should fold a translation unit only when its coverage resolves to a
+  complete contiguous range in local stable history. If coverage is incomplete,
+  unknown, or non-contiguous, keep the source segments ungrouped rather than
+  dropping or reordering transcript text.
+- `translation_preview` is a live overlay only. It may compose pending stable
+  source text with the current partial for display, but it must not enter stable
+  history, copy, or SRT export until a corresponding `translation_stable` event
+  arrives.
 
 ### `translation_status`
 
@@ -415,9 +429,13 @@ must not appear only in this event.
 
 `/api/transcriptions/stream` includes top-level `segments`, using the same
 stable-segment shape as `transcript_update.stable_appends`, and `document`, using
-the same snapshot shape as `/api/transcriptions`. Unbounded realtime WebSocket
-sessions may omit `segments` and do not include `document`; clients keep the
-stable history they already replayed from `transcript_update`.
+the same snapshot shape as `/api/transcriptions`. `document.translationUnits[]`
+uses camelCase fields: `sourceSegmentIds`, `sourceSegmentIndices`,
+`targetLanguage`, `text`, and optional `translationStatus` /
+`translationMessage`. `text` may be empty when the unit represents a grouped
+translation failure/status rather than translated text. Unbounded realtime
+WebSocket sessions may omit `segments` and do not include `document`; clients
+keep the stable history they already replayed from `transcript_update`.
 
 After a WebSocket `transcript_final`, the service closes the WebSocket with code
 `1000`. The HTTP file-stream response ends after its terminal event.
@@ -561,3 +579,7 @@ uv run --group test pytest
 
 Use `tools/ws_e2e_leak_check.py` after starting `realtime_server.py` for service
 smoke, CER, update-gap, memory, and shutdown checks.
+The JSON summary includes `final_document_contract.checked`; realtime sessions
+that omit `transcript_final.document` report `false`, so final-document
+`translationUnits[]` coverage must be validated by offline/file stream tests or
+by an event stream that actually includes a final document.

@@ -89,7 +89,6 @@ export class FunyiApp {
       currentSource: dom.currentSource,
       currentTranslation: dom.currentTranslation,
       historyList: dom.historyList,
-      announcer: dom.captionAnnouncer,
     });
     this.overlayController = new OverlayController(
       overlay,
@@ -137,7 +136,7 @@ export class FunyiApp {
       },
       preferences: this.preferences,
       buildTranscript: () =>
-        formatTranscript(this.captionView.collectTranscriptLines(), {
+        formatTranscript(this.subtitleDocument.exportLines(), {
           translationEnabled: this.languageControls.translationEnabled,
         }),
       copyText: copyToClipboard,

@@ -612,6 +612,108 @@ async def test_offline_transcription_stream_route_translates_source_unit_coverin
 
 
 @pytest.mark.asyncio
+async def test_offline_transcription_stream_route_preserves_grouped_translation_status(
+    monkeypatch,
+) -> None:
+    first = TranscriptSegment(
+        id="seg_000001",
+        index=1,
+        start_ms=0,
+        end_ms=1000,
+        text="one ",
+        language="English",
+        timing_status="aligned",
+    )
+    second = TranscriptSegment(
+        id="seg_000002",
+        index=2,
+        start_ms=1000,
+        end_ms=2000,
+        text="two",
+        language="English",
+        timing_status="aligned",
+    )
+
+    async def fake_stream_transcribe_file(*_args: object, **_kwargs: object):
+        yield OfflineTranscriptionStreamEvent(kind="segment", segment=first)
+        yield OfflineTranscriptionStreamEvent(kind="segment", segment=second)
+        yield OfflineTranscriptionStreamEvent(
+            kind="translation_unit",
+            translation_unit=OfflineTranslationUnit(
+                source_text="one two",
+                source_language="English",
+                source_segment_ids=("seg_000001", "seg_000002"),
+                source_segment_indices=(1, 2),
+                anchor_segment_list_index=1,
+            ),
+        )
+        yield OfflineTranscriptionStreamEvent(
+            kind="complete",
+            document=TranscriptDocument(
+                duration_ms=2000, language="English", segments=[first, second]
+            ),
+        )
+
+    class FailingTranslationActor:
+        async def translate_batch(
+            self,
+            texts: list[str],
+            *,
+            target_language: str,
+            source_language: str,
+            max_new_tokens: int | None,
+            timeout_sec: float | None,
+        ) -> list[tuple[str | None, str | None]]:
+            del texts, target_language, source_language, max_new_tokens, timeout_sec
+            return [(None, "timeout")]
+
+    monkeypatch.setattr(
+        realtime_server, "stream_transcribe_file", fake_stream_transcribe_file
+    )
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        app = build_app(
+            model=object(),
+            asr_executor=executor,
+            translation_actor=FailingTranslationActor(),
+            translation_service_config=TranslationServiceConfig(),
+        )
+        response = await asgi_request(
+            app,
+            "/api/transcriptions/stream",
+            method="POST",
+            query=b"language=English&targetLanguage=Japanese&filename=clip.wav",
+            body=b"audio-bytes",
+            headers=[(b"content-type", b"application/octet-stream")],
+        )
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    events = [
+        json.loads(line)
+        for line in bytes(response["body"]).decode("utf-8").splitlines()
+    ]
+    assert response["status"] == 200
+    assert [event["type"] for event in events] == [
+        "transcript_update",
+        "transcript_update",
+        "translation_status",
+        "transcript_final",
+    ]
+    assert events[2]["source_segment_ids"] == ["seg_000001", "seg_000002"]
+    assert events[3]["document"]["translationUnits"] == [
+        {
+            "text": "",
+            "targetLanguage": "Japanese",
+            "sourceSegmentIds": ["seg_000001", "seg_000002"],
+            "sourceSegmentIndices": [1, 2],
+            "translationStatus": "timeout",
+            "translationMessage": "translation failed",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_offline_stream_translation_units_apply_backpressure(monkeypatch) -> None:
     yielded_segments = 0
     translation_started = asyncio.Event()

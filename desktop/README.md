@@ -75,9 +75,6 @@ shared-mode WASAPI input.
 
 ## Accessibility
 
-Captions are exposed to screen readers through a dedicated polite live region
-that announces only *stabilized* lines (never the per-partial current line, to
-avoid flooding the reader); a `transcript_final` rebuild never re-announces, and
-the log is capped. Caption source and translation are split into spans with
-their own BCP-47 `lang` and `dir="auto"` for correct pronunciation and direction.
-History rows are editable (`contenteditable`, `role="textbox"`).
+Caption source and translation are separate read-only elements with their own
+BCP-47 `lang` and `dir="auto"` for correct pronunciation and direction. Status
+and settings messages remain polite live regions.

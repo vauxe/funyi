@@ -143,6 +143,10 @@ def _translation_validation_issues(
     return issues
 
 
+def _expects_translation(args: argparse.Namespace) -> bool:
+    return bool(args.expect_translation or args.target_language)
+
+
 def _record_event_contract(state: dict[str, Any], event: dict[str, Any]) -> list[str]:
     event_type = str(event.get("type") or "")
     issues: list[str] = []
@@ -183,32 +187,57 @@ def _record_event_contract(state: dict[str, Any], event: dict[str, Any]) -> list
     elif event_type == "translation_stable":
         segment_id = str(event.get("source_segment_id") or "")
         covered_ids = _translation_source_segment_ids(event)
-        issues.extend(_translation_coverage_issues(state, event, event_type=event_type))
-        translated_ids = state.setdefault("translation_stable_segment_ids", [])
-        seen_translated_ids = state.setdefault(
-            "seen_translation_stable_segment_ids", set()
+        coverage_issues = _translation_coverage_issues(
+            state, event, event_type=event_type
         )
+        issues.extend(coverage_issues)
+        text = str(event.get("text") or "").strip()
+        if not text:
+            issues.append("translation_stable text is empty")
         if not segment_id:
             issues.append("translation_stable is missing source_segment_id")
-        else:
+        elif text and not coverage_issues:
             if segment_id not in covered_ids:
                 issues.append(
                     "translation_stable source_segment_ids does not include source_segment_id"
                 )
-            for covered_id in covered_ids:
-                if covered_id in seen_translated_ids:
-                    issues.append(
-                        f"duplicate translation_stable for source segment: {covered_id}"
+            else:
+                issues.extend(
+                    _record_stable_translation_terminal(
+                        state,
+                        event_type=event_type,
+                        covered_ids=covered_ids,
+                        text=text,
                     )
-                    continue
-                translated_ids.append(covered_id)
-                seen_translated_ids.add(covered_id)
+                )
     elif (
         event_type == "translation_status" and str(event.get("scope") or "") == "stable"
     ):
-        issues.extend(_translation_coverage_issues(state, event, event_type=event_type))
-        status_ids = state.setdefault("translation_status_segment_ids", [])
-        status_ids.extend(_translation_source_segment_ids(event))
+        coverage_issues = _translation_coverage_issues(
+            state, event, event_type=event_type
+        )
+        issues.extend(coverage_issues)
+        segment_id = str(event.get("source_segment_id") or "")
+        covered_ids = _translation_source_segment_ids(event)
+        code = str(event.get("code") or "").strip()
+        if not code:
+            issues.append("translation_status code is empty")
+        if not segment_id:
+            issues.append("translation_status is missing source_segment_id")
+        elif segment_id not in covered_ids:
+            issues.append(
+                "translation_status source_segment_ids does not include source_segment_id"
+            )
+        elif code and not coverage_issues:
+            issues.extend(
+                _record_stable_translation_terminal(
+                    state,
+                    event_type=event_type,
+                    covered_ids=covered_ids,
+                    translation_status=code,
+                    translation_message=str(event.get("message") or "").strip(),
+                )
+            )
     elif event_type == "transcript_timing_update":
         segment_id = str(event.get("source_segment_id") or "")
         if not segment_id:
@@ -224,6 +253,40 @@ def _record_event_contract(state: dict[str, Any], event: dict[str, Any]) -> list
             issues.append(
                 f"transcript_timing_update has invalid timing_status: {status}"
             )
+    return issues
+
+
+def _record_stable_translation_terminal(
+    state: dict[str, Any],
+    *,
+    event_type: str,
+    covered_ids: list[str],
+    text: str = "",
+    translation_status: str = "",
+    translation_message: str = "",
+) -> list[str]:
+    terminal_units = state.setdefault("stable_translation_terminal_units", [])
+    terminal_ids = state.setdefault("stable_translation_terminal_segment_ids", [])
+    seen_terminal_ids = state.setdefault("seen_stable_translation_terminal_ids", set())
+    terminal_units.append(
+        {
+            "event_type": event_type,
+            "source_segment_ids": list(covered_ids),
+            "text": text,
+            "translation_status": translation_status,
+            "translation_message": translation_message,
+        }
+    )
+
+    issues: list[str] = []
+    for covered_id in covered_ids:
+        if covered_id in seen_terminal_ids:
+            issues.append(
+                f"duplicate stable translation outcome for source segment: {covered_id}"
+            )
+            continue
+        terminal_ids.append(covered_id)
+        seen_terminal_ids.add(covered_id)
     return issues
 
 
@@ -257,28 +320,42 @@ def _translation_coverage_issues(
         ]
 
     source_indices_by_id: dict[str, int] = {}
-    for segment in state.get("source_stable_segments") or []:
+    source_offsets_by_id: dict[str, int] = {}
+    for offset, segment in enumerate(state.get("source_stable_segments") or []):
         if not isinstance(segment, dict):
             continue
         segment_id = str(segment.get("id") or "")
         segment_index = _optional_int(segment.get("index"))
         if segment_id and segment_index is not None:
             source_indices_by_id[segment_id] = segment_index
+        if segment_id:
+            source_offsets_by_id[segment_id] = offset
 
     issues: list[str] = []
+    coverage_offsets: list[int] = []
     for position, (segment_id, segment_index) in enumerate(
         zip(segment_ids, segment_indices, strict=True)
     ):
         source_index = source_indices_by_id.get(segment_id)
         if (
-            source_index is None
-            or segment_index is None
-            or segment_index == source_index
+            source_index is not None
+            and segment_index is not None
+            and segment_index != source_index
         ):
-            continue
+            issues.append(
+                f"{event_type} source_segment_indices[{position}] {segment_index} "
+                f"does not match source segment {segment_id} index {source_index}"
+            )
+        source_offset = source_offsets_by_id.get(segment_id)
+        if source_offset is not None:
+            coverage_offsets.append(source_offset)
+    if len(coverage_offsets) == len(segment_ids) and any(
+        right != left + 1
+        for left, right in zip(coverage_offsets, coverage_offsets[1:], strict=False)
+    ):
         issues.append(
-            f"{event_type} source_segment_indices[{position}] {segment_index} "
-            f"does not match source segment {segment_id} index {source_index}"
+            f"{event_type} source coverage is not contiguous in stable history: "
+            f"{', '.join(segment_ids)}"
         )
     return issues
 
@@ -322,35 +399,311 @@ def _final_event_contract_issues(
     if not expect_translation:
         return issues
 
-    translated_ids = set(state.get("translation_stable_segment_ids") or [])
-    missing = [
-        segment_id for segment_id in final_ids if segment_id not in translated_ids
-    ]
+    terminal_ids = set(state.get("stable_translation_terminal_segment_ids") or [])
+    missing = [segment_id for segment_id in final_ids if segment_id not in terminal_ids]
     if missing:
         issues.append(
-            f"missing translation_stable for source segments: {', '.join(missing)}"
+            f"missing stable translation outcome for source segments: {', '.join(missing)}"
         )
 
     final_id_set = set(final_ids)
     unknown = [
         segment_id
-        for segment_id in state.get("translation_stable_segment_ids") or []
+        for segment_id in state.get("stable_translation_terminal_segment_ids") or []
         if segment_id not in final_id_set
     ]
     if unknown:
         issues.append(
-            f"translation_stable references unknown source segments: {', '.join(unknown)}"
+            "stable translation outcome references unknown source segments: "
+            f"{', '.join(unknown)}"
         )
-    status_ids = [
-        segment_id
-        for segment_id in state.get("translation_status_segment_ids") or []
-        if segment_id in final_id_set
+    issues.extend(
+        _final_document_translation_coverage_issues(state, final_event, final_ids)
+    )
+    return issues
+
+
+def _final_document_contract_coverage(
+    final_event: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if final_event is None:
+        return {"checked": False, "reason": "missing transcript_final"}
+    if not isinstance(final_event.get("document"), dict):
+        return {"checked": False, "reason": "transcript_final has no document"}
+    return {"checked": True, "reason": None}
+
+
+def _final_document_translation_coverage_issues(
+    state: dict[str, Any], final_event: dict[str, Any], final_ids: list[str]
+) -> list[str]:
+    if not final_ids:
+        return []
+
+    document = final_event.get("document")
+    if not isinstance(document, dict):
+        return []
+
+    final_segments = _final_source_segments(final_event, document)
+    final_offsets_by_id = {
+        segment_id: offset for offset, segment_id in enumerate(final_ids)
+    }
+    stable_state_by_coverage = _stable_translation_state_by_coverage(state)
+    grouped_stable_coverages = [
+        coverage for coverage in stable_state_by_coverage if len(coverage) > 1
     ]
-    if status_ids:
+
+    issues: list[str] = []
+    covered_ids: list[str] = []
+    covered_grouped_coverages: set[tuple[str, ...]] = set()
+
+    for segment in _object_records(document.get("segments")):
+        text = str(segment.get("translation") or "").strip()
+        translation_status = str(segment.get("translationStatus") or "").strip()
+        has_state = bool(
+            text
+            or translation_status
+            or str(segment.get("translationMessage") or "").strip()
+        )
+        if not has_state:
+            continue
+        segment_id = str(segment.get("id") or "")
+        if not segment_id:
+            issues.append(
+                "transcript_final document.segments translation is missing source segment id"
+            )
+            continue
+        coverage_issues, is_valid_coverage = _final_document_translation_issues(
+            unit_ids=[segment_id],
+            text=text,
+            translation_status=translation_status,
+            has_state=has_state,
+            final_offsets_by_id=final_offsets_by_id,
+            stable_state_by_coverage=stable_state_by_coverage,
+            label="document.segments translation",
+        )
+        issues.extend(coverage_issues)
+        if is_valid_coverage:
+            covered_ids.append(segment_id)
+
+    raw_units = document.get("translationUnits")
+    units = raw_units if isinstance(raw_units, list) else []
+    for unit in units:
+        if not isinstance(unit, dict):
+            continue
+        unit_ids, resolution_issues = _document_translation_unit_source_ids(
+            unit, final_segments
+        )
+        if resolution_issues:
+            issues.extend(resolution_issues)
+        if not unit_ids:
+            continue
+        text = str(unit.get("text") or "").strip()
+        translation_status = str(unit.get("translationStatus") or "").strip()
+        has_state = bool(
+            text
+            or translation_status
+            or str(unit.get("translationMessage") or "").strip()
+        )
+        coverage_issues, is_valid_coverage = _final_document_translation_issues(
+            unit_ids=unit_ids,
+            text=text,
+            translation_status=translation_status,
+            has_state=has_state,
+            final_offsets_by_id=final_offsets_by_id,
+            stable_state_by_coverage=stable_state_by_coverage,
+            label="document.translationUnits",
+        )
+        issues.extend(coverage_issues)
+        if is_valid_coverage:
+            covered_ids.extend(unit_ids)
+            if len(unit_ids) > 1:
+                covered_grouped_coverages.add(tuple(unit_ids))
+
+    covered_id_set = set(covered_ids)
+    for coverage in grouped_stable_coverages:
+        if coverage not in covered_grouped_coverages and all(
+            segment_id in covered_id_set for segment_id in coverage
+        ):
+            issues.append(
+                "transcript_final document missing translationUnits coverage for grouped source segments: "
+                f"{', '.join(coverage)}"
+            )
+    missing = [
+        segment_id for segment_id in final_ids if segment_id not in covered_id_set
+    ]
+    if missing:
         issues.append(
-            f"translation_status emitted for stable source segments: {', '.join(status_ids)}"
+            "transcript_final document missing translation coverage for source segments: "
+            f"{', '.join(missing)}"
         )
     return issues
+
+
+def _final_source_segments(
+    final_event: dict[str, Any], document: dict[str, Any]
+) -> list[dict[str, Any]]:
+    raw_segments = final_event.get("segments")
+    if not isinstance(raw_segments, list):
+        raw_segments = document.get("segments")
+    return _object_records(raw_segments)
+
+
+def _object_records(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _stable_translation_state_by_coverage(
+    state: dict[str, Any],
+) -> dict[tuple[str, ...], dict[str, str]]:
+    states: dict[tuple[str, ...], dict[str, str]] = {}
+    for unit in state.get("stable_translation_terminal_units") or []:
+        if not isinstance(unit, dict):
+            continue
+        coverage = tuple(
+            str(item or "") for item in unit.get("source_segment_ids") or []
+        )
+        coverage = tuple(item for item in coverage if item)
+        if not coverage or coverage in states:
+            continue
+        states[coverage] = {
+            "text": str(unit.get("text") or "").strip(),
+            "translation_status": str(unit.get("translation_status") or "").strip(),
+            "translation_message": str(unit.get("translation_message") or "").strip(),
+        }
+    return states
+
+
+def _final_document_translation_issues(
+    *,
+    unit_ids: list[str],
+    text: str,
+    translation_status: str,
+    has_state: bool,
+    final_offsets_by_id: dict[str, int],
+    stable_state_by_coverage: dict[tuple[str, ...], dict[str, str]],
+    label: str,
+) -> tuple[list[str], bool]:
+    unknown = [
+        segment_id for segment_id in unit_ids if segment_id not in final_offsets_by_id
+    ]
+    if unknown:
+        return (
+            [
+                f"transcript_final {label} references unknown source segments: "
+                f"{', '.join(unknown)}"
+            ],
+            False,
+        )
+
+    offsets = [final_offsets_by_id[segment_id] for segment_id in unit_ids]
+    if any(
+        right != left + 1 for left, right in zip(offsets, offsets[1:], strict=False)
+    ):
+        return (
+            [
+                f"transcript_final {label} source coverage is not contiguous: "
+                f"{', '.join(unit_ids)}"
+            ],
+            False,
+        )
+
+    stable_state = stable_state_by_coverage.get(tuple(unit_ids))
+    stable_text = (stable_state or {}).get("text", "")
+    if stable_text and stable_text != text:
+        return (
+            [
+                f"transcript_final {label} text mismatch for source coverage: "
+                f"{', '.join(unit_ids)}"
+            ],
+            True,
+        )
+    stable_status = (stable_state or {}).get("translation_status", "")
+    if stable_status and stable_status != translation_status:
+        return (
+            [
+                f"transcript_final {label} status mismatch for source coverage: "
+                f"{', '.join(unit_ids)}"
+            ],
+            True,
+        )
+
+    if not has_state:
+        return (
+            [
+                f"transcript_final {label} text/status is empty for source coverage: "
+                f"{', '.join(unit_ids)}"
+            ],
+            False,
+        )
+    return [], True
+
+
+def _document_translation_unit_source_ids(
+    unit: dict[str, Any], final_segments: list[dict[str, Any]]
+) -> tuple[list[str], list[str]]:
+    source_by_id = {
+        str(segment.get("id") or ""): segment
+        for segment in final_segments
+        if str(segment.get("id") or "")
+    }
+    source_by_index = {
+        index: segment
+        for segment in final_segments
+        if (index := _optional_int(segment.get("index"))) is not None
+    }
+    raw_ids = unit.get("sourceSegmentIds")
+    raw_indices = unit.get("sourceSegmentIndices")
+    segment_ids = (
+        [str(item or "") for item in raw_ids] if isinstance(raw_ids, list) else []
+    )
+    segment_indices = (
+        [_optional_int(item) for item in raw_indices]
+        if isinstance(raw_indices, list)
+        else []
+    )
+
+    if segment_ids and segment_indices and len(segment_ids) != len(segment_indices):
+        return (
+            [],
+            [
+                "transcript_final document.translationUnits sourceSegmentIds/sourceSegmentIndices length mismatch"
+            ],
+        )
+
+    issues: list[str] = []
+    resolved_ids: list[str] = []
+    coverage_len = max(len(segment_ids), len(segment_indices))
+    for position in range(coverage_len):
+        segment_id = segment_ids[position] if position < len(segment_ids) else ""
+        segment_index = (
+            segment_indices[position] if position < len(segment_indices) else None
+        )
+        segment = source_by_id.get(segment_id) if segment_id else None
+        if segment is not None:
+            source_index = _optional_int(segment.get("index"))
+            if (
+                source_index is not None
+                and segment_index is not None
+                and source_index != segment_index
+            ):
+                issues.append(
+                    "transcript_final document.translationUnits "
+                    f"sourceSegmentIndices[{position}] {segment_index} "
+                    f"does not match source segment {segment_id} index {source_index}"
+                )
+            resolved_ids.append(segment_id)
+            continue
+        if segment_index is not None:
+            segment = source_by_index.get(segment_index)
+            fallback_id = str((segment or {}).get("id") or "")
+            if fallback_id:
+                resolved_ids.append(fallback_id)
+                continue
+        if segment_id:
+            resolved_ids.append(segment_id)
+    return resolved_ids, issues
 
 
 def _compute_reference_cer(
@@ -926,10 +1279,11 @@ async def run_check(args: argparse.Namespace) -> dict[str, Any]:
         if check_start_gpu_used is None or not gpu_values
         else max(0, max_gpu_used_mb_seen - check_start_gpu_used)
     )
+    expect_translation = _expects_translation(args)
     translation_issues = _translation_validation_issues(
         ready_event=ready_event,
         counters=counters,
-        expect_translation=args.expect_translation,
+        expect_translation=expect_translation,
         min_translation_stable=args.min_translation_stable,
         min_translation_preview=args.min_translation_preview,
         max_translation_status=args.max_translation_status,
@@ -937,7 +1291,7 @@ async def run_check(args: argparse.Namespace) -> dict[str, Any]:
     event_stream_issues = contract_issues + _final_event_contract_issues(
         contract_state,
         final_event[0],
-        expect_translation=args.expect_translation,
+        expect_translation=expect_translation,
     )
     stable_segments = list(contract_state.get("source_stable_segments") or [])
     repetition_issues = _repetition_validation_issues(stable_segments)
@@ -960,8 +1314,10 @@ async def run_check(args: argparse.Namespace) -> dict[str, Any]:
         "audio_sent_sec": audio_sent_sec,
         "counters": counters,
         "ready_event": ready_event,
+        "expect_translation": expect_translation,
         "translation_validation_issues": translation_issues,
         "event_stream_validation_issues": event_stream_issues,
+        "final_document_contract": _final_document_contract_coverage(final_event[0]),
         "repetition_validation_issues": repetition_issues,
         "segment_count": len(contract_state.get("source_stable_segments") or []),
         "timing": _summarize_event_timings(
