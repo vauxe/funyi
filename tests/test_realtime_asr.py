@@ -23,6 +23,7 @@ from realtime_server import (
     WebSocketSendTimeout,
     _build_speech_gate,
     _build_realtime_session_config,
+    _build_aligner,
     _build_model_load,
     _build_translation,
     _close_websocket,
@@ -612,11 +613,13 @@ class TestRealtimeServerCli:
         assert args.fused_rmsnorm is None
         assert args.fused_linears is None
         assert args.w8a16 is None
+        assert not args.allow_cpu
         assert args.cuda_graph_prewarm
         assert args.cuda_graph_prewarm_language == "Chinese"
         assert args.cuda_graph_prewarm_window_sec == 20.0
         assert args.cuda_graph_prewarm_prefix_tokens == 64
         assert args.timestamp_model is None
+        assert args.timestamp_fused is None
         assert args.timestamp_local_files_only
         assert args.timestamp_pad_ms == 500
         assert args.timestamp_finish_timeout_ms == 30000
@@ -842,8 +845,8 @@ class TestRealtimeServerCli:
         assert args.translation_model == "tencent/Hy-MT2-1.8B"
         assert not args.translation_trust_remote_code
         assert args.translation_decode_backend == "fixed_mask"
-        assert args.translation_w8a16
-        assert args.translation_fused_rmsnorm
+        assert args.translation_w8a16 is None
+        assert args.translation_fused_rmsnorm is None
 
     def test_translation_model_can_be_configured(self) -> None:
         with patch.object(
@@ -875,6 +878,7 @@ class TestRealtimeServerCli:
                 "--translation-trust-remote-code",
                 "--no-translation-w8a16",
                 "--no-translation-fused-rmsnorm",
+                "--allow-cpu",
             ],
         ):
             args = _parse_args()
@@ -968,8 +972,12 @@ class TestRealtimeServerCli:
             == HYMT_MODEL_CARD_LANGUAGES
         )
 
-    def test_transformers_load_kwargs_are_default(self) -> None:
-        with patch.object(sys, "argv", ["realtime_server.py", "--model", "model"]):
+    def test_transformers_load_kwargs_default_to_linux_cuda_profile(self) -> None:
+        with (
+            patch.object(sys, "argv", ["realtime_server.py", "--model", "model"]),
+            patch("realtime_server._torch_cuda_available", return_value=True),
+            patch("realtime_server.sys.platform", "linux"),
+        ):
             backend, kwargs = _build_model_load(_parse_args())
 
         assert backend == "transformers"
@@ -983,9 +991,117 @@ class TestRealtimeServerCli:
         # prefill-bound streaming path ~3x at equal CER (recheck_w8a16_*).
         assert not kwargs["quantized_linears"]
 
+    def test_transformers_load_kwargs_default_to_windows_cuda_profile(self) -> None:
+        with (
+            patch.object(sys, "argv", ["realtime_server.py", "--model", "model"]),
+            patch("realtime_server._torch_cuda_available", return_value=True),
+            patch("realtime_server.sys.platform", "win32"),
+        ):
+            backend, kwargs = _build_model_load(_parse_args())
+
+        assert backend == "transformers"
+        assert kwargs["device_map"] == "cuda:0"
+        assert kwargs["cuda_graph"]
+        assert kwargs["cuda_graph_len_bucket"] == 64
+        assert not kwargs["flashinfer"]
+        assert kwargs["fused_rmsnorm"]
+        assert kwargs["fused_linears"]
+        assert not kwargs["quantized_linears"]
+
+    def test_transformers_load_requires_cuda_by_default(self) -> None:
+        with (
+            patch.object(sys, "argv", ["realtime_server.py", "--model", "model"]),
+            patch("realtime_server._torch_cuda_available", return_value=False),
+            patch(
+                "realtime_server._torch_cuda_diagnostics",
+                return_value="torch=2.9.1+cpu",
+            ),
+            patch("realtime_server.sys.platform", "linux"),
+        ):
+            with pytest.raises(
+                RuntimeError, match="ASR transformers backend requires CUDA"
+            ):
+                _build_model_load(_parse_args())
+
+    def test_transformers_load_kwargs_keep_cuda_profile_when_cpu_is_allowed(
+        self,
+    ) -> None:
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["realtime_server.py", "--model", "model", "--allow-cpu"],
+            ),
+            patch("realtime_server._torch_cuda_available", return_value=False),
+            patch("realtime_server.sys.platform", "win32"),
+        ):
+            backend, kwargs = _build_model_load(_parse_args())
+
+        assert backend == "transformers"
+        assert kwargs["device_map"] == "cuda:0"
+        assert "dtype" in kwargs
+        assert kwargs["cuda_graph"]
+        assert not kwargs["flashinfer"]
+        assert kwargs["fused_rmsnorm"]
+        assert kwargs["fused_linears"]
+        assert not kwargs["quantized_linears"]
+
+    def test_transformers_load_rejects_auto_device_map_when_cuda_is_required(
+        self,
+    ) -> None:
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "realtime_server.py",
+                    "--model",
+                    "model",
+                    "--device-map",
+                    "auto",
+                ],
+            ),
+            patch("realtime_server._torch_cuda_available", return_value=True),
+            patch("realtime_server.sys.platform", "win32"),
+        ):
+            with pytest.raises(RuntimeError, match="requires a CUDA device"):
+                _build_model_load(_parse_args())
+
+    def test_device_map_none_allows_explicit_cpu_profile_for_diagnostics(self) -> None:
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "realtime_server.py",
+                    "--model",
+                    "model",
+                    "--device-map",
+                    "none",
+                    "--allow-cpu",
+                ],
+            ),
+            patch("realtime_server._torch_cuda_available", return_value=True),
+        ):
+            backend, kwargs = _build_model_load(_parse_args())
+
+        assert backend == "transformers"
+        assert "device_map" not in kwargs
+        assert "dtype" not in kwargs
+        assert not kwargs["cuda_graph"]
+        assert not kwargs["flashinfer"]
+
     def test_w8a16_flag_forces_quantized_linears_on(self) -> None:
         with patch.object(
-            sys, "argv", ["realtime_server.py", "--model", "model", "--w8a16"]
+            sys,
+            "argv",
+            [
+                "realtime_server.py",
+                "--model",
+                "model",
+                "--w8a16",
+                "--allow-cpu",
+            ],
         ):
             _, kwargs = _build_model_load(_parse_args())
         assert kwargs["quantized_linears"]
@@ -1003,7 +1119,8 @@ class TestRealtimeServerCli:
             args = _parse_args()
         model = FakeModel()
 
-        _prepare_cuda_graph_runtime(model, args)
+        with patch("realtime_server._torch_cuda_available", return_value=True):
+            _prepare_cuda_graph_runtime(model, args)
 
         assert model.calls == [
             {"language": "Chinese", "max_window_sec": 20.0, "max_prefix_tokens": 64}
@@ -1019,6 +1136,29 @@ class TestRealtimeServerCli:
             args = _parse_args()
 
         with pytest.raises(RuntimeError):
+            with patch("realtime_server._torch_cuda_available", return_value=True):
+                _prepare_cuda_graph_runtime(FakeModel(), args)
+
+    def test_cuda_graph_prewarm_is_skipped_for_explicit_cpu_device_map(self) -> None:
+        class FakeModel:
+            def prewarm_realtime_cuda_graph(self, **kwargs: object) -> bool:
+                raise AssertionError("prewarm should not run for explicit CPU")
+
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "realtime_server.py",
+                    "--model",
+                    "model",
+                    "--device-map",
+                    "none",
+                    "--allow-cpu",
+                ],
+            ),
+        ):
+            args = _parse_args()
             _prepare_cuda_graph_runtime(FakeModel(), args)
 
     def test_translation_uses_capture_lock_when_asr_prewarm_is_disabled(self) -> None:
@@ -1033,7 +1173,8 @@ class TestRealtimeServerCli:
         ):
             args = _parse_args()
 
-        lock = _translation_capture_lock(args, translation_enabled=True)
+        with patch("realtime_server._torch_cuda_available", return_value=True):
+            lock = _translation_capture_lock(args, translation_enabled=True)
 
         assert lock is CUDA_GRAPH_CAPTURE_LOCK
 
@@ -1053,11 +1194,150 @@ class TestRealtimeServerCli:
             args = _parse_args()
 
         model = FakeModel()
-        _prepare_cuda_graph_runtime(model, args)
-        lock = _translation_capture_lock(args, translation_enabled=True)
+        with patch("realtime_server._torch_cuda_available", return_value=True):
+            _prepare_cuda_graph_runtime(model, args)
+            lock = _translation_capture_lock(args, translation_enabled=True)
 
         assert model.calls == 1
         assert lock is None
+
+    def test_translation_build_keeps_cuda_default_when_requirement_disabled(
+        self,
+    ) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "realtime_server.py",
+                "--model",
+                "model",
+                "--translation-model",
+                "local/hymt",
+                "--allow-cpu",
+            ],
+        ):
+            args = _parse_args()
+
+        translator = object()
+        with (
+            patch("realtime_server._torch_cuda_available", return_value=False),
+            patch("realtime_server._triton_available", return_value=False),
+            patch(
+                "realtime_server.HYMTTranslator", return_value=translator
+            ) as translator_class,
+        ):
+            built_translator, config = _build_translation(args)
+
+        assert built_translator is translator
+        assert config is not None
+        kwargs = translator_class.call_args.kwargs
+        assert kwargs["device"] == "cuda:0"
+        assert kwargs["dtype"] is None
+        assert not kwargs["w8a16"]
+        assert kwargs["fused_rmsnorm"]
+
+    def test_translation_build_defaults_to_cuda_profile_when_cuda_available(
+        self,
+    ) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "realtime_server.py",
+                "--model",
+                "model",
+                "--translation-model",
+                "local/hymt",
+            ],
+        ):
+            args = _parse_args()
+
+        translator = object()
+        with (
+            patch("realtime_server._torch_cuda_available", return_value=True),
+            patch("realtime_server._triton_available", return_value=True),
+            patch(
+                "realtime_server.HYMTTranslator", return_value=translator
+            ) as translator_class,
+        ):
+            built_translator, config = _build_translation(args)
+
+        assert built_translator is translator
+        assert config is not None
+        kwargs = translator_class.call_args.kwargs
+        assert kwargs["device"] == "cuda:0"
+        assert kwargs["dtype"] is None
+        assert kwargs["w8a16"]
+        assert kwargs["fused_rmsnorm"]
+
+    def test_translation_build_disables_default_w8a16_when_triton_is_missing(
+        self,
+    ) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "realtime_server.py",
+                "--model",
+                "model",
+                "--translation-model",
+                "local/hymt",
+            ],
+        ):
+            args = _parse_args()
+
+        translator = object()
+        with (
+            patch("realtime_server._torch_cuda_available", return_value=True),
+            patch("realtime_server._triton_available", return_value=False),
+            patch(
+                "realtime_server.HYMTTranslator", return_value=translator
+            ) as translator_class,
+        ):
+            built_translator, config = _build_translation(args)
+
+        assert built_translator is translator
+        assert config is not None
+        kwargs = translator_class.call_args.kwargs
+        assert kwargs["device"] == "cuda:0"
+        assert not kwargs["w8a16"]
+        assert kwargs["fused_rmsnorm"]
+
+    def test_aligner_build_allows_explicit_cpu_profile_for_diagnostics(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "realtime_server.py",
+                "--model",
+                "model",
+                "--timestamp-model",
+                "local/aligner",
+                "--timestamp-device-map",
+                "none",
+                "--allow-cpu",
+            ],
+        ):
+            args = _parse_args()
+            _resolve_service_backends(args)
+
+        aligner = object()
+        with (
+            patch("realtime_server._torch_cuda_available", return_value=False),
+            patch(
+                "qwen3_asr_runtime.forced_aligner.Qwen3ForcedAlignerBackend.from_pretrained",
+                return_value=aligner,
+            ) as from_pretrained,
+        ):
+            built_aligner, config = _build_aligner(args)
+
+        assert built_aligner is aligner
+        assert config is not None
+        assert from_pretrained.call_args.args[0] == "local/aligner"
+        kwargs = from_pretrained.call_args.kwargs
+        assert "device_map" not in kwargs
+        assert "dtype" not in kwargs
+        assert not kwargs["fused_rmsnorm"]
 
     def test_start_payload_without_target_disables_session_translation(self) -> None:
         config = TranslationServiceConfig()

@@ -531,12 +531,13 @@ class TestHYMTModelPath:
             )
 
     def test_local_files_resolves_model_id_to_snapshot(self) -> None:
+        snapshot_path = Path("/cache/snapshot")
         with mock.patch(
-            "huggingface_hub.snapshot_download", return_value=Path("/cache/snapshot")
+            "huggingface_hub.snapshot_download", return_value=snapshot_path
         ) as download:
             assert (
                 _resolve_model_path("org/model", local_files_only=True)
-                == "/cache/snapshot"
+                == str(snapshot_path)
             )
 
         download.assert_called_once_with(
@@ -544,14 +545,15 @@ class TestHYMTModelPath:
         )
 
     def test_local_files_resolves_model_id_to_pinned_snapshot(self) -> None:
+        snapshot_path = Path("/cache/snapshot")
         with mock.patch(
-            "huggingface_hub.snapshot_download", return_value=Path("/cache/snapshot")
+            "huggingface_hub.snapshot_download", return_value=snapshot_path
         ) as download:
             assert (
                 _resolve_model_path(
                     "org/model", local_files_only=True, model_revision="abc123"
                 )
-                == "/cache/snapshot"
+                == str(snapshot_path)
             )
 
         download.assert_called_once_with(
