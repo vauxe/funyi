@@ -365,8 +365,7 @@ class CudaGraphDecoder:
         )
         if self._logits_buf is None:
             self._logits_buf = torch.empty_like(warmup_logits)
-        self._logits_buf.copy_(warmup_logits)
-        next_token_t = self._logits_buf[:, -1, :].argmax(dim=-1).view(1, 1)
+        next_token_t = warmup_logits[:, -1, :].argmax(dim=-1).view(1, 1)
         buffers.input_ids.copy_(next_token_t)
 
         first_id = int(next_token_t.item())
