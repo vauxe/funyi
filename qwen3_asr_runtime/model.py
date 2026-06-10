@@ -129,12 +129,20 @@ class Qwen3ASRModel:
     def mlx_streaming_preset_kwargs(cls) -> Dict[str, Any]:
         """Streaming kwargs tuned for the MLX (Apple Silicon) backend.
 
-        The MLX backend has no cuda_graph/flashinfer, so every step re-encodes the
-        audio window and re-prefills the decoder; per-step latency is dominated by
-        that re-prefill (prefill-bound). A shorter window and larger chunk keep it
-        under the chunk budget on typical speech. ``spec_decode`` is off: the MLX
-        backend has no speculative draft path, so the streaming loop uses the plain
-        full-window re-feed.
+        The MLX backend has no cuda_graph/flashinfer, so every step re-encodes
+        the audio window and re-prefills the decoder; a shorter window and a
+        larger chunk keep the step under the chunk budget on typical speech
+        (measured M1 / 0.6B-4bit: ~0.2 s fixed mel+encoder+prefill cost plus
+        ~8 suffix tokens decoded per step). The MLX backend does implement
+        ``infer_streaming_with_draft``, but ``spec_decode`` stays off by
+        default: with the ~5-token rollback drafts the saving is bounded by
+        accepted-tokens x per-token decode (~25 ms/step on M1 0.6B-4bit, inside
+        step-to-step noise) and the output drifts from the plain path by
+        half-precision epsilon, so enabling it needs the streaming CER sweep
+        first. Decode-heavier configs (bf16 weights, ~3x the per-token decode
+        cost) should save roughly 70-90 ms/step by the same arithmetic, but
+        confirming that end-to-end needs thermally stable hardware -- on a
+        fanless M1, sustained-load throttling swamps differences of this size.
         """
         return {
             "chunk_size_sec": 1.0,

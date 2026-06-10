@@ -1960,7 +1960,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "flashinfer-python", marker = "sys_platform == 'linux'", specifier = ">=0.6.9" },
     { name = "librosa" },
-    { name = "mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = ">=0.18" },
+    { name = "mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = ">=0.31" },
     { name = "nagisa", specifier = "==0.2.11" },
     { name = "ninja", marker = "sys_platform == 'linux'", specifier = ">=1.13" },
     { name = "numpy" },

@@ -648,8 +648,10 @@ class RealtimeASRSession:
 
     def _low_latency_streaming_kwargs(self) -> dict[str, Any]:
         kwargs = dict(_LOW_LATENCY_STREAMING_KWARGS)
-        # The MLX backend has no cuda_graph/flashinfer/spec_decode and is prefill-bound,
-        # so it uses its own streaming preset (shorter window, larger chunk, no spec decode).
+        # The MLX backend has no cuda_graph/flashinfer and re-encodes + re-prefills the
+        # window each step, so it uses its own streaming preset (shorter window, larger
+        # chunk). It does support spec_decode now, but the preset keeps it off pending
+        # the streaming CER sweep -- see mlx_streaming_preset_kwargs.
         if getattr(self.model, "backend", None) == "mlx" and hasattr(
             self.model, "mlx_streaming_preset_kwargs"
         ):

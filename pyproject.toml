@@ -23,7 +23,9 @@ dependencies = [
   "nagisa==0.2.11",
   "soynlp==0.0.493",
   # MLX backend (Apple Silicon only). Pure-Metal model layer; no CUDA.
-  "mlx>=0.18 ; sys_platform == 'darwin' and platform_machine == 'arm64'",
+  # Floor 0.31: the pipelined greedy loops rely on mx.async_eval being safe as
+  # the first op on a fresh thread (older MLX crashed there; verified on 0.31.2).
+  "mlx>=0.31 ; sys_platform == 'darwin' and platform_machine == 'arm64'",
   "rapidfuzz>=3.14.5",
 ]
 

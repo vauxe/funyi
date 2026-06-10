@@ -126,16 +126,15 @@ class MLXForcedAlignerBackend(ForcedAlignerCommon):
             ]
             input_ids = mx.array(input_ids_np.astype(np.int32))
 
-            logits = self.model.align_logits(
-                input_ids, feats, flen
-            )  # (1, L, classify_num)
-
             ts_positions = np.flatnonzero(input_ids_np[0] == self.timestamp_token_id)
             if ts_positions.size == 0:
                 results.append(ForcedAlignResult(items=[]))
                 continue
-            masked_logits = logits[0][mx.array(ts_positions.astype(np.int32))]
-            masked_output_id = np.asarray(mx.argmax(masked_logits, axis=-1))
+            # The classify head runs only on the <timestamp> rows: (1, P, classify_num).
+            logits = self.model.align_logits(
+                input_ids, feats, flen, positions=ts_positions.tolist()
+            )
+            masked_output_id = np.asarray(mx.argmax(logits[0], axis=-1))
             timestamp_ms = (
                 masked_output_id.astype(np.float64) * self.timestamp_segment_time
             )

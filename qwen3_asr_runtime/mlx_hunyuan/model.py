@@ -144,12 +144,20 @@ class MLXHunyuanForCausalLM(nn.Module):
         matching transformers' RepetitionPenaltyLogitsProcessor, so output tracks
         the HY-MT reference (do_sample=False, repetition_penalty=1.05).
 
-        Synchronous greedy loop (no mx.async_eval): the realtime service drives the
-        translator from a worker thread, where async_eval as the first op has no
-        initialized GPU stream; the pipeline gain was ~7% and decode is compute-bound.
-        The repetition penalty is kept on-device as a vocab-sized ``seen_mask`` updated
-        by scatter from the on-device token id, matching transformers'
-        RepetitionPenaltyLogitsProcessor over prompt + generated.
+        Pipelined greedy loop (mlx-lm style): step i+1's forward is enqueued
+        on-device before token i is synced with ``.item()``, which overlaps GPU
+        compute with the host read. The hidden gap is a fixed ~1.5 ms/token, so
+        on HY-MT's large decode (measured ~1% on Hy-MT2-1.8B-4bit on M1) the
+        win is small; the loop is kept pipelined for parity with the ASR loop
+        since it is never slower (the old fresh-thread async_eval failure no
+        longer reproduces on current MLX, and by decode time the worker thread
+        has already run synchronous evals). Greedy output is identical to the
+        synchronous loop -- same ops, same order.
+        The repetition penalty is kept on-device as a vocab-sized ``seen_mask``
+        updated by scatter from the on-device token id, matching transformers'
+        RepetitionPenaltyLogitsProcessor over prompt + generated; the scatter for
+        token i is enqueued before step i+1's logits read it, so the device-side
+        dependency order is unchanged.
         """
         eos = set(int(x) for x in eos_token_ids)
         penalty = float(repetition_penalty)
@@ -171,19 +179,22 @@ class MLXHunyuanForCausalLM(nn.Module):
         embeds = self.model.embed_tokens(input_ids)
         hidden = self.model(embeds, caches)
 
+        y = next_token(hidden[:, -1, :])
+        mx.async_eval(y)
         generated: List[int] = []
         for _ in range(int(max_new_tokens)):
-            y = next_token(hidden[:, -1, :])
+            if use_penalty:
+                seen_mask[y.reshape(1)] = (
+                    1.0  # fold the candidate into the penalty context
+                )
+            hidden = self.model(self.model.embed_tokens(y.reshape(1, 1)), caches)
+            y_next = next_token(hidden[:, -1, :])
+            mx.async_eval(y_next)
             tok = int(y.item())
             if tok in eos:
                 break
             generated.append(tok)
-            if use_penalty:
-                seen_mask[y.reshape(1)] = (
-                    1.0  # fold the new token into the penalty context
-                )
-            step_embeds = self.model.embed_tokens(y.reshape(1, 1))
-            hidden = self.model(step_embeds, caches)
+            y = y_next
         return generated
 
 

@@ -31,6 +31,15 @@ class KVCache:
         self.offset = 0
         self.step = step
 
+    def crop(self, offset: int) -> None:
+        """Rewind the cache to ``offset`` tokens (speculative-verify rollback).
+
+        The buffers keep their capacity; entries past ``offset`` are stale but
+        never read because fetch slices ``[:offset]`` and the next update
+        overwrites from ``offset`` on.
+        """
+        self.offset = min(self.offset, max(0, int(offset)))
+
     def update_and_fetch(self, keys: mx.array, values: mx.array):
         prev = self.offset
         added = keys.shape[2]

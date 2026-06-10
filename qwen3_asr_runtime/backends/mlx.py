@@ -4,9 +4,11 @@
 Reuses the CPU-only HF processor/tokenizer for text and mel-feature work, and
 runs the model forward on MLX (Metal). It implements only the required
 ASRRuntimeBackend methods; CUDA-only options (cuda_graph, flashinfer, fused
-kernels, W8A16, speculative decode) do not apply and are silently dropped so
-existing call sites that pass them keep working. Streaming works through the
-standard infer_with_prompts prefix re-feed -- no token-level prefix API needed.
+kernels, W8A16) do not apply and are silently dropped so existing call sites
+that pass them keep working. Streaming uses the standard infer_with_prompts
+prefix re-feed; speculative draft verification is supported via
+infer_streaming_with_draft, though the MLX preset keeps spec_decode off
+pending the streaming CER sweep (see mlx_streaming_preset_kwargs).
 """
 
 from __future__ import annotations
@@ -110,6 +112,54 @@ class MLXASRBackend(ASRRuntimeBackend):
     def decode_text(self, token_ids: Sequence[int]) -> str:
         return self.processor.tokenizer.decode(list(token_ids))
 
+    def _prepare_inputs(self, prompt: str, wav: np.ndarray):
+        """CPU processor pass -> (input_ids, input_features, feature_lengths) on device."""
+        mx = self._mx
+        wav = np.asarray(wav, dtype=np.float32)
+        inputs = self.processor(
+            text=[prompt], audio=[wav], return_tensors="np", padding=True
+        )
+        input_ids = mx.array(np.asarray(inputs["input_ids"]).astype(np.int32))
+        feats = mx.array(np.asarray(inputs["input_features"], dtype=np.float32)).astype(
+            self._compute
+        )
+        flen = [
+            int(np.asarray(inputs["feature_attention_mask"]).sum(-1).reshape(-1)[0])
+        ]
+        return input_ids, feats, flen
+
+    def _decode_tokens(self, token_ids: Sequence[int]) -> str:
+        return self.processor.tokenizer.decode(
+            token_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )
+
+    def infer_streaming_with_draft(
+        self,
+        prompt: str,
+        wav: np.ndarray,
+        draft_ids: Sequence[int],
+        *,
+        max_new_tokens: int,
+        stats: dict[str, int] | None = None,
+    ) -> str:
+        """Speculative streaming decode. Returns decoded text after the prompt.
+
+        The rollback suffix re-tokenized as ``draft_ids`` is verified inside the
+        prefill forward instead of being re-decoded token by token (see
+        ``spec_decode.py`` for the scheme and the half-precision caveat).
+        """
+        input_ids, feats, flen = self._prepare_inputs(prompt, wav)
+        gen_ids = self.model.generate_with_draft(
+            input_ids,
+            draft_ids=list(draft_ids),
+            max_new_tokens=int(max_new_tokens),
+            eos_token_ids=self.config.eos_token_ids,
+            input_features=feats,
+            feature_lengths=flen,
+            stats=stats,
+        )
+        return self._decode_tokens(gen_ids)
+
     def infer_with_prompts(
         self,
         prompts: List[str],
@@ -120,20 +170,9 @@ class MLXASRBackend(ASRRuntimeBackend):
     ) -> List[str]:
         if not prompts:
             return []
-        mx = self._mx
         outs: List[str] = []
         for prompt, wav in zip(prompts, wavs):
-            wav = np.asarray(wav, dtype=np.float32)
-            inputs = self.processor(
-                text=[prompt], audio=[wav], return_tensors="np", padding=True
-            )
-            input_ids = mx.array(np.asarray(inputs["input_ids"]).astype(np.int32))
-            feats = mx.array(
-                np.asarray(inputs["input_features"], dtype=np.float32)
-            ).astype(self._compute)
-            flen = [
-                int(np.asarray(inputs["feature_attention_mask"]).sum(-1).reshape(-1)[0])
-            ]
+            input_ids, feats, flen = self._prepare_inputs(prompt, wav)
             gen_ids = self.model.generate(
                 input_ids,
                 max_new_tokens=int(max_new_tokens),
@@ -141,11 +180,5 @@ class MLXASRBackend(ASRRuntimeBackend):
                 input_features=feats,
                 feature_lengths=flen,
             )
-            outs.append(
-                self.processor.tokenizer.decode(
-                    gen_ids,
-                    skip_special_tokens=True,
-                    clean_up_tokenization_spaces=False,
-                )
-            )
+            outs.append(self._decode_tokens(gen_ids))
         return outs
