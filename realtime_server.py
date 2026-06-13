@@ -1143,39 +1143,54 @@ async def _offline_translation_worker(
         try:
             if job is None:
                 return
-            unit = job.unit
-            translated, error_code = await _translate_offline_unit(
-                unit,
-                translation_actor=translation_actor,
-                target_language=target_language,
-                source_language=unit.source_language or source_language,
-                max_new_tokens=max_new_tokens,
-                timeout_sec=timeout_sec,
-            )
-            document_unit = apply_unit_translation(
-                segments,
-                unit,
-                target_language=target_language,
-                text=translated,
-                error=error_code,
-            )
-            if document_unit is not None:
-                translation_units.append(document_unit)
-            if translated and error_code is None:
-                await output_queue.put(
-                    _offline_translation_stable_payload(
-                        job, translated, target_language
-                    )
+            try:
+                unit = job.unit
+                translated, error_code = await _translate_offline_unit(
+                    unit,
+                    translation_actor=translation_actor,
+                    target_language=target_language,
+                    source_language=unit.source_language or source_language,
+                    max_new_tokens=max_new_tokens,
+                    timeout_sec=timeout_sec,
                 )
-            else:
-                await output_queue.put(
-                    _offline_translation_status_payload(
-                        job,
-                        target_language,
-                        code=error_code or "failed",
-                        message="translation failed",
-                    )
+                document_unit = apply_unit_translation(
+                    segments,
+                    unit,
+                    target_language=target_language,
+                    text=translated,
+                    error=error_code,
                 )
+                if document_unit is not None:
+                    translation_units.append(document_unit)
+                if translated and error_code is None:
+                    await output_queue.put(
+                        _offline_translation_stable_payload(
+                            job, translated, target_language
+                        )
+                    )
+                else:
+                    await output_queue.put(
+                        _offline_translation_status_payload(
+                            job,
+                            target_language,
+                            code=error_code or "failed",
+                            message="translation failed",
+                        )
+                    )
+            except Exception:
+                # A single malformed unit must not kill the worker: if it did, the
+                # producer would block forever on the bounded jobs queue. Report a
+                # failed-translation status for this unit and keep consuming.
+                _LOGGER.exception("Offline translation job failed.")
+                with suppress(Exception):
+                    await output_queue.put(
+                        _offline_translation_status_payload(
+                            job,
+                            target_language,
+                            code="failed",
+                            message="translation failed",
+                        )
+                    )
         finally:
             jobs.task_done()
 

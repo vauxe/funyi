@@ -31,6 +31,7 @@ from .transcription_document import (
     TranscriptTranslationUnit,
 )
 from .utils import (
+    MAX_ASR_INPUT_SECONDS,
     MIN_ASR_INPUT_SECONDS,
     SAMPLE_RATE,
     float_range_normalize,
@@ -102,6 +103,7 @@ async def transcribe_file(
     timestamp_timeout_sec: float = _DEFAULT_TIMESTAMP_TIMEOUT_SEC,
 ) -> TranscriptDocument:
     opts = options or OfflineTranscriptionOptions()
+    _enforce_max_input_duration(audio_source)
 
     segments: list[TranscriptSegment] = []
     translation_units: list[OfflineTranslationUnit] = []
@@ -156,6 +158,7 @@ async def stream_transcribe_file(
     timestamp_timeout_sec: float = _DEFAULT_TIMESTAMP_TIMEOUT_SEC,
 ) -> AsyncIterator[OfflineTranscriptionStreamEvent]:
     opts = options or OfflineTranscriptionOptions()
+    _enforce_max_input_duration(audio_source)
     if opts.target_language:
         raise ValueError(
             "stream_transcribe_file does not support translation; use a service-layer translation side track."
@@ -530,6 +533,28 @@ def _validate_chunk_sec(chunk_sec: float) -> float:
     if not np.isfinite(value) or value <= 0.0:
         raise ValueError("chunk_sec must be a finite positive number")
     return value
+
+
+def _enforce_max_input_duration(audio_source: Any) -> None:
+    """Reject offline inputs longer than MAX_ASR_INPUT_SECONDS before decoding.
+
+    Duration is probed from container metadata (cheap), so an over-long file — or a
+    small file that decodes to a very long stream — is rejected up front instead of
+    occupying the ASR pipeline unbounded. If the duration cannot be probed, the
+    upload byte cap and per-window chunking bound the work instead.
+    """
+    path = _local_file_path(audio_source)
+    if path is None:
+        return
+    try:
+        samples = _audio_duration_samples(path)
+    except Exception:
+        return
+    if samples > MAX_ASR_INPUT_SECONDS * SAMPLE_RATE:
+        raise OfflineTranscriptionInputError(
+            f"audio duration {samples / SAMPLE_RATE:.0f}s exceeds the "
+            f"{MAX_ASR_INPUT_SECONDS}s maximum."
+        )
 
 
 def _local_file_path(audio_source: Any) -> Path | None:

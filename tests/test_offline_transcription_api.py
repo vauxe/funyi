@@ -1208,3 +1208,90 @@ async def asgi_request(
         if message["type"] == "http.response.body"
     )
     return {"status": status, "headers": response_headers, "body": response_body}
+
+
+def test_enforce_max_input_duration_caps_long_offline_input(
+    monkeypatch, tmp_path
+) -> None:
+    from qwen3_asr_runtime import offline_transcription as ot
+
+    audio = tmp_path / "a.wav"
+    audio.write_bytes(b"RIFF")  # must exist so _local_file_path resolves it
+
+    monkeypatch.setattr(
+        ot,
+        "_audio_duration_samples",
+        lambda _p: (ot.MAX_ASR_INPUT_SECONDS + 1) * ot.SAMPLE_RATE,
+    )
+    with pytest.raises(ot.OfflineTranscriptionInputError, match="maximum"):
+        ot._enforce_max_input_duration(str(audio))
+
+    monkeypatch.setattr(ot, "_audio_duration_samples", lambda _p: 10 * ot.SAMPLE_RATE)
+    ot._enforce_max_input_duration(str(audio))  # within limit -> no raise
+
+    def _boom(_p):
+        raise RuntimeError("cannot probe")
+
+    monkeypatch.setattr(ot, "_audio_duration_samples", _boom)
+    ot._enforce_max_input_duration(str(audio))  # unprobeable -> best-effort skip
+    ot._enforce_max_input_duration(object())  # non-file source -> no raise
+
+
+@pytest.mark.asyncio
+async def test_offline_translation_worker_survives_failing_unit(monkeypatch) -> None:
+    async def _fake_translate(*_a, **_k):
+        return ("translated", None)
+
+    monkeypatch.setattr(realtime_server, "_translate_offline_unit", _fake_translate)
+
+    apply_calls = {"n": 0}
+
+    def _flaky_apply(*_a, **_k):
+        apply_calls["n"] += 1
+        if apply_calls["n"] == 1:
+            raise RuntimeError("malformed unit")
+        return None
+
+    monkeypatch.setattr(realtime_server, "apply_unit_translation", _flaky_apply)
+
+    def _unit(index: int) -> OfflineTranslationUnit:
+        return OfflineTranslationUnit(
+            source_text=f"src {index}",
+            source_language="English",
+            source_segment_ids=(f"seg_{index:06d}",),
+            source_segment_indices=(index,),
+            anchor_segment_list_index=index - 1,
+        )
+
+    jobs: asyncio.Queue = asyncio.Queue()
+    out: asyncio.Queue = asyncio.Queue()
+    await jobs.put(realtime_server._offline_translation_job_from_unit(_unit(1), 1))
+    await jobs.put(realtime_server._offline_translation_job_from_unit(_unit(2), 2))
+    await jobs.put(None)
+
+    # Without the per-job guard, unit 1 would raise and kill the worker, leaving
+    # unit 2 unprocessed and the producer hung on the bounded jobs queue.
+    await asyncio.wait_for(
+        realtime_server._offline_translation_worker(
+            jobs,
+            out,
+            [],
+            [],
+            translation_actor=object(),
+            target_language="Chinese",
+            source_language="English",
+            max_new_tokens=None,
+            timeout_sec=None,
+        ),
+        timeout=1.0,
+    )
+
+    assert apply_calls["n"] == 2  # survived unit 1, processed unit 2
+    payloads = []
+    while not out.empty():
+        payloads.append(out.get_nowait())
+    assert any(
+        p.get("type") == "translation_status" and p.get("code") == "failed"
+        for p in payloads
+    )
+    assert any(p.get("type") == "translation_stable" for p in payloads)
