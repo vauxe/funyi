@@ -13,13 +13,13 @@ https://github.com/user-attachments/assets/cda710b8-5a05-4bd0-9e9f-5d2c9bc1de68
 
 ## Requirements
 
-- Python 3.10 or newer; Python 3.12 is recommended.
+- Python 3.11 or newer; Python 3.12 is recommended.
 - `uv` for Python dependencies.
-- For the realtime backend: Linux or WSL with an NVIDIA CUDA GPU, or macOS on
-  Apple Silicon with MLX/Metal. The backend default is `auto`, so macOS Apple
+- For the realtime backend: Linux or WSL with an NVIDIA CUDA GPU, or macOS 14+
+  on Apple Silicon with MLX/Metal. The backend default is `auto`, so macOS Apple
   Silicon selects the MLX ASR, forced-aligner, and translation paths.
 - Access to download the ASR, forced-aligner, and translation models, or local
-  model directories.
+  model directories. FireRed Stream-VAD ONNX assets must be present locally.
 - For the desktop client: Node.js with Corepack-enabled `pnpm`, Rust/Cargo, and
   Windows or macOS native build tools.
 
@@ -66,7 +66,9 @@ uv sync --python 3.12 --frozen
 
 Start the backend in one terminal. On a fresh checkout or empty model cache, use
 the download target once. The first start can take a while because it downloads
-and warms the ASR, timestamp, and translation models:
+and warms the ASR, timestamp, and translation models. FireRed Stream-VAD ONNX
+assets are loaded from `local_data/models/firered-stream-vad-onnx` by default,
+or from `FUNYI_FIRERED_VAD_MODEL_DIR` when set:
 
 ```bash
 FUNYI_ALLOW_DOWNLOADS=1 ./scripts/start_backend.sh
@@ -126,7 +128,7 @@ usually `ws://127.0.0.1:8000/ws/asr`.
 
 | Command | What it does |
 |---|---|
-| `FUNYI_ALLOW_DOWNLOADS=1 ./scripts/start_backend.sh` | Start the full backend and allow forced-aligner/translation model downloads. |
+| `FUNYI_ALLOW_DOWNLOADS=1 ./scripts/start_backend.sh` | Start the full backend and allow forced-aligner and translation model downloads. |
 | `./scripts/start_backend.sh` | Start the full backend from cached or local models. |
 | `FUNYI_TRANSLATION_MODEL= ./scripts/start_backend.sh` | Start ASR plus the required forced aligner, without translation. |
 | `FUNYI_ASR_MODEL=<hf-or-local-qwen3-asr-model> ./scripts/start_backend.sh` | Start with an alternate Qwen3-ASR-compatible ASR checkpoint. |
@@ -150,6 +152,7 @@ To use local model directories instead of Hugging Face model ids:
 FUNYI_ASR_MODEL=/path/to/Qwen3-ASR-1.7B \
 FUNYI_TIMESTAMP_MODEL=/path/to/Qwen3-ForcedAligner-0.6B \
 FUNYI_TRANSLATION_MODEL=/path/to/Hy-MT2-1.8B \
+FUNYI_FIRERED_VAD_MODEL_DIR=/path/to/firered-stream-vad-onnx \
 ./scripts/start_backend.sh
 ```
 

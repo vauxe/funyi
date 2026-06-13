@@ -5,10 +5,13 @@ import ast
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 import wave
 
@@ -29,10 +32,13 @@ from realtime_server import (
     _close_websocket,
     _configure_logging,
     _format_event_log_summary,
+    _iter_pcm_audio_chunks,
+    main,
     _parse_args,
     _parse_language_config_update,
     _pcm_s16le_bytes,
     _prepare_cuda_graph_runtime,
+    _preflight_speech_gate,
     _prewarm_timestamp_runtime,
     _prewarm_translation_runtime,
     _publish_finish_events,
@@ -61,11 +67,25 @@ from qwen3_asr_runtime.realtime_session import (
     RealtimeConnectionSession,
     _SourceTimeline,
 )
-from qwen3_asr_runtime.speech_gate import SpeechGate, SpeechGateConfig
+from qwen3_asr_runtime.speech_gate import (
+    SpeechGate,
+    SpeechGateConfig,
+    SpeechGateEvent,
+)
 from qwen3_asr_runtime.streaming import RecognitionFrame, TailSelector, TextStabilizer
 from qwen3_asr_runtime.transcript_store import TranscriptStore
 from qwen3_asr_runtime.utils import SUPPORTED_LANGUAGES
-from qwen3_asr_runtime.vad import SileroVadAdapter, SileroVadConfig, VadDecision
+from qwen3_asr_runtime.vad import (
+    DEFAULT_VAD_MODE,
+    FIRERED_STREAM_VAD_MODE,
+    FireRedStreamVadAdapter,
+    FireRedStreamVadConfig,
+    PASSTHROUGH_VAD_MODE,
+    PassthroughVadAdapter,
+    VadBoundary,
+    VAD_MODES,
+    _FireRedStreamVadOnnxRunner,
+)
 
 
 def _desktop_language_options(name: str) -> tuple[str, ...]:
@@ -156,10 +176,19 @@ class FakeStreamingModel:
         )
 
 
+def _vad_start(sample: int) -> VadBoundary:
+    return VadBoundary("speech_start", sample)
+
+
+def _vad_end(sample: int) -> VadBoundary:
+    return VadBoundary("speech_end", sample)
+
+
 class FakeVadAdapter:
-    def __init__(self, decisions: list[VadDecision]) -> None:
+    def __init__(self, decisions: list[list[VadBoundary]]) -> None:
         self.decisions = list(decisions)
         self.accept_lengths: list[int] = []
+        self.flush_count = 0
         self._speech_active = False
 
     @property
@@ -169,15 +198,30 @@ class FakeVadAdapter:
     def reset(self) -> None:
         self._speech_active = False
 
-    def accept(self, audio: np.ndarray) -> VadDecision:
+    def warmup(self) -> None:
+        pass
+
+    def accept(self, audio: np.ndarray) -> list[VadBoundary]:
         self.accept_lengths.append(int(audio.shape[0]))
-        decision = (
-            self.decisions.pop(0)
-            if self.decisions
-            else VadDecision(speech_active=self._speech_active)
-        )
-        self._speech_active = bool(decision.speech_active)
-        return decision
+        boundaries = self.decisions.pop(0) if self.decisions else []
+        for _b in boundaries:
+            self._speech_active = _b.kind == "speech_start"
+        return boundaries
+
+    def flush(self) -> list[VadBoundary]:
+        self.flush_count += 1
+        boundaries = self.decisions.pop(0) if self.decisions else []
+        for _b in boundaries:
+            self._speech_active = _b.kind == "speech_start"
+        return boundaries
+
+
+def speech_event_spans(
+    events: list[SpeechGateEvent],
+) -> list[tuple[str, int, int]]:
+    return [
+        (event.type, int(event.start_sample), int(event.end_sample)) for event in events
+    ]
 
 
 def make_session(
@@ -633,12 +677,116 @@ class TestRealtimeServerCli:
         assert not args.save_debug_audio
         assert args.debug_audio_dir == "local_data/realtime_debug_audio"
         assert not args.no_vad
+        assert args.vad_mode == "firered-stream-vad"
+        assert args.firered_vad_model_dir == "local_data/models/firered-stream-vad-onnx"
+        assert args.firered_vad_onnx_threads == 4
 
     def test_no_vad_can_disable_vad(self) -> None:
         with patch.object(
             sys, "argv", ["realtime_server.py", "--model", "model", "--no-vad"]
         ):
-            assert _parse_args().no_vad
+            args = _parse_args()
+
+        assert args.no_vad
+        assert args.vad_mode == "none"
+
+    def test_vad_mode_can_disable_vad(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            ["realtime_server.py", "--model", "model", "--vad-mode", "none"],
+        ):
+            args = _parse_args()
+
+        assert not args.no_vad
+        assert args.vad_mode == "none"
+
+    def test_build_speech_gate_passes_firered_vad_config(self) -> None:
+        gate = _build_speech_gate(
+            firered_vad_model_dir="vad-model-dir",
+            firered_vad_onnx_threads=6,
+        )
+
+        assert isinstance(gate.vad, FireRedStreamVadAdapter)
+        assert gate.vad.config.model_dir == "vad-model-dir"
+        assert gate.vad.config.onnx_intra_op_num_threads == 6
+        assert gate.vad.config.speech_threshold == 0.5
+        assert gate.vad.config.min_speech_ms == 80
+
+    def test_preflight_speech_gate_builds_and_warms_vad(self) -> None:
+        class FakeWarmupVad:
+            def __init__(self) -> None:
+                self.warmup_count = 0
+
+            def warmup(self) -> None:
+                self.warmup_count += 1
+
+        fake_vad = FakeWarmupVad()
+        fake_gate = SimpleNamespace(vad=fake_vad)
+        with patch(
+            "realtime_server._build_speech_gate", return_value=fake_gate
+        ) as build:
+            _preflight_speech_gate(
+                vad_mode="firered-stream-vad",
+                firered_vad_model_dir="vad-model-dir",
+                firered_vad_onnx_threads=6,
+            )
+
+        build.assert_called_once_with(
+            vad_mode="firered-stream-vad",
+            firered_vad_model_dir="vad-model-dir",
+            firered_vad_onnx_threads=6,
+        )
+        assert fake_vad.warmup_count == 1
+
+    def test_main_preflights_speech_gate_before_loading_models(self) -> None:
+        events: list[str] = []
+
+        def fail_preflight(**_kwargs: Any) -> None:
+            events.append("preflight")
+            raise RuntimeError("missing vad")
+
+        def load_model(*_args: Any, **_kwargs: Any) -> tuple[object, None]:
+            events.append("model_load")
+            raise AssertionError("model load ran before VAD preflight")
+
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "realtime_server.py",
+                    "--model",
+                    "asr-model",
+                    "--timestamp-model",
+                    "timestamp-model",
+                ],
+            ),
+            patch(
+                "realtime_server._build_model_load", return_value=("transformers", {})
+            ),
+            patch("realtime_server._preflight_speech_gate", side_effect=fail_preflight),
+            patch("realtime_server._load_on_thread", side_effect=load_model),
+        ):
+            with pytest.raises(RuntimeError, match="missing vad"):
+                main()
+
+        assert events == ["preflight"]
+
+    def test_firered_vad_threads_must_be_positive(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "realtime_server.py",
+                "--model",
+                "model",
+                "--firered-vad-onnx-threads",
+                "0",
+            ],
+        ):
+            with pytest.raises(SystemExit):
+                _parse_args()
 
     def test_debug_log_level_can_be_configured(self) -> None:
         with patch.object(
@@ -768,6 +916,14 @@ class TestRealtimeServerCli:
         audio = np.array([0, 32767, -32768], dtype=np.int16)
 
         assert _pcm_s16le_bytes(audio) == b"\x00\x00\xff\x7f\x00\x80"
+
+    def test_pcm_audio_chunks_bound_vad_ingest_work(self) -> None:
+        audio = np.arange(20_500, dtype=np.int16)
+
+        chunks = list(_iter_pcm_audio_chunks(audio, max_samples=8_000))
+
+        assert [int(chunk.shape[0]) for chunk in chunks] == [8_000, 8_000, 4_500]
+        assert np.array_equal(np.concatenate(chunks), audio)
 
     def test_debug_audio_recorder_writes_wav_file(self, tmp_path: Path) -> None:
         recorder = _DebugAudioRecorder(tmp_path, session_id="bad/session id")
@@ -1856,11 +2012,60 @@ class TestRealtimeServerTranslationOrdering:
             types.append((await queue.get())["type"])
         assert types == ["transcript_timing_update", "transcript_final"]
 
+    def test_launcher_only_passes_configured_firered_model_dir(
+        self, tmp_path: Path
+    ) -> None:
+        custom_root = tmp_path / "user-data"
+        custom_root.mkdir()
+        sentinel = custom_root / "keep.txt"
+        sentinel.write_text("do not move or delete", encoding="utf-8")
+        model_dir = custom_root / "pretrained_models" / "onnx_models"
+        marker = tmp_path / "git-was-called"
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        fake_uv = fake_bin / "uv"
+        fake_uv.write_text(
+            "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\"\n",
+            encoding="utf-8",
+        )
+        fake_uv.chmod(0o755)
+        fake_git = fake_bin / "git"
+        fake_git.write_text(
+            f"#!/usr/bin/env bash\ntouch {marker!s}\nexit 42\n",
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o755)
+
+        env = {
+            **os.environ,
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+            "FUNYI_ALLOW_DOWNLOADS": "1",
+            "FUNYI_FIRERED_VAD_MODEL_DIR": str(model_dir),
+            "FUNYI_TRANSLATION_MODEL": "",
+        }
+        result = subprocess.run(
+            ["bash", "scripts/start_backend.sh"],
+            cwd=Path(__file__).resolve().parents[1],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+
+        assert result.returncode == 0
+        assert not marker.exists()
+        assert sentinel.read_text(encoding="utf-8") == "do not move or delete"
+        args = result.stdout.splitlines()
+        assert "--firered-vad-model-dir" in args
+        assert args[args.index("--firered-vad-model-dir") + 1] == str(model_dir)
+        assert "--no-timestamp-local-files-only" in args
+
 
 class TestSpeechGate:
     def test_initial_silence_produces_no_speech_events(self) -> None:
         gate = SpeechGate(
-            vad=FakeVadAdapter([VadDecision(speech_active=False)]),
+            vad=FakeVadAdapter([[]]),
             config=SpeechGateConfig(pre_roll_ms=400),
         )
 
@@ -1872,12 +2077,8 @@ class TestSpeechGate:
         gate = SpeechGate(
             vad=FakeVadAdapter(
                 [
-                    VadDecision(speech_active=False),
-                    VadDecision(
-                        speech_started=True,
-                        speech_active=True,
-                        speech_start_sample=16_000,
-                    ),
+                    [],
+                    [_vad_start(16_000)],
                 ]
             ),
             config=SpeechGateConfig(pre_roll_ms=400),
@@ -1896,13 +2097,7 @@ class TestSpeechGate:
         gate = SpeechGate(
             vad=FakeVadAdapter(
                 [
-                    VadDecision(
-                        speech_started=True,
-                        speech_ended=True,
-                        speech_active=False,
-                        speech_start_sample=2_000,
-                        speech_end_sample=10_000,
-                    )
+                    [_vad_start(2_000), _vad_end(10_000)],
                 ]
             ),
             config=SpeechGateConfig(pre_roll_ms=400),
@@ -1910,10 +2105,10 @@ class TestSpeechGate:
 
         events = gate.accept(np.ones(16_000, dtype=np.float32) * 0.2)
 
-        assert [event.type for event in events] == ["speech_start", "speech_end"]
-        assert events[0].start_sample == 0
-        assert events[0].end_sample == 10_000
-        assert events[1].start_sample == 10_000
+        assert speech_event_spans(events) == [
+            ("speech_start", 0, 10_000),
+            ("speech_end", 10_000, 10_000),
+        ]
         assert not gate.speech_active
 
     def test_speech_restart_in_same_chunk_does_not_duplicate_previous_turn_audio(
@@ -1922,16 +2117,8 @@ class TestSpeechGate:
         gate = SpeechGate(
             vad=FakeVadAdapter(
                 [
-                    VadDecision(
-                        speech_started=True, speech_active=True, speech_start_sample=0
-                    ),
-                    VadDecision(
-                        speech_started=True,
-                        speech_ended=True,
-                        speech_active=True,
-                        speech_start_sample=28_000,
-                        speech_end_sample=20_000,
-                    ),
+                    [_vad_start(0)],
+                    [_vad_end(20_000), _vad_start(28_000)],
                 ]
             ),
             config=SpeechGateConfig(pre_roll_ms=400),
@@ -1940,14 +2127,137 @@ class TestSpeechGate:
 
         events = gate.accept(np.ones(16_000, dtype=np.float32) * 0.2)
 
-        assert [event.type for event in events] == [
-            "speech_audio",
-            "speech_end",
-            "speech_start",
+        assert speech_event_spans(events) == [
+            ("speech_audio", 16_000, 20_000),
+            ("speech_end", 20_000, 20_000),
+            ("speech_start", 21_600, 32_000),
         ]
-        assert events[0].end_sample == 20_000
-        assert events[2].start_sample == 21_600
-        assert events[2].start_sample >= events[1].end_sample
+
+    def test_flush_keeps_pending_vad_tail_for_open_session(self) -> None:
+        vad = FakeVadAdapter(
+            [
+                [],
+                [_vad_start(0)],
+            ]
+        )
+        gate = SpeechGate(vad=vad, config=SpeechGateConfig(pre_roll_ms=0))
+
+        assert gate.accept(np.ones(4_000, dtype=np.float32) * 0.2) == []
+        events = gate.flush()
+
+        assert vad.flush_count == 0
+        assert events == []
+
+    def test_force_end_does_not_invent_unemitted_start_after_buffer_trim(self) -> None:
+        vad = FakeVadAdapter(
+            [
+                [],
+                [_vad_start(0)],
+            ]
+        )
+        gate = SpeechGate(vad=vad, config=SpeechGateConfig(pre_roll_ms=0))
+
+        assert gate.accept(np.ones(4_000, dtype=np.float32) * 0.2) == []
+        events = gate.flush(force_end=True)
+
+        assert vad.flush_count == 1
+        assert events == []
+
+    def test_force_end_reopens_when_underlying_vad_stays_active(self) -> None:
+        gate = _build_speech_gate(vad_mode="none")
+
+        first = gate.accept(np.ones(16_000, dtype=np.float32) * 0.2)
+        forced = gate.flush(force_end=True)
+        second = gate.accept(np.ones(16_000, dtype=np.float32) * 0.2)
+
+        assert speech_event_spans(first) == [("speech_start", 0, 16_000)]
+        assert speech_event_spans(forced) == [("speech_end", 16_000, 16_000)]
+        assert speech_event_spans(second) == [("speech_start", 16_000, 32_000)]
+
+    def test_active_decision_with_explicit_start_does_not_synthesize_early_start(
+        self,
+    ) -> None:
+        gate = SpeechGate(
+            vad=FakeVadAdapter(
+                [
+                    [_vad_start(1_000)],
+                ]
+            ),
+            config=SpeechGateConfig(pre_roll_ms=0),
+        )
+
+        events = gate.accept(np.ones(8_000, dtype=np.float32) * 0.2)
+
+        assert speech_event_spans(events) == [("speech_start", 1_000, 8_000)]
+
+    def test_delayed_speech_end_does_not_move_end_before_emitted_audio(self) -> None:
+        gate = SpeechGate(
+            vad=FakeVadAdapter(
+                [
+                    [_vad_start(0)],
+                    [_vad_end(5_000)],
+                ]
+            ),
+            config=SpeechGateConfig(pre_roll_ms=0),
+        )
+
+        first = gate.accept(np.ones(8_000, dtype=np.float32) * 0.2)
+        second = gate.accept(np.ones(4_000, dtype=np.float32) * 0.2)
+
+        assert speech_event_spans(first) == [("speech_start", 0, 8_000)]
+        assert speech_event_spans(second) == [("speech_end", 8_000, 8_000)]
+
+    def test_speech_end_closes_at_vad_boundary(self) -> None:
+        gate = SpeechGate(
+            vad=FakeVadAdapter(
+                [
+                    [_vad_start(0), _vad_end(8_000)],
+                ]
+            ),
+            config=SpeechGateConfig(pre_roll_ms=0),
+        )
+
+        events = gate.accept(np.ones(16_000, dtype=np.float32) * 0.2)
+
+        assert speech_event_spans(events) == [
+            ("speech_start", 0, 8_000),
+            ("speech_end", 8_000, 8_000),
+        ]
+
+    def test_short_gap_before_next_speech_start_starts_new_turn(self) -> None:
+        gate = SpeechGate(
+            vad=FakeVadAdapter(
+                [
+                    [_vad_start(0), _vad_end(8_000)],
+                ]
+            ),
+            config=SpeechGateConfig(pre_roll_ms=0),
+        )
+
+        events = gate.accept(np.ones(32_000, dtype=np.float32) * 0.2)
+
+        assert speech_event_spans(events) == [
+            ("speech_start", 0, 8_000),
+            ("speech_end", 8_000, 8_000),
+        ]
+        assert not gate.speech_active
+
+    def test_same_sample_end_start_split_emits_two_turns(self) -> None:
+        gate = SpeechGate(
+            vad=FakeVadAdapter(
+                [
+                    [_vad_start(0), _vad_end(16_000)],
+                ]
+            ),
+            config=SpeechGateConfig(pre_roll_ms=0),
+        )
+
+        events = gate.accept(np.ones(32_000, dtype=np.float32) * 0.2)
+
+        assert speech_event_spans(events) == [
+            ("speech_start", 0, 16_000),
+            ("speech_end", 16_000, 16_000),
+        ]
 
 
 class TestRealtimeASRSession:
@@ -2085,12 +2395,16 @@ class TestRealtimeASRSession:
 
 
 class TestRealtimeConnectionSession:
+    def test_connection_session_requires_explicit_speech_gate(self) -> None:
+        with pytest.raises(TypeError, match="speech_gate"):
+            RealtimeConnectionSession(FakeStreamingModel())  # type: ignore[call-arg]
+
     def test_no_vad_gate_streams_initial_silence_to_asr(self) -> None:
         model = FakeStreamingModel(outputs=["静音也进入模型"])
         session = RealtimeConnectionSession(
             model,
             config=RealtimeASRConfig(language="Chinese"),
-            speech_gate=_build_speech_gate(no_vad=True),
+            speech_gate=_build_speech_gate(vad_mode="none"),
         )
 
         events = session.ingest_audio(np.zeros(16_000, dtype=np.float32))
@@ -2112,12 +2426,8 @@ class TestRealtimeConnectionSession:
             speech_gate=SpeechGate(
                 vad=FakeVadAdapter(
                     [
-                        VadDecision(
-                            speech_started=True,
-                            speech_active=True,
-                            speech_start_sample=0,
-                        ),
-                        VadDecision(speech_active=True),
+                        [_vad_start(0)],
+                        [],
                     ]
                 ),
                 config=SpeechGateConfig(pre_roll_ms=0),
@@ -2140,7 +2450,7 @@ class TestRealtimeConnectionSession:
             model,
             config=RealtimeASRConfig(language="Chinese"),
             speech_gate=SpeechGate(
-                vad=FakeVadAdapter([VadDecision(speech_active=False)]),
+                vad=FakeVadAdapter([[]]),
             ),
         )
 
@@ -2158,22 +2468,10 @@ class TestRealtimeConnectionSession:
             speech_gate=SpeechGate(
                 vad=FakeVadAdapter(
                     [
-                        VadDecision(speech_active=False),
-                        VadDecision(
-                            speech_started=True,
-                            speech_active=True,
-                            speech_start_sample=16_000,
-                        ),
-                        VadDecision(
-                            speech_ended=True,
-                            speech_active=False,
-                            speech_end_sample=32_000,
-                        ),
-                        VadDecision(
-                            speech_started=True,
-                            speech_active=True,
-                            speech_start_sample=48_000,
-                        ),
+                        [],
+                        [_vad_start(16_000)],
+                        [_vad_end(32_000)],
+                        [_vad_start(48_000)],
                     ]
                 ),
                 config=SpeechGateConfig(pre_roll_ms=0),
@@ -2209,21 +2507,9 @@ class TestRealtimeConnectionSession:
             speech_gate=SpeechGate(
                 vad=FakeVadAdapter(
                     [
-                        VadDecision(
-                            speech_started=True,
-                            speech_active=True,
-                            speech_start_sample=0,
-                        ),
-                        VadDecision(
-                            speech_ended=True,
-                            speech_active=False,
-                            speech_end_sample=16_000,
-                        ),
-                        VadDecision(
-                            speech_started=True,
-                            speech_active=True,
-                            speech_start_sample=32_000,
-                        ),
+                        [_vad_start(0)],
+                        [_vad_end(16_000)],
+                        [_vad_start(32_000)],
                     ]
                 ),
                 config=SpeechGateConfig(pre_roll_ms=0),
@@ -2256,18 +2542,11 @@ class TestRealtimeConnectionSession:
             speech_gate=SpeechGate(
                 vad=FakeVadAdapter(
                     [
-                        VadDecision(
-                            speech_started=True,
-                            speech_active=True,
-                            speech_start_sample=0,
-                        ),
-                        VadDecision(
-                            speech_ended=True,
-                            speech_active=False,
-                            speech_end_sample=16_000,
-                        ),
+                        [_vad_start(0)],
+                        [_vad_end(16_000)],
                     ]
                 ),
+                config=SpeechGateConfig(),
             ),
         )
 
@@ -2766,7 +3045,7 @@ class TestRealtimeConnectionSession:
         assert model.stream_audio_lengths == [16000, 3840]
         assert [segment["text"] for segment in stable_appends(events)] == ["前段后段"]
 
-    def test_low_energy_audio_between_speech_is_not_dropped(self) -> None:
+    def test_realtime_asr_session_accepts_low_energy_audio_without_vad(self) -> None:
         model = FakeStreamingModel(
             outputs=["前半", "前半低能量后半"], finish_text="前半低能量后半"
         )
@@ -2780,7 +3059,7 @@ class TestRealtimeConnectionSession:
         assert partial_texts(events) == ["前半低能量后半"]
         assert model.stream_audio_lengths == [16000, 16000]
 
-    def test_short_pause_is_promoted_when_speech_resumes(self) -> None:
+    def test_realtime_asr_session_keeps_short_pause_in_model_window(self) -> None:
         model = FakeStreamingModel(outputs=["前半", "前半后半"])
         session = make_session(model)
         speech_one = np.ones(16_000, dtype=np.float32) * 0.2
@@ -2794,7 +3073,7 @@ class TestRealtimeConnectionSession:
         assert partial_texts(pause_events + resume_events) == ["前半后半"]
         assert model.stream_audio_lengths == [16000, 16000]
 
-    def test_large_transport_frame_is_split_before_asr_cadence(self) -> None:
+    def test_realtime_asr_session_splits_large_ingest_before_asr_cadence(self) -> None:
         model = FakeStreamingModel(
             outputs=["第一段", "第一段第二段"], finish_text="第一段第二段尾段"
         )
@@ -2835,67 +3114,427 @@ class TestRealtimeConnectionSession:
         assert not {"partial", "committed"} & {str(event["type"]) for event in events}
         assert_transcript_update_invariants(events)
 
+    def test_finish_updates_lets_service_snapshot_after_timing_patch(self) -> None:
+        model = FakeStreamingModel(outputs=["尾句"], finish_text="尾句")
+        session = RealtimeConnectionSession(
+            model,
+            config=RealtimeASRConfig(
+                language="Chinese",
+                live_stability_delay_ms=0,
+                force_align_timestamps=True,
+            ),
+            speech_gate=_build_speech_gate(vad_mode="none"),
+        )
+        speech = np.ones(16_000, dtype=np.float32) * 0.2
 
-class FakeVadModel:
-    def __init__(self, probabilities: list[float]) -> None:
-        self.probabilities = list(probabilities)
+        session.ingest_audio(speech)
+        events = session.finish_updates()
+        jobs = session.consume_stable_timing_jobs_for_events(events)
+
+        assert "transcript_final" not in {event["type"] for event in events}
+        assert len(jobs) == 1
+
+        session.store.update_segment_timing(
+            source_segment_id=jobs[0].source_segment_id,
+            start_ms=120,
+            end_ms=980,
+            timing_status="aligned",
+        )
+        final = session.store.final_event()
+
+        assert final["segments"][0]["start_ms"] == 120
+        assert final["segments"][0]["end_ms"] == 980
+        assert final["segments"][0]["timing_status"] == "aligned"
+
+
+class FakeFireRedStreamRunner:
+    def __init__(self, frame_batches: list[list[float]]) -> None:
+        self.frame_batches = [list(batch) for batch in frame_batches]
+        self.accept_lengths: list[int] = []
         self.calls = 0
         self.reset_count = 0
 
-    def __call__(self, frame: object, sample_rate: int) -> np.ndarray:
+    def predict_speech_probabilities(self, audio: np.ndarray) -> list[float]:
         self.calls += 1
-        probability = self.probabilities.pop(0) if self.probabilities else 0.0
-        return np.array([[probability]], dtype=np.float32)
+        self.accept_lengths.append(int(np.asarray(audio).reshape(-1).shape[0]))
+        if not self.frame_batches:
+            return []
+        return self.frame_batches.pop(0)
 
-    def reset_states(self) -> None:
+    def reset(self) -> None:
         self.reset_count += 1
 
 
-class TestSileroVadAdapter:
-    def test_default_config_uses_onnx_runtime(self) -> None:
-        assert SileroVadConfig().use_onnx
+def make_firered_vad(
+    runner: FakeFireRedStreamRunner, **config_overrides: Any
+) -> FireRedStreamVadAdapter:
+    return FireRedStreamVadAdapter(
+        FireRedStreamVadConfig(
+            **config_overrides,
+        ),
+        runner=runner,
+    )
+
+
+class TestPassthroughVadAdapter:
+    def test_flush_closes_active_turn_without_resetting_timeline(self) -> None:
+        vad = PassthroughVadAdapter()
+
+        first = vad.accept(np.ones(16_000, dtype=np.float32))
+        flushed = vad.flush()
+        flushed_active = vad.speech_active
+        second = vad.accept(np.ones(8_000, dtype=np.float32))
+
+        assert first == [VadBoundary("speech_start", 0)]
+        assert flushed == [VadBoundary("speech_end", 16_000)]
+        assert not flushed_active
+        assert second == [VadBoundary("speech_start", 16_000)]
+
+
+class TestFireRedStreamVadAdapter:
+    def test_speech_gate_requires_explicit_vad_adapter(self) -> None:
+        with pytest.raises(TypeError, match="vad"):
+            SpeechGate()  # type: ignore[call-arg]
+
+    def test_service_default_speech_gate_uses_firered_stream_vad(self) -> None:
+        gate = _build_speech_gate()
+
+        assert isinstance(gate.vad, FireRedStreamVadAdapter)
+
+    def test_service_owns_vad_mode_selection(self) -> None:
+        assert FIRERED_STREAM_VAD_MODE == "firered-stream-vad"
+        assert PASSTHROUGH_VAD_MODE == "none"
+        assert DEFAULT_VAD_MODE == FIRERED_STREAM_VAD_MODE
+        assert VAD_MODES == (FIRERED_STREAM_VAD_MODE, PASSTHROUGH_VAD_MODE)
+        assert isinstance(_build_speech_gate().vad, FireRedStreamVadAdapter)
+        assert isinstance(
+            _build_speech_gate(vad_mode="none").vad, PassthroughVadAdapter
+        )
+        with pytest.raises(ValueError, match="Unsupported VAD mode"):
+            _build_speech_gate(vad_mode="unknown")
+
+    def test_default_thresholds_match_stream_vad_without_max_turn_split(self) -> None:
+        config = FireRedStreamVadConfig()
+
+        assert config.speech_threshold == 0.5
+        assert config.smooth_window_size == 5
+        assert config.pad_start_ms == 50
+        assert config.min_speech_ms == 80
+        assert config.min_silence_ms == 200
+        assert config.onnx_intra_op_num_threads == 4
 
     def test_config_rejects_threshold_out_of_range(self) -> None:
         with pytest.raises(ValueError):
-            SileroVadConfig(threshold=0.0)
+            FireRedStreamVadConfig(speech_threshold=0.0)
         with pytest.raises(ValueError):
-            SileroVadConfig(threshold=1.5)
+            FireRedStreamVadConfig(speech_threshold=1.5)
 
-    def test_config_rejects_negative_threshold_not_below_threshold(self) -> None:
-        # negative_threshold must stay within (0, threshold) to preserve hysteresis.
+    def test_config_rejects_invalid_stream_settings(self) -> None:
         with pytest.raises(ValueError):
-            SileroVadConfig(threshold=0.5, negative_threshold=0.5)
+            FireRedStreamVadConfig(smooth_window_size=0)
         with pytest.raises(ValueError):
-            SileroVadConfig(threshold=0.5, negative_threshold=0.0)
-        # A valid hysteresis gap is accepted.
-        assert (
-            SileroVadConfig(threshold=0.5, negative_threshold=0.3).negative_threshold
-            == 0.3
+            FireRedStreamVadConfig(pad_start_ms=-1)
+        with pytest.raises(ValueError):
+            FireRedStreamVadConfig(min_speech_ms=0)
+        with pytest.raises(ValueError):
+            FireRedStreamVadConfig(min_silence_ms=0)
+        with pytest.raises(ValueError):
+            FireRedStreamVadConfig(onnx_intra_op_num_threads=0)
+        with pytest.raises(ValueError):
+            FireRedStreamVadConfig(onnx_inter_op_num_threads=0)
+
+    def test_accept_runs_on_first_audio_chunk_without_five_second_window(self) -> None:
+        runner = FakeFireRedStreamRunner([[1.0] * 48])
+        vad = make_firered_vad(
+            runner,
+            min_speech_ms=10,
+            pad_start_ms=0,
+            smooth_window_size=1,
         )
 
-    def test_buffers_until_silero_chunk_is_complete(self) -> None:
-        model = FakeVadModel([0.8])
-        vad = SileroVadAdapter(
-            SileroVadConfig(threshold=0.5, min_speech_ms=32, min_silence_ms=64),
-            model=model,
+        decision = vad.accept(np.ones(8_000, dtype=np.float32))
+
+        assert runner.calls == 1
+        assert runner.accept_lengths == [8_000]
+        assert decision == [VadBoundary("speech_start", 0)]
+        assert vad.speech_active
+
+    def test_emits_start_and_end_from_official_stream_state_machine(self) -> None:
+        runner = FakeFireRedStreamRunner([[0.0] * 5 + [1.0] * 8 + [0.0] * 25])
+        vad = make_firered_vad(
+            runner,
+            min_speech_ms=10,
+            min_silence_ms=10,
+            pad_start_ms=0,
+            smooth_window_size=1,
         )
 
-        first = vad.accept(np.ones(256, dtype=np.float32))
-        second = vad.accept(np.ones(256, dtype=np.float32))
+        decision = vad.accept(np.ones(8_000, dtype=np.float32))
 
-        assert not first.has_speech
-        assert model.calls == 1
-        assert second.speech_started
+        assert not vad.speech_active
+        assert decision == [
+            VadBoundary("speech_start", 640),
+            VadBoundary("speech_end", 2240),
+        ]
 
-    def test_requires_min_speech_and_min_silence(self) -> None:
-        model = FakeVadModel([0.8, 0.8, 0.1, 0.1])
-        vad = SileroVadAdapter(
-            SileroVadConfig(threshold=0.5, min_speech_ms=64, min_silence_ms=64),
-            model=model,
+    def test_default_does_not_split_continuous_speech_at_twenty_seconds(self) -> None:
+        runner = FakeFireRedStreamRunner([[1.0] * 2_010])
+        vad = make_firered_vad(
+            runner,
+            min_speech_ms=10,
+            pad_start_ms=0,
+            smooth_window_size=1,
         )
 
-        decision = vad.accept(np.ones(512 * 4, dtype=np.float32))
+        decision = vad.accept(np.ones(2_010 * 160, dtype=np.float32))
 
-        assert decision.speech_started
-        assert decision.speech_ended
-        assert not decision.speech_active
+        assert decision == [VadBoundary("speech_start", 0)]
+        assert all(b.kind != "speech_end" for b in decision)
+        assert vad.speech_active
+
+    def test_second_turn_brief_pause_does_not_collapse_silence_tolerance(
+        self,
+    ) -> None:
+        # Regression: a brief intra-turn pause on the *second* speech turn must
+        # not prematurely end it. The earlier hand-port never reset the silence
+        # counter on speech frames, so from turn 2 onward a single silence frame
+        # tripped speech_end (over-segmentation). The vendored upstream state
+        # machine resets silence_cnt correctly.
+        runner = FakeFireRedStreamRunner(
+            [
+                [1.0] * 15 + [0.0] * 25,  # turn 1: speech then long silence -> ends
+                [1.0] * 15 + [0.0] * 5 + [1.0] * 15,  # turn 2 with a 5-frame gap
+            ]
+        )
+        vad = make_firered_vad(
+            runner,
+            min_speech_ms=30,
+            min_silence_ms=100,  # 10 frames; the 5-frame gap must not split turn 2
+            pad_start_ms=0,
+            smooth_window_size=1,
+        )
+
+        first = vad.accept(np.ones(40 * 160, dtype=np.float32))
+        second = vad.accept(np.ones(35 * 160, dtype=np.float32))
+
+        # turn 1 closed by the long silence
+        assert [b.kind for b in first] == ["speech_start", "speech_end"]
+        # 5-frame gap < min_silence keeps turn 2 open
+        assert [b.kind for b in second] == ["speech_start"]
+        assert vad.speech_active
+
+    def test_multi_turn_in_one_chunk_through_gate_is_not_dropped(self) -> None:
+        # turn1 + long-enough gap + turn2-start all inside chunk 1; turn2 continues in chunk 2.
+        runner = FakeFireRedStreamRunner(
+            [[1.0] * 15 + [0.0] * 15 + [1.0] * 15, [1.0] * 30]
+        )
+        gate = SpeechGate(
+            vad=make_firered_vad(
+                runner, min_speech_ms=30, min_silence_ms=100, pad_start_ms=0,
+                smooth_window_size=1,
+            ),
+            config=SpeechGateConfig(pre_roll_ms=0),
+        )
+        chunk1 = gate.accept(np.ones(45 * 160, dtype=np.float32))
+        chunk2 = gate.accept(np.ones(30 * 160, dtype=np.float32))
+        kinds1 = [e.type for e in chunk1]
+        # turn 1 fully closed AND turn 2 opened, both in chunk 1
+        assert kinds1.count("speech_start") == 2
+        assert "speech_end" in kinds1
+        # turn 2's audio keeps flowing in chunk 2 (the bug dropped this entirely)
+        assert chunk2 != []
+        assert any(e.type == "speech_audio" for e in chunk2)
+        assert gate.speech_active
+
+    def test_flush_closes_active_stream_and_resets_runner_cache(self) -> None:
+        runner = FakeFireRedStreamRunner([[1.0] * 48])
+        vad = make_firered_vad(
+            runner,
+            min_speech_ms=10,
+            pad_start_ms=0,
+            smooth_window_size=1,
+        )
+
+        vad.accept(np.ones(8_000, dtype=np.float32))
+        flushed = vad.flush()
+
+        assert flushed == [VadBoundary("speech_end", 8_000)]
+        assert not vad.speech_active
+        assert runner.reset_count == 1
+
+    def test_accept_after_flush_keeps_absolute_sample_timeline(self) -> None:
+        runner = FakeFireRedStreamRunner([[1.0] * 48, [1.0] * 48])
+        vad = make_firered_vad(
+            runner,
+            min_speech_ms=10,
+            pad_start_ms=0,
+            smooth_window_size=1,
+        )
+
+        vad.accept(np.ones(8_000, dtype=np.float32))
+        vad.flush()
+        decision = vad.accept(np.ones(8_000, dtype=np.float32))
+
+        assert decision == [VadBoundary("speech_start", 8_000)]
+
+    def test_speech_gate_force_end_clears_stream_prestart_candidate(self) -> None:
+        runner = FakeFireRedStreamRunner([[1.0] * 10, [1.0] * 48])
+        gate = SpeechGate(
+            vad=make_firered_vad(
+                runner,
+                min_speech_ms=200,
+                pad_start_ms=0,
+                smooth_window_size=1,
+            ),
+            config=SpeechGateConfig(pre_roll_ms=400),
+        )
+
+        assert gate.accept(np.ones(1_600, dtype=np.float32)) == []
+        assert gate.flush(force_end=True) == []
+        events = gate.accept(np.ones(8_000, dtype=np.float32))
+
+        assert speech_event_spans(events) == [("speech_start", 1_600, 9_600)]
+
+    def test_reset_clears_buffer_and_runner_state(self) -> None:
+        runner = FakeFireRedStreamRunner([[1.0] * 48])
+        vad = make_firered_vad(runner)
+
+        vad.accept(np.ones(8_000, dtype=np.float32))
+        vad.reset()
+
+        assert not vad.speech_active
+        assert runner.reset_count == 1
+
+    def test_warmup_runs_one_nonzero_stream_inference_and_resets_runner(
+        self,
+    ) -> None:
+        runner = FakeFireRedStreamRunner([[0.0] * 48])
+        vad = make_firered_vad(runner)
+
+        vad.warmup()
+
+        assert runner.calls == 1
+        assert runner.accept_lengths == [8_000]
+        assert runner.reset_count == 1
+
+    def test_onnx_runner_wires_fbank_cmvn_session_and_model_cache(
+        self, tmp_path: Path
+    ) -> None:
+        model_dir = tmp_path
+        (model_dir / "fireredvad_stream_vad_with_cache.onnx").write_bytes(b"onnx")
+        (model_dir / "cmvn.ark").write_bytes(b"cmvn")
+
+        stats = np.zeros((2, 81), dtype=np.float32)
+        stats[0, 80] = 1.0
+        stats[1, :80] = 1.0
+
+        class FakeOnlineFbank:
+            accepted_lengths: list[int] = []
+
+            def __init__(self, options: object) -> None:
+                del options
+                self.samples = 0
+
+            def accept_waveform(self, sample_rate: int, values: list[int]) -> None:
+                assert sample_rate == 16_000
+                self.samples += len(values)
+                self.accepted_lengths.append(len(values))
+
+            @property
+            def num_frames_ready(self) -> int:
+                if self.samples < 400:
+                    return 0
+                return 1 + ((self.samples - 400) // 160)
+
+            def get_frame(self, index: int) -> np.ndarray:
+                return np.full((80,), float(index), dtype=np.float32)
+
+        def fbank_options() -> SimpleNamespace:
+            return SimpleNamespace(
+                frame_opts=SimpleNamespace(),
+                mel_opts=SimpleNamespace(),
+            )
+
+        class FakeSessionOptions:
+            pass
+
+        class FakeInferenceSession:
+            instances: list["FakeInferenceSession"] = []
+
+            def __init__(
+                self,
+                model_path: str,
+                *,
+                sess_options: object,
+                providers: list[str],
+            ) -> None:
+                self.model_path = model_path
+                self.sess_options = sess_options
+                self.providers = providers
+                self.run_inputs: list[np.ndarray] = []
+                self.cache_inputs: list[np.ndarray] = []
+                self.instances.append(self)
+
+            def get_inputs(self) -> list[SimpleNamespace]:
+                return [
+                    SimpleNamespace(name="feat", shape=[1, "time", 80]),
+                    SimpleNamespace(name="caches_in", shape=[8, 1, 128, 19]),
+                ]
+
+            def run(
+                self, output_names: object, feeds: dict[str, np.ndarray]
+            ) -> list[np.ndarray]:
+                assert output_names is None
+                feat = feeds["feat"]
+                cache = feeds["caches_in"]
+                self.run_inputs.append(feat.copy())
+                self.cache_inputs.append(cache.copy())
+                probs = np.full((1, int(feat.shape[1]), 1), 0.6, dtype=np.float32)
+                return [probs, np.ones_like(cache, dtype=np.float32)]
+
+        fake_ort = SimpleNamespace(
+            SessionOptions=FakeSessionOptions,
+            GraphOptimizationLevel=SimpleNamespace(ORT_ENABLE_ALL="all"),
+            ExecutionMode=SimpleNamespace(ORT_SEQUENTIAL="sequential"),
+            InferenceSession=FakeInferenceSession,
+        )
+        fake_knf = SimpleNamespace(
+            FbankOptions=fbank_options,
+            OnlineFbank=FakeOnlineFbank,
+        )
+        fake_kaldiio = SimpleNamespace(load_mat=lambda path: stats)
+
+        with patch.dict(
+            sys.modules,
+            {
+                "onnxruntime": fake_ort,
+                "kaldi_native_fbank": fake_knf,
+                "kaldiio": fake_kaldiio,
+            },
+        ):
+            runner = _FireRedStreamVadOnnxRunner(
+                FireRedStreamVadConfig(model_dir=model_dir)
+            )
+            first = np.ones(8_000, dtype=np.float32) * 0.01
+            second = np.ones(4_000, dtype=np.float32) * 0.02
+
+            scores = runner.predict_speech_probabilities(first)
+            runner.predict_speech_probabilities(second)
+
+        session = FakeInferenceSession.instances[0]
+        assert session.model_path.endswith("fireredvad_stream_vad_with_cache.onnx")
+        assert session.providers == ["CPUExecutionProvider"]
+        assert [inputs.shape for inputs in session.run_inputs] == [
+            (1, 48, 80),
+            (1, 25, 80),
+        ]
+        assert [inputs.shape for inputs in session.cache_inputs] == [
+            (8, 1, 128, 19),
+            (8, 1, 128, 19),
+        ]
+        assert FakeOnlineFbank.accepted_lengths == [8_000, 4_000]
+        assert scores == pytest.approx([0.6] * 48)
+
+    def test_onnx_runner_reports_missing_model_assets(self, tmp_path: Path) -> None:
+        with pytest.raises(RuntimeError, match="model files are missing"):
+            _FireRedStreamVadOnnxRunner(FireRedStreamVadConfig(model_dir=tmp_path))

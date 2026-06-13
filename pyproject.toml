@@ -2,7 +2,7 @@
 name = "qwen3-asr-runtime"
 version = "0.1.0"
 license = "MIT AND Apache-2.0"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
   "numpy",
   "torch==2.9.1",
@@ -13,7 +13,9 @@ dependencies = [
   "fastapi>=0.115",
   "uvicorn>=0.30",
   "websockets>=13.0",
-  "silero-vad==5.1.2",
+  "onnxruntime>=1.24.3",
+  "kaldiio==2.18.1",
+  "kaldi-native-fbank==1.22.3",
   "torchaudio==2.9.1",
   # flashinfer and its Triton/CUDA build toolchain (ninja) only resolve on
   # Linux+CUDA. On macOS/Apple Silicon the MLX backend replaces this whole

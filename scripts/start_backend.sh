@@ -9,12 +9,14 @@ port="${FUNYI_PORT-8000}"
 translation_model="${FUNYI_TRANSLATION_MODEL-tencent/Hy-MT2-1.8B}"
 timestamp_model="${FUNYI_TIMESTAMP_MODEL-Qwen/Qwen3-ForcedAligner-0.6B}"
 allow_downloads="${FUNYI_ALLOW_DOWNLOADS-0}"
+firered_vad_model_dir="${FUNYI_FIRERED_VAD_MODEL_DIR-local_data/models/firered-stream-vad-onnx}"
 
 args=(
   python realtime_server.py
   --model "$asr_model"
   --host "$host"
   --port "$port"
+  --firered-vad-model-dir "$firered_vad_model_dir"
 )
 
 if [[ -n "$translation_model" ]]; then

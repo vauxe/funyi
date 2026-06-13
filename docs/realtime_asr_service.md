@@ -130,7 +130,9 @@ Commands after `ready`:
 {"type":"finish"}
 ```
 
-`flush` drains the current ASR tail when possible and keeps the session open.
+`flush` drains the current ASR tail when possible and keeps the session open; it
+does not force-submit buffered VAD tail audio that has not reached a committed
+speech decision yet.
 `finish` drains ASR, waits for pending timestamp work until the configured
 timeout, emits `transcript_final`, then closes the WebSocket with close code
 `1000`. `partial` is not durable; only segments already sent through
@@ -519,7 +521,8 @@ must not treat model-carried prefix text as user-visible stable history.
   timestamp alignment; speech-gated audio also enters ASR streaming state;
 - clients should use replaceable `partial` text for the live subtitle line;
 - one WebSocket session owns one continuous transcript history and source clock;
-- `flush` drains the current ASR tail but does not end the WebSocket session;
+- `flush` drains the current ASR tail but does not force the open VAD window or
+  end the WebSocket session;
 - `set_language` first flushes the current tail, then starts future ASR from
   the new language setting;
 - live stable text requires repeated ASR evidence; final timestamps require
@@ -580,8 +583,12 @@ forced alignment.
 uv run --group test pytest
 ```
 
-Use `tools/ws_e2e_leak_check.py` after starting `realtime_server.py` for service
-smoke, CER, update-gap, memory, and shutdown checks.
+Use `tools/ws_e2e_leak_check.py` after starting the service through
+`./scripts/start_backend.sh` for service smoke, CER, update-gap, memory, and
+shutdown checks. The launcher passes the configured FireRed VAD model directory
+to `realtime_server.py`; startup validates the configured speech gate before
+binding the service. Each WebSocket session creates and warms its own gate
+instance.
 The JSON summary includes `final_document_contract.checked`; realtime sessions
 that omit `transcript_final.document` report `false`, so final-document
 `translationUnits[]` coverage must be validated by offline/file stream tests or

@@ -5,6 +5,9 @@ forced aligner, and HY-MT translation on Metal through local model layers in
 this repository. The desktop client does not choose models; it only connects to
 the local WebSocket service.
 
+The locked Python environment targets macOS 14+ on Apple Silicon. In particular,
+the FireRed VAD dependency set resolves `onnxruntime` from macOS 14 arm64 wheels.
+
 On Apple Silicon, `--backend auto` resolves to MLX when `mlx` is installed. Use
 `--backend mlx` to force the MLX ASR backend, or `--backend transformers` to
 force the CUDA/torch path on a machine where that makes sense.

@@ -61,7 +61,7 @@ The runtime keeps these responsibilities separate:
 | `RecognitionFrame` | explicit model/session data contract separating prompt text from generated evidence |
 | `TailSelector` | select the replaceable transcript tail from one recognition frame and the transcript cursor |
 | `TextStabilizer` | LocalAgreement-style stable prefix and replaceable partial text |
-| `SpeechGate` | Silero speech-turn helper and source-clock speech epochs |
+| `SpeechGate` | FireRed Stream-VAD speech-turn helper and source-clock speech epochs |
 | `RealtimeConnectionSession` | speech epochs, model streaming ASR state, TranscriptStore writes, and timestamp job hints |
 | `RealtimeTimestampRuntime` | source-audio buffer, forced-aligner jobs, and `transcript_timing_update` patches |
 | `realtime_server.py` | WebSocket transport, one active local connection, JSON send policy |

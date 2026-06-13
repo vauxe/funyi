@@ -119,7 +119,7 @@ Desktop client (`make desktop-check` gates it):
 ## Environment
 
 - Dependency manager: `uv`, project mode non-package.
-- Default deps include service stack, Silero VAD, Torchaudio, FlashInfer, Ninja.
+- Default deps include service stack, FireRed Stream-VAD, Torchaudio, FlashInfer, Ninja.
 - Desktop quality gate: `make desktop-check`; format with `make desktop-format`.
 
 ## Caveats

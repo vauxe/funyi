@@ -8,7 +8,7 @@ import numpy as np
 
 from .audio_utils import normalize_pcm
 from .utils import SAMPLE_RATE
-from .vad import VadAdapter, create_vad_adapter
+from .vad import VadAdapter, VadBoundary
 
 
 @dataclass(frozen=True)
@@ -31,7 +31,7 @@ class SpeechGate:
     def __init__(
         self,
         *,
-        vad: VadAdapter | None = None,
+        vad: VadAdapter,
         config: SpeechGateConfig | None = None,
     ) -> None:
         self.config = config or SpeechGateConfig()
@@ -39,13 +39,14 @@ class SpeechGate:
             raise ValueError(
                 f"SpeechGate expects {SAMPLE_RATE} Hz audio, got {self.config.sample_rate}."
             )
-        self.vad = vad or create_vad_adapter()
+        self.vad = vad
         self._pre_roll_samples = max(
             0, int(round(SAMPLE_RATE * int(self.config.pre_roll_ms) / 1000))
         )
         self._samples_seen = 0
         self._speech_active = False
         self._idle_floor_sample = 0
+        self._speech_audio_cursor = 0
         self._buffer_start_sample = 0
         self._buffer_audio = np.zeros((0,), dtype=np.float32)
 
@@ -62,6 +63,7 @@ class SpeechGate:
         self._samples_seen = 0
         self._speech_active = False
         self._idle_floor_sample = 0
+        self._speech_audio_cursor = 0
         self._buffer_start_sample = 0
         self._buffer_audio = np.zeros((0,), dtype=np.float32)
 
@@ -73,79 +75,66 @@ class SpeechGate:
         chunk_start = int(self._samples_seen)
         chunk_end = chunk_start + int(audio.shape[0])
         self._append_buffer(audio, chunk_start)
-
-        decision = self.vad.accept(audio)
-        start_sample = (
-            int(decision.speech_start_sample)
-            if decision.speech_start_sample is not None
-            else None
-        )
-        end_sample = (
-            int(decision.speech_end_sample)
-            if decision.speech_end_sample is not None
-            else None
-        )
-
-        events: list[SpeechGateEvent] = []
-        if self._speech_active:
-            self._accept_active_chunk(
-                events, chunk_start, chunk_end, start_sample, end_sample
-            )
-        else:
-            self._accept_idle_chunk(events, chunk_end, start_sample, end_sample)
-
+        events = self._consume_boundaries(self.vad.accept(audio), chunk_end)
         self._samples_seen = chunk_end
         self._trim_buffer()
         return events
 
-    def _accept_idle_chunk(
-        self,
-        events: list[SpeechGateEvent],
-        chunk_end: int,
-        start_sample: int | None,
-        end_sample: int | None,
-    ) -> None:
-        if start_sample is None:
-            return
+    def flush(self, *, force_end: bool = False) -> list[SpeechGateEvent]:
+        if not force_end:
+            self._trim_buffer()
+            return []
 
-        speech_end = (
-            chunk_end
-            if end_sample is None or end_sample < start_sample
-            else min(end_sample, chunk_end)
+        events = self._consume_boundaries(self.vad.flush(), self._samples_seen)
+        if self._speech_active:
+            # End of stream: force-close a turn the VAD left open (FireRed emits no
+            # trailing speech_end without trailing silence). Its audio was already
+            # flushed by _consume_boundaries' trailing speech_audio.
+            self._append_speech_end(events, self._samples_seen)
+        self._idle_floor_sample = max(
+            int(self._idle_floor_sample), int(self._samples_seen)
         )
-        self._append_speech_start(events, start_sample, speech_end)
-        self._speech_active = True
+        self._trim_buffer()
+        return events
 
-        if end_sample is not None and end_sample >= start_sample:
-            self._append_speech_end(events, end_sample)
+    def _consume_boundaries(
+        self, boundaries: list[VadBoundary], chunk_end: int
+    ) -> list[SpeechGateEvent]:
+        """Fold an ordered VAD boundary stream into speech-turn events.
 
-    def _accept_active_chunk(
-        self,
-        events: list[SpeechGateEvent],
-        chunk_start: int,
-        chunk_end: int,
-        start_sample: int | None,
-        end_sample: int | None,
-    ) -> None:
-        if end_sample is None:
-            self._append_event(events, "speech_audio", chunk_start, chunk_end)
-            return
-
-        self._append_event(
-            events, "speech_audio", chunk_start, min(end_sample, chunk_end)
-        )
-        self._append_speech_end(events, end_sample)
-        if start_sample is not None and start_sample > end_sample:
-            self._append_speech_start(events, start_sample, chunk_end)
-            self._speech_active = True
+        Linear over the boundaries, so any number of turns in one chunk is handled
+        uniformly; the gate's active state is derived from the stream itself.
+        """
+        events: list[SpeechGateEvent] = []
+        for index, boundary in enumerate(boundaries):
+            if boundary.kind == "speech_start":
+                # The speech_start event carries pre-roll plus audio up to the next
+                # boundary (or chunk end if this turn keeps running).
+                span_end = (
+                    boundaries[index + 1].sample
+                    if index + 1 < len(boundaries)
+                    else chunk_end
+                )
+                if self._append_speech_start(events, boundary.sample, span_end):
+                    self._speech_active = True
+                    self._speech_audio_cursor = span_end
+            else:
+                speech_end = min(
+                    max(int(boundary.sample), self._speech_audio_cursor), chunk_end
+                )
+                self._append_speech_audio(events, speech_end)
+                self._append_speech_end(events, speech_end)
+        if self._speech_active:
+            self._append_speech_audio(events, chunk_end)
+        return events
 
     def _append_speech_start(
         self, events: list[SpeechGateEvent], start_sample: int, end_sample: int
-    ) -> None:
+    ) -> bool:
         event_start = max(
             int(self._idle_floor_sample), int(start_sample) - self._pre_roll_samples
         )
-        self._append_event(events, "speech_start", event_start, end_sample)
+        return self._append_event(events, "speech_start", event_start, end_sample)
 
     def _append_speech_end(
         self, events: list[SpeechGateEvent], end_sample: int
@@ -162,17 +151,29 @@ class SpeechGate:
             )
         )
 
+    def _append_speech_audio(
+        self, events: list[SpeechGateEvent], end_sample: int
+    ) -> None:
+        end_sample = int(end_sample)
+        self._append_event(
+            events,
+            "speech_audio",
+            self._speech_audio_cursor,
+            end_sample,
+        )
+        self._speech_audio_cursor = end_sample
+
     def _append_event(
         self,
         events: list[SpeechGateEvent],
         event_type: Literal["speech_start", "speech_audio"],
         start_sample: int,
         end_sample: int,
-    ) -> None:
+    ) -> bool:
         start_sample = max(int(start_sample), int(self._buffer_start_sample))
         end_sample = min(int(end_sample), self._buffer_end_sample())
         if end_sample <= start_sample:
-            return
+            return False
         start = start_sample - int(self._buffer_start_sample)
         end = end_sample - int(self._buffer_start_sample)
         events.append(
@@ -183,6 +184,7 @@ class SpeechGate:
                 audio=self._buffer_audio[start:end].copy(),
             )
         )
+        return True
 
     def _append_buffer(self, audio: np.ndarray, start_sample: int) -> None:
         chunk = audio.astype(np.float32, copy=True)
@@ -197,7 +199,7 @@ class SpeechGate:
 
     def _trim_buffer(self) -> None:
         if self._speech_active:
-            keep_from = self._samples_seen
+            keep_from = self._speech_audio_cursor
         else:
             keep_from = max(
                 int(self._idle_floor_sample),

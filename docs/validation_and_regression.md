@@ -120,18 +120,14 @@ ss -ltnp sport = :8000
 nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader
 ```
 
-This command is the ASR+timestamp-only service gate. It intentionally omits
-`--translation-model` so ASR, timestamp, throughput, and shutdown metrics stay
-comparable. Use `./scripts/start_backend.sh` for a full launcher smoke, or
-`FUNYI_TRANSLATION_MODEL= ./scripts/start_backend.sh` for the same ASR+timestamp
-shape through the launcher.
+This command is the ASR+timestamp-only service gate. It intentionally disables
+translation so ASR, timestamp, throughput, and shutdown metrics stay comparable.
+Use the launcher path so the same FireRed VAD model-dir argument is passed as in
+normal service startup. Keep `FUNYI_ALLOW_DOWNLOADS=1` for a fresh host when the
+ASR/timestamp model caches are empty; FireRed VAD assets must already be local.
 
 ```bash
-uv run python realtime_server.py \
-  --model Qwen/Qwen3-ASR-1.7B \
-  --timestamp-model Qwen/Qwen3-ForcedAligner-0.6B \
-  --host 127.0.0.1 \
-  --port 8000
+FUNYI_ALLOW_DOWNLOADS=1 FUNYI_TRANSLATION_MODEL= ./scripts/start_backend.sh
 ```
 
 Run a short fast sanity gate first. Do not continue to the long gate if CER,

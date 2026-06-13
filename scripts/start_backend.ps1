@@ -28,6 +28,16 @@ $port = Get-EnvOrDefault "FUNYI_PORT" "8000"
 $translationModel = Get-EnvOrDefault "FUNYI_TRANSLATION_MODEL" "tencent/Hy-MT2-1.8B"
 $timestampModel = Get-EnvOrDefault "FUNYI_TIMESTAMP_MODEL" "Qwen/Qwen3-ForcedAligner-0.6B"
 $allowDownloads = Get-EnvOrDefault "FUNYI_ALLOW_DOWNLOADS" "0"
+$fireRedVadModelDir = Get-EnvOrDefault "FUNYI_FIRERED_VAD_MODEL_DIR" "local_data/models/firered-stream-vad-onnx"
+
+function Resolve-RepoPath {
+    Param([Parameter(Mandatory = $true)][string] $Path)
+
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return $Path
+    }
+    return (Join-Path $repoRoot $Path)
+}
 
 $uvArgs = @(
     "run",
@@ -39,7 +49,9 @@ $uvArgs = @(
     "--host",
     $hostName,
     "--port",
-    $port
+    $port,
+    "--firered-vad-model-dir",
+    (Resolve-RepoPath $fireRedVadModelDir)
 )
 
 if ($translationModel -ne "") {

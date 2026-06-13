@@ -680,14 +680,14 @@ class RealtimeConnectionSession:
         self,
         model: Any,
         *,
+        speech_gate: SpeechGate,
         transcript_store: TranscriptStore | None = None,
         config: RealtimeASRConfig | None = None,
-        speech_gate: SpeechGate | None = None,
     ) -> None:
         self.model = model
         self.store = transcript_store or TranscriptStore()
         self.config = config or RealtimeASRConfig()
-        self.speech_gate = speech_gate or SpeechGate()
+        self.speech_gate = speech_gate
         self._active_asr: RealtimeASRSession | None = None
         self._active_asr_end_sample: int | None = None
         self._active_asr_flushed = False
@@ -698,7 +698,6 @@ class RealtimeConnectionSession:
         return self._active_asr
 
     def ingest_audio(self, pcm16k: np.ndarray) -> list[dict[str, Any]]:
-        events: list[dict[str, Any]] = []
         speech_events = self.speech_gate.accept(pcm16k)
         if speech_events and _LOGGER.isEnabledFor(logging.DEBUG):
             _LOGGER.debug(
@@ -715,6 +714,12 @@ class RealtimeConnectionSession:
                     for event in speech_events
                 ],
             )
+        return self._accept_speech_events(speech_events)
+
+    def _accept_speech_events(
+        self, speech_events: list[SpeechGateEvent]
+    ) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
         for speech_event in speech_events:
             if speech_event.type in ("speech_start", "speech_audio"):
                 events.extend(self._accept_speech_audio(speech_event))
@@ -722,18 +727,23 @@ class RealtimeConnectionSession:
                 events.extend(self._flush_active_asr(close=True))
         return events
 
-    def flush(self) -> list[dict[str, Any]]:
-        return self._flush_active_asr(close=False)
+    def flush(self, *, force_end: bool = False) -> list[dict[str, Any]]:
+        events = self._flush_speech_gate(force_end=force_end)
+        events.extend(self._flush_active_asr(close=force_end))
+        return events
 
     def set_language(self, language: Optional[str]) -> list[dict[str, Any]]:
-        events = self._flush_active_asr(close=True)
+        events = self.flush(force_end=True)
         self.config.language = (
             (str(language).strip() or None) if language is not None else None
         )
         return events
 
+    def finish_updates(self) -> list[dict[str, Any]]:
+        return self.flush(force_end=True)
+
     def finish(self) -> list[dict[str, Any]]:
-        events = self._flush_active_asr(close=True)
+        events = self.finish_updates()
         events.append(self.store.final_event())
         return events
 
@@ -773,6 +783,9 @@ class RealtimeConnectionSession:
             self._active_asr = self._new_asr_epoch(origin_sample)
             self._active_asr_end_sample = int(origin_sample)
             self._active_asr_flushed = False
+
+    def _flush_speech_gate(self, *, force_end: bool) -> list[dict[str, Any]]:
+        return self._accept_speech_events(self.speech_gate.flush(force_end=force_end))
 
     def _accept_speech_audio(
         self, speech_event: SpeechGateEvent

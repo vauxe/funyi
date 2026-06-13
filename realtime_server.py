@@ -8,12 +8,13 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import json
 import logging
+import os
 from pathlib import Path
 import re
 import sys
 import tempfile
 import time
-from typing import Any
+from typing import Any, Iterator
 from uuid import uuid4
 import wave
 
@@ -68,7 +69,16 @@ from qwen3_asr_runtime.utils import (
     normalize_language_name,
     validate_language,
 )
-from qwen3_asr_runtime.vad import VadDecision
+from qwen3_asr_runtime.vad import (
+    DEFAULT_FIRERED_STREAM_VAD_MODEL_DIR,
+    DEFAULT_VAD_MODE,
+    FIRERED_STREAM_VAD_MODE,
+    FireRedStreamVadConfig,
+    PASSTHROUGH_VAD_MODE,
+    PassthroughVadAdapter,
+    VAD_MODES,
+    FireRedStreamVadAdapter,
+)
 
 _SERVICE_SEND_TIMEOUT_SEC = 5.0
 _SERVICE_EVENT_QUEUE_MAXSIZE = 128
@@ -78,6 +88,10 @@ _SERVICE_TRANSLATION_JOB_QUEUE_MAXSIZE = 8
 # DoS backstop on a single binary PCM frame (~500s of 16kHz mono s16le). Normal frames are
 # fractions of a second; this only rejects pathological/abusive frames.
 _SERVICE_MAX_PCM_FRAME_BYTES = 16_000_000
+# Split each received PCM frame into sub-second chunks before ASR ingest so a
+# longer frame cannot block the executor for one large VAD/ASR pass and so the
+# event loop can flush queued output between chunks.
+_SERVICE_PCM_INGEST_CHUNK_SAMPLES = SAMPLE_RATE // 2
 _SERVICE_DEBUG_PCM_SUMMARY_INTERVAL_MS = 1000
 # Streaming translates short caption segments: observed output length tops out at
 # ~80-87 tokens (p99 ~66) across the in-domain and opus eval sets. The library
@@ -97,6 +111,8 @@ _SERVICE_TIMESTAMP_PREWARM_LANGUAGE = "Chinese"
 _SERVICE_TIMESTAMP_PREWARM_TEXT = "你好。"
 _SERVICE_TIMESTAMP_PREWARM_DURATION_SEC = 1.0
 _DEFAULT_DEBUG_AUDIO_DIR = "local_data/realtime_debug_audio"
+_DEFAULT_FIRERED_VAD_MODEL_DIR = str(DEFAULT_FIRERED_STREAM_VAD_MODEL_DIR)
+_DEFAULT_FIRERED_VAD_ONNX_THREADS = FireRedStreamVadConfig.onnx_intra_op_num_threads
 _SERVICE_CORS_ORIGIN_REGEX = (
     r"^(?:"
     r"https?://localhost(?::\d+)?"
@@ -296,40 +312,47 @@ def _asr_set_language(
     return events, session.consume_stable_timing_jobs_for_events(events), True
 
 
-class _NoVadAdapter:
-    def __init__(self) -> None:
-        self._active = False
-        self._samples_seen = 0
+def _build_speech_gate(
+    *,
+    vad_mode: str = DEFAULT_VAD_MODE,
+    firered_vad_model_dir: str | Path | None = None,
+    firered_vad_onnx_threads: int = _DEFAULT_FIRERED_VAD_ONNX_THREADS,
+) -> SpeechGate:
+    mode = str(vad_mode)
+    if mode == PASSTHROUGH_VAD_MODE:
+        return SpeechGate(vad=PassthroughVadAdapter())
+    if mode != FIRERED_STREAM_VAD_MODE:
+        raise ValueError(f"Unsupported VAD mode: {mode}")
 
-    @property
-    def speech_active(self) -> bool:
-        return self._active
-
-    def reset(self) -> None:
-        self._active = False
-        self._samples_seen = 0
-
-    def accept(self, audio: np.ndarray) -> VadDecision:
-        sample_count = int(np.asarray(audio).reshape(-1).shape[0])
-        if sample_count == 0:
-            return VadDecision(speech_active=self._active)
-        start_sample = self._samples_seen
-        self._samples_seen += sample_count
-        speech_started = not self._active
-        self._active = True
-        return VadDecision(
-            speech_started=speech_started,
-            has_speech=True,
-            speech_active=True,
-            speech_start_sample=start_sample if speech_started else None,
-            last_speech_end_sample=self._samples_seen,
+    return SpeechGate(
+        vad=FireRedStreamVadAdapter(
+            FireRedStreamVadConfig(
+                model_dir=firered_vad_model_dir or _DEFAULT_FIRERED_VAD_MODEL_DIR,
+                onnx_intra_op_num_threads=int(firered_vad_onnx_threads),
+            )
         )
+    )
 
 
-def _build_speech_gate(*, no_vad: bool) -> SpeechGate:
-    if no_vad:
-        return SpeechGate(vad=_NoVadAdapter())
-    return SpeechGate()
+def _preflight_speech_gate(
+    *,
+    vad_mode: str,
+    firered_vad_model_dir: str | Path | None,
+    firered_vad_onnx_threads: int,
+) -> None:
+    speech_gate = _build_speech_gate(
+        vad_mode=vad_mode,
+        firered_vad_model_dir=firered_vad_model_dir,
+        firered_vad_onnx_threads=firered_vad_onnx_threads,
+    )
+    speech_gate.vad.warmup()
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError(f"expected a positive integer, got {value}")
+    return parsed
 
 
 def build_app(
@@ -341,7 +364,9 @@ def build_app(
     translation_actor: TranslationModelActor | None = None,
     translation_service_config: TranslationServiceConfig | None = None,
     debug_audio_dir: str | Path | None = None,
-    no_vad: bool = False,
+    vad_mode: str = DEFAULT_VAD_MODE,
+    firered_vad_model_dir: str | Path | None = None,
+    firered_vad_onnx_threads: int = _DEFAULT_FIRERED_VAD_ONNX_THREADS,
 ) -> Any:
     try:
         from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -629,6 +654,21 @@ def build_app(
             except ValueError as exc:
                 await _send_error_and_close(websocket, str(exc), code=1003)
                 return
+            resolved_vad_mode = str(vad_mode)
+            try:
+                speech_gate = _build_speech_gate(
+                    vad_mode=resolved_vad_mode,
+                    firered_vad_model_dir=firered_vad_model_dir,
+                    firered_vad_onnx_threads=firered_vad_onnx_threads,
+                )
+            except ValueError as exc:
+                await _send_error_and_close(websocket, str(exc), code=1003)
+                return
+            try:
+                speech_gate.vad.warmup()
+            except RuntimeError as exc:
+                await _send_error_and_close(websocket, str(exc), code=1011)
+                return
             event_queue = asyncio.Queue(maxsize=_SERVICE_EVENT_QUEUE_MAXSIZE)
             sender_task = asyncio.create_task(
                 _send_queued_events(websocket, event_queue)
@@ -637,7 +677,7 @@ def build_app(
                 model,
                 transcript_store=store,
                 config=config,
-                speech_gate=_build_speech_gate(no_vad=no_vad),
+                speech_gate=speech_gate,
             )
             # No asyncio store_lock needed: TranscriptStore is internally thread-safe
             # (its own RLock). ASR stable appends now run on the ASR executor thread while
@@ -683,7 +723,7 @@ def build_app(
                 "Realtime ASR session started session_id=%s language=%s mode=aligned_streaming vad=%s aligner=%s translation=%s",
                 session_id,
                 config.language or "auto",
-                "none" if no_vad else "silero",
+                resolved_vad_mode,
                 timestamp_actor.model_path or "configured",
                 translation is not None,
             )
@@ -721,18 +761,25 @@ def build_app(
                         )
                         if summary is not None:
                             _LOGGER.debug(summary)
+                    # The timestamp buffer takes the whole frame; ASR/VAD ingest is
+                    # sub-chunked below. They are independent sinks (no alignment).
                     timestamps.accept_audio(audio)
-                    events, timing_jobs = await loop.run_in_executor(
-                        asr_executor, _asr_step, session, session.ingest_audio, audio
-                    )
-                    if await _publish_session_events(
-                        event_queue, translation, events, sender_task=sender_task
-                    ):
-                        await _drain_and_close(
-                            websocket, event_queue, sender_task, code=1011
+                    for audio_chunk in _iter_pcm_audio_chunks(audio):
+                        events, timing_jobs = await loop.run_in_executor(
+                            asr_executor,
+                            _asr_step,
+                            session,
+                            session.ingest_audio,
+                            audio_chunk,
                         )
-                        return
-                    await timestamps.accept_jobs(timing_jobs)
+                        if await _publish_session_events(
+                            event_queue, translation, events, sender_task=sender_task
+                        ):
+                            await _drain_and_close(
+                                websocket, event_queue, sender_task, code=1011
+                            )
+                            return
+                        await timestamps.accept_jobs(timing_jobs)
                     continue
 
                 if message.get("text") is None:
@@ -839,7 +886,7 @@ def build_app(
                         "Realtime command session_id=%s type=finish", session_id
                     )
                     events, timing_jobs = await loop.run_in_executor(
-                        asr_executor, _asr_step, session, session.flush
+                        asr_executor, _asr_step, session, session.finish_updates
                     )
                     timing_events = await timestamps.finish(timing_jobs)
                     events.extend(timing_events)
@@ -1326,6 +1373,18 @@ def decode_pcm_s16le(payload: bytes) -> np.ndarray:
     if not payload:
         return np.zeros((0,), dtype=np.int16)
     return np.frombuffer(payload, dtype="<i2").copy()
+
+
+def _iter_pcm_audio_chunks(
+    audio: np.ndarray, *, max_samples: int = _SERVICE_PCM_INGEST_CHUNK_SAMPLES
+) -> Iterator[np.ndarray]:
+    if int(max_samples) <= 0:
+        raise ValueError(f"max_samples must be positive, got {max_samples}")
+    x = np.asarray(audio)
+    if x.ndim != 1:
+        x = x.reshape(-1)
+    for start in range(0, int(x.shape[0]), int(max_samples)):
+        yield x[start : start + int(max_samples)]
 
 
 def _pcm_debug_metrics(audio: np.ndarray) -> tuple[int, float, float, int]:
@@ -1937,9 +1996,37 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--cuda-graph-prewarm-window-sec", type=float, default=20.0)
     parser.add_argument("--cuda-graph-prewarm-prefix-tokens", type=int, default=64)
     parser.add_argument(
+        "--vad-mode",
+        default=DEFAULT_VAD_MODE,
+        choices=VAD_MODES,
+        help=(
+            "Realtime speech gate. Default firered-stream-vad uses FireRed "
+            "Stream-VAD with model cache; none passes all audio to ASR."
+        ),
+    )
+    parser.add_argument(
+        "--firered-vad-model-dir",
+        default=os.environ.get(
+            "FUNYI_FIRERED_VAD_MODEL_DIR", _DEFAULT_FIRERED_VAD_MODEL_DIR
+        ),
+        help=(
+            "Directory containing fireredvad_stream_vad_with_cache.onnx and "
+            "cmvn.ark for vad-mode=firered-stream-vad."
+        ),
+    )
+    parser.add_argument(
+        "--firered-vad-onnx-threads",
+        type=_positive_int,
+        default=_DEFAULT_FIRERED_VAD_ONNX_THREADS,
+        help=(
+            "ONNX Runtime intra-op threads for FireRed Stream-VAD. Default 4 is "
+            "the fastest measured 0.5s-chunk setting on the local workstation."
+        ),
+    )
+    parser.add_argument(
         "--no-vad",
         action="store_true",
-        help="Pass all received audio to ASR instead of using VAD speech gating.",
+        help="Alias for --vad-mode none.",
     )
     parser.add_argument(
         "--timestamp-model",
@@ -2080,7 +2167,10 @@ def _parse_args() -> argparse.Namespace:
         default=True,
     )
     parser.add_argument("--translation-trust-remote-code", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.no_vad:
+        args.vad_mode = PASSTHROUGH_VAD_MODE
+    return args
 
 
 def _configure_logging(level_name: str) -> int:
@@ -2660,6 +2750,11 @@ def main() -> None:
         # translation capture lock are skipped (the prewarm would otherwise raise).
         args.cuda_graph = False
     backend, load_kwargs = _build_model_load(args)
+    _preflight_speech_gate(
+        vad_mode=args.vad_mode,
+        firered_vad_model_dir=args.firered_vad_model_dir,
+        firered_vad_onnx_threads=args.firered_vad_onnx_threads,
+    )
 
     _LOGGER.info(
         "Loading Qwen3-ASR model model=%s backend=%s device_map=%s log_level=%s",
@@ -2743,7 +2838,9 @@ def main() -> None:
         translation_actor=translation_actor,
         translation_service_config=translation_service_config,
         debug_audio_dir=args.debug_audio_dir if args.save_debug_audio else None,
-        no_vad=args.no_vad,
+        vad_mode=args.vad_mode,
+        firered_vad_model_dir=args.firered_vad_model_dir,
+        firered_vad_onnx_threads=args.firered_vad_onnx_threads,
     )
 
     try:
