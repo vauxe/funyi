@@ -3480,7 +3480,10 @@ class TestFireRedStreamVadAdapter:
         )
         gate = SpeechGate(
             vad=make_firered_vad(
-                runner, min_speech_ms=30, min_silence_ms=100, pad_start_ms=0,
+                runner,
+                min_speech_ms=30,
+                min_silence_ms=100,
+                pad_start_ms=0,
                 smooth_window_size=1,
             ),
             config=SpeechGateConfig(pre_roll_ms=0),
