@@ -17,6 +17,7 @@ import wave
 
 import numpy as np
 import pytest
+import torch
 
 from realtime_server import (
     CUDA_GRAPH_CAPTURE_LOCK,
@@ -1179,7 +1180,7 @@ class TestRealtimeServerCli:
             ):
                 _build_model_load(_parse_args())
 
-    def test_transformers_load_kwargs_keep_cuda_profile_when_cpu_is_allowed(
+    def test_transformers_load_uses_cpu_profile_when_cpu_is_allowed(
         self,
     ) -> None:
         with (
@@ -1194,12 +1195,12 @@ class TestRealtimeServerCli:
             backend, kwargs = _build_model_load(_parse_args())
 
         assert backend == "transformers"
-        assert kwargs["device_map"] == "cuda:0"
-        assert "dtype" in kwargs
-        assert kwargs["cuda_graph"]
+        assert kwargs["device_map"] == "cpu"
+        assert kwargs["dtype"] == torch.float32
+        assert not kwargs["cuda_graph"]
         assert not kwargs["flashinfer"]
-        assert kwargs["fused_rmsnorm"]
-        assert kwargs["fused_linears"]
+        assert not kwargs["fused_rmsnorm"]
+        assert not kwargs["fused_linears"]
         assert not kwargs["quantized_linears"]
 
     def test_transformers_load_rejects_auto_device_map_when_cuda_is_required(
@@ -1243,11 +1244,40 @@ class TestRealtimeServerCli:
 
         assert backend == "transformers"
         assert "device_map" not in kwargs
-        assert "dtype" not in kwargs
+        assert kwargs["dtype"] == torch.float32
         assert not kwargs["cuda_graph"]
         assert not kwargs["flashinfer"]
 
     def test_w8a16_flag_forces_quantized_linears_on(self) -> None:
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["realtime_server.py", "--model", "model", "--w8a16"],
+            ),
+            patch("realtime_server._torch_cuda_available", return_value=True),
+        ):
+            _, kwargs = _build_model_load(_parse_args())
+        assert kwargs["quantized_linears"]
+        # W8A16 requires fused_linears; the kwargs must be internally consistent
+        # or the backend rejects the load.
+        assert kwargs["fused_linears"]
+
+    def test_w8a16_flag_is_ignored_on_cpu(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            ["realtime_server.py", "--model", "model", "--w8a16", "--allow-cpu"],
+        ):
+            _, kwargs = _build_model_load(_parse_args())
+        # W8A16 is a CUDA Triton path; on CPU it is forced off (leaving it on with
+        # fused_linears off would fail the backend's quantized-requires-fused check).
+        assert not kwargs["quantized_linears"]
+        assert not kwargs["fused_linears"]
+
+    def test_cpu_mode_is_ignored_when_backend_is_mlx(self) -> None:
+        # --allow-cpu must not leak the CPU profile (cpu device / float32) into the
+        # MLX backend; an explicit --backend mlx keeps its own bf16 profile.
         with patch.object(
             sys,
             "argv",
@@ -1255,12 +1285,17 @@ class TestRealtimeServerCli:
                 "realtime_server.py",
                 "--model",
                 "model",
-                "--w8a16",
+                "--backend",
+                "mlx",
                 "--allow-cpu",
             ],
         ):
-            _, kwargs = _build_model_load(_parse_args())
-        assert kwargs["quantized_linears"]
+            args = _parse_args()
+            _resolve_service_backends(args)
+            backend, kwargs = _build_model_load(args)
+
+        assert backend == "mlx"
+        assert kwargs == {"dtype": "bfloat16"}
 
     def test_cuda_graph_prewarm_is_default_hard_gate_for_asr_only(self) -> None:
         class FakeModel:
@@ -1317,6 +1352,23 @@ class TestRealtimeServerCli:
             args = _parse_args()
             _prepare_cuda_graph_runtime(FakeModel(), args)
 
+    def test_cuda_graph_prewarm_is_skipped_for_default_cpu_device(self) -> None:
+        # --allow-cpu alone (no --device-map) must resolve the device to cpu, so
+        # the cuda-graph prewarm is skipped. Guards the cpu_mode thread into
+        # _cuda_graph_enabled; the explicit --device-map none case above would
+        # pass even without it.
+        class FakeModel:
+            def prewarm_realtime_cuda_graph(self, **kwargs: object) -> bool:
+                raise AssertionError("prewarm should not run on CPU")
+
+        with patch.object(
+            sys,
+            "argv",
+            ["realtime_server.py", "--model", "model", "--allow-cpu"],
+        ):
+            args = _parse_args()
+            _prepare_cuda_graph_runtime(FakeModel(), args)
+
     def test_translation_uses_capture_lock_when_asr_prewarm_is_disabled(self) -> None:
         class FakeModel:
             def prewarm_realtime_cuda_graph(self, **kwargs: object) -> bool:
@@ -1357,7 +1409,7 @@ class TestRealtimeServerCli:
         assert model.calls == 1
         assert lock is None
 
-    def test_translation_build_keeps_cuda_default_when_requirement_disabled(
+    def test_translation_build_uses_cpu_profile_when_cpu_is_allowed(
         self,
     ) -> None:
         with patch.object(
@@ -1387,10 +1439,43 @@ class TestRealtimeServerCli:
         assert built_translator is translator
         assert config is not None
         kwargs = translator_class.call_args.kwargs
-        assert kwargs["device"] == "cuda:0"
-        assert kwargs["dtype"] is None
+        assert kwargs["device"] == "cpu"
+        assert kwargs["dtype"] == "float32"
         assert not kwargs["w8a16"]
-        assert kwargs["fused_rmsnorm"]
+        assert not kwargs["fused_rmsnorm"]
+
+    def test_translation_build_ignores_explicit_w8a16_on_cpu(self) -> None:
+        # Explicit --translation-w8a16 must be forced off on CPU (W8A16 is a CUDA
+        # Triton path), mirroring the ASR --w8a16 gate rather than silently no-op.
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "realtime_server.py",
+                "--model",
+                "model",
+                "--translation-model",
+                "local/hymt",
+                "--translation-w8a16",
+                "--allow-cpu",
+            ],
+        ):
+            args = _parse_args()
+
+        translator = object()
+        with (
+            patch("realtime_server._torch_cuda_available", return_value=False),
+            patch("realtime_server._triton_available", return_value=False),
+            patch(
+                "realtime_server.HYMTTranslator", return_value=translator
+            ) as translator_class,
+        ):
+            built_translator, config = _build_translation(args)
+
+        assert built_translator is translator
+        kwargs = translator_class.call_args.kwargs
+        assert kwargs["device"] == "cpu"
+        assert not kwargs["w8a16"]
 
     def test_translation_build_defaults_to_cuda_profile_when_cuda_available(
         self,
@@ -1492,8 +1577,73 @@ class TestRealtimeServerCli:
         assert from_pretrained.call_args.args[0] == "local/aligner"
         kwargs = from_pretrained.call_args.kwargs
         assert "device_map" not in kwargs
-        assert "dtype" not in kwargs
+        assert kwargs["dtype"] == torch.float32
         assert not kwargs["fused_rmsnorm"]
+
+    def test_aligner_build_uses_cpu_profile_when_cpu_is_allowed(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "realtime_server.py",
+                "--model",
+                "model",
+                "--timestamp-model",
+                "local/aligner",
+                "--allow-cpu",
+            ],
+        ):
+            args = _parse_args()
+            _resolve_service_backends(args)
+
+        aligner = object()
+        with (
+            patch("realtime_server._torch_cuda_available", return_value=False),
+            patch(
+                "qwen3_asr_runtime.forced_aligner.Qwen3ForcedAlignerBackend.from_pretrained",
+                return_value=aligner,
+            ) as from_pretrained,
+        ):
+            built_aligner, config = _build_aligner(args)
+
+        assert built_aligner is aligner
+        assert config is not None
+        kwargs = from_pretrained.call_args.kwargs
+        assert kwargs["device_map"] == "cpu"
+        assert kwargs["dtype"] == torch.float32
+        assert not kwargs["fused_rmsnorm"]
+
+    def test_aligner_build_defaults_to_cuda_profile_when_cuda_available(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "realtime_server.py",
+                "--model",
+                "model",
+                "--timestamp-model",
+                "local/aligner",
+            ],
+        ):
+            args = _parse_args()
+            _resolve_service_backends(args)
+
+        aligner = object()
+        with (
+            patch("realtime_server._torch_cuda_available", return_value=True),
+            patch(
+                "qwen3_asr_runtime.forced_aligner.Qwen3ForcedAlignerBackend.from_pretrained",
+                return_value=aligner,
+            ) as from_pretrained,
+        ):
+            built_aligner, config = _build_aligner(args)
+
+        assert built_aligner is aligner
+        assert config is not None
+        kwargs = from_pretrained.call_args.kwargs
+        assert kwargs["device_map"] == "cuda:0"
+        assert kwargs["dtype"] == torch.bfloat16
+        assert kwargs["fused_rmsnorm"]
 
     def test_start_payload_without_target_disables_session_translation(self) -> None:
         config = TranslationServiceConfig()

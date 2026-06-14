@@ -9,6 +9,7 @@ port="${FUNYI_PORT-8000}"
 translation_model="${FUNYI_TRANSLATION_MODEL-tencent/Hy-MT2-1.8B}"
 timestamp_model="${FUNYI_TIMESTAMP_MODEL-Qwen/Qwen3-ForcedAligner-0.6B}"
 allow_downloads="${FUNYI_ALLOW_DOWNLOADS-0}"
+allow_cpu="${FUNYI_ALLOW_CPU-0}"
 firered_vad_model_dir="${FUNYI_FIRERED_VAD_MODEL_DIR-local_data/models/firered-stream-vad-onnx}"
 
 args=(
@@ -35,6 +36,15 @@ case "$allow_downloads" in
       args+=(--no-translation-local-files-only)
     fi
     args+=(--no-timestamp-local-files-only)
+    ;;
+esac
+
+case "$allow_cpu" in
+  1|true|TRUE|yes|YES|on|ON)
+    args+=(--allow-cpu)
+    if [[ -n "$translation_model" ]]; then
+      echo "FUNYI_ALLOW_CPU set: CPU mode is slow and not realtime; HY-MT (1.8B) is heavy on CPU. Consider FUNYI_TRANSLATION_MODEL= and a smaller ASR model such as Qwen/Qwen3-ASR-0.6B." >&2
+    fi
     ;;
 esac
 

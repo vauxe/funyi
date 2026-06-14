@@ -30,6 +30,9 @@ validated single-user profile by default.
 - Streaming default remains full-audio re-feed unless `max_window_sec` is set.
 - MLX backends are opt-in Apple Silicon paths. Gate them by the same goldens as
   CUDA (CER / timestamp drift / chrF2), never by byte parity.
+- CPU is an opt-in fallback backend (`--allow-cpu` / `FUNYI_ALLOW_CPU=1`): fp32,
+  CUDA-only optimizations off, not realtime. Gate it by the same goldens as
+  CUDA/MLX, never by byte parity.
 
 ## Current Baseline
 
@@ -111,6 +114,7 @@ Desktop client (`make desktop-check` gates it):
 ## Read On Demand
 
 - `@docs/validation_and_regression.md`: exact commands and gates
+- `@docs/cpu_backend.md`: CPU fallback backend (no GPU), positioning and limits
 - `@docs/streaming_runtime.md`: streaming semantics and live presets
 - `@docs/realtime_asr_service.md`: WebSocket protocol and session rules
 - `@docs/performance_optimization.md`: optimized stack and rejected paths

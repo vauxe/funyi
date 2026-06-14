@@ -17,7 +17,9 @@ https://github.com/user-attachments/assets/cda710b8-5a05-4bd0-9e9f-5d2c9bc1de68
 - `uv` for Python dependencies.
 - For the realtime backend: Linux or WSL with an NVIDIA CUDA GPU, or macOS 14+
   on Apple Silicon with MLX/Metal. The backend default is `auto`, so macOS Apple
-  Silicon selects the MLX ASR, forced-aligner, and translation paths.
+  Silicon selects the MLX ASR, forced-aligner, and translation paths. Without a
+  GPU, an opt-in CPU fallback (`FUNYI_ALLOW_CPU=1`) runs on any platform,
+  including Intel Macs; it is slow and not realtime. See `docs/cpu_backend.md`.
 - Access to download the ASR, forced-aligner, and translation models, or local
   model directories. FireRed Stream-VAD ONNX assets must be present locally.
 - For the desktop client: Node.js with Corepack-enabled `pnpm`, Rust/Cargo, and
@@ -134,6 +136,7 @@ usually `ws://127.0.0.1:8000/ws/asr`.
 | `FUNYI_ASR_MODEL=<hf-or-local-qwen3-asr-model> ./scripts/start_backend.sh` | Start with an alternate Qwen3-ASR-compatible ASR checkpoint. |
 | `FUNYI_PORT=8001 ./scripts/start_backend.sh` | Start the backend on another port. |
 | `./scripts/start_backend.sh --no-vad` | Start without VAD speech gating; all received audio is passed to ASR. |
+| `FUNYI_ALLOW_CPU=1 ./scripts/start_backend.sh` | Start on CPU without a GPU (opt-in, slow, not realtime). See `docs/cpu_backend.md`. |
 
 To switch models with environment variables:
 
@@ -169,6 +172,7 @@ service.
 
 - `desktop/README.md`: desktop client and OS audio capture.
 - `docs/macos_mlx.md`: Apple Silicon MLX models and switching.
+- `docs/cpu_backend.md`: CPU fallback backend for machines without a GPU.
 - `docs/realtime_asr_service.md`: WebSocket and file transcription API.
 - `docs/validation_and_regression.md`: local gates and private-data rules.
 

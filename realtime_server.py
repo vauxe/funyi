@@ -1961,22 +1961,24 @@ def _parse_args() -> argparse.Namespace:
         default="auto",
         choices=["auto", "transformers", "mlx"],
         help="ASR backend. 'auto' picks mlx on Apple Silicon (Metal) and transformers "
-        "elsewhere. 'mlx' forces the Apple Silicon backend; CUDA-only flags are ignored.",
+        "elsewhere. 'mlx' forces the Apple Silicon backend; CUDA-only flags are ignored. "
+        "Add --allow-cpu to run the transformers backend on CPU.",
     )
     parser.add_argument(
         "--allow-cpu",
         action="store_true",
         help=(
-            "Allow explicit CPU devices for diagnostics. Torch/transformers "
-            "backends require CUDA by default."
+            "Run the Torch/transformers backends on CPU. Supported but slow with "
+            "no realtime guarantee; intended for offline file transcription or "
+            "small models. Without this flag these backends require CUDA."
         ),
     )
     parser.add_argument(
         "--device-map",
         default=None,
         help=(
-            "Transformers device_map. Default: cuda:0; use --allow-cpu with "
-            "none/null only for CPU diagnostics."
+            "Transformers device_map. Default: cuda:0, or cpu under --allow-cpu. "
+            "Pass none/null to let accelerate place the model."
         ),
     )
     parser.add_argument(
@@ -2052,8 +2054,8 @@ def _parse_args() -> argparse.Namespace:
         "--timestamp-device-map",
         default=None,
         help=(
-            "Forced-aligner device_map. Default: cuda:0; use --allow-cpu with "
-            "none/null only for CPU diagnostics."
+            "Forced-aligner device_map. Default: cuda:0, or cpu under --allow-cpu. "
+            "Pass none/null to let accelerate place the model."
         ),
     )
     parser.add_argument(
@@ -2108,8 +2110,7 @@ def _parse_args() -> argparse.Namespace:
         "--translation-device",
         default=None,
         help=(
-            "Torch device for translation. Default: cuda:0; use --allow-cpu "
-            "with cpu only for CPU diagnostics."
+            "Torch device for translation. Default: cuda:0, or cpu under --allow-cpu."
         ),
     )
     parser.add_argument(
@@ -2274,26 +2275,35 @@ def _ensure_cuda_requirement(
         raise RuntimeError(
             f"{component} requires CUDA, but PyTorch CUDA is unavailable "
             f"({_torch_cuda_diagnostics()}).{install_hint} Pass "
-            "--allow-cpu only for explicit CPU diagnostics."
+            "--allow-cpu to run on CPU (supported but slow, not realtime)."
         )
     if not _uses_cuda_device(device):
         requested = "none" if device is None else str(device)
         raise RuntimeError(
             f"{component} requires a CUDA device; got {requested!r}. Use a cuda "
-            "device such as cuda:0, or pass --allow-cpu only for explicit CPU "
-            "diagnostics."
+            "device such as cuda:0, or pass --allow-cpu to run on CPU (supported "
+            "but slow, not realtime)."
         )
 
 
-def _resolve_torch_device(value: str | None) -> str:
+def _cpu_mode(args: argparse.Namespace) -> bool:
+    """Explicit, supported CPU run: ``--allow-cpu`` on a non-MLX backend."""
+    if str(getattr(args, "backend", "") or "").lower() == "mlx":
+        return False
+    return bool(getattr(args, "allow_cpu", False))
+
+
+def _resolve_torch_device(value: str | None, *, cpu_mode: bool = False) -> str:
     requested = str(value or "").strip()
-    return requested or "cuda:0"
+    if requested:
+        return requested
+    return "cpu" if cpu_mode else "cuda:0"
 
 
-def _resolve_device_map(value: str | None) -> str | None:
+def _resolve_device_map(value: str | None, *, cpu_mode: bool = False) -> str | None:
     requested = str(value or "").strip()
     if not requested:
-        return "cuda:0"
+        return "cpu" if cpu_mode else "cuda:0"
     if requested.lower() in {"none", "null"}:
         return None
     return requested
@@ -2307,7 +2317,7 @@ def _uses_cuda_device(value: str | None) -> bool:
 def _default_dtype_name(explicit: str | None, *, uses_cuda: bool) -> str:
     if explicit:
         return str(explicit)
-    return "bfloat16" if uses_cuda else "auto"
+    return "bfloat16" if uses_cuda else "float32"
 
 
 def _default_cuda_flag(explicit: bool | None, *, uses_cuda: bool) -> bool:
@@ -2326,6 +2336,17 @@ def _default_optimized_flag(explicit: bool | None, *, uses_cuda: bool) -> bool:
     if explicit is not None:
         return bool(explicit)
     return bool(uses_cuda)
+
+
+def _default_w8a16_flag(explicit: bool | None, *, uses_cuda: bool) -> bool:
+    """W8A16 is a CUDA Triton path; force it off on non-CUDA even if requested
+    (it requires fused_linears, which is also off on CPU, so leaving it on would
+    fail the backend's quantized-requires-fused check at load)."""
+    if not uses_cuda:
+        if explicit:
+            _LOGGER.warning("Ignoring --w8a16: W8A16 needs a CUDA device.")
+        return False
+    return bool(explicit)
 
 
 def _triton_available() -> bool:
@@ -2379,7 +2400,7 @@ def _build_model_load(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
 
     import torch
 
-    device_map = _resolve_device_map(args.device_map)
+    device_map = _resolve_device_map(args.device_map, cpu_mode=_cpu_mode(args))
     _ensure_cuda_requirement(
         args, component="ASR transformers backend", device=device_map
     )
@@ -2409,7 +2430,7 @@ def _build_model_load(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
         # CER gate shows OFF is 2.58x faster at equal CER (cer_mean 0.0961 vs
         # 0.0965; see local_goldens/cer/recheck_w8a16_{on,off}.json). W8A16
         # still helps the decode-bound offline path, where it stays opt-in.
-        "quantized_linears": False if args.w8a16 is None else args.w8a16,
+        "quantized_linears": _default_w8a16_flag(args.w8a16, uses_cuda=uses_cuda),
     }
     if device_map:
         load_kwargs["device_map"] = device_map
@@ -2452,14 +2473,27 @@ def _build_translation(
             generation_config=generation_config,
         )
         return translator, config
-    translation_device = _resolve_torch_device(args.translation_device)
+    translation_device = _resolve_torch_device(
+        args.translation_device, cpu_mode=_cpu_mode(args)
+    )
     _ensure_cuda_requirement(
         args, component="HY-MT translation backend", device=translation_device
     )
     translation_uses_cuda = _uses_cuda_device(translation_device)
-    default_translation_w8a16 = (
-        DEFAULT_HYMT_W8A16 and translation_uses_cuda and _triton_available()
-    )
+    if dtype is None and not translation_uses_cuda:
+        # CPU loads fp32: bf16/fp16 kernels are slow-to-unsupported on CPU. The
+        # MLX branch above keeps its own bf16 default untouched.
+        dtype = "float32"
+    if args.translation_w8a16 is None:
+        translation_w8a16 = (
+            DEFAULT_HYMT_W8A16 and translation_uses_cuda and _triton_available()
+        )
+    else:
+        # W8A16 is a CUDA Triton path; force it off on non-CUDA even if requested
+        # (it silently matches no modules there), mirroring the ASR --w8a16 gate.
+        translation_w8a16 = bool(args.translation_w8a16) and translation_uses_cuda
+        if args.translation_w8a16 and not translation_uses_cuda:
+            _LOGGER.warning("Ignoring --translation-w8a16: W8A16 needs a CUDA device.")
     translator = HYMTTranslator(
         model_path,
         device=translation_device,
@@ -2470,11 +2504,7 @@ def _build_translation(
         attn_implementation=args.translation_attn_implementation,
         decode_backend=args.translation_decode_backend,
         generation_config=generation_config,
-        w8a16=(
-            default_translation_w8a16
-            if args.translation_w8a16 is None
-            else bool(args.translation_w8a16)
-        ),
+        w8a16=translation_w8a16,
         fused_rmsnorm=(
             DEFAULT_HYMT_FUSED_RMSNORM
             if args.translation_fused_rmsnorm is None and translation_uses_cuda
@@ -2517,7 +2547,9 @@ def _build_aligner(
     import torch
     from qwen3_asr_runtime.forced_aligner import Qwen3ForcedAlignerBackend
 
-    device_map = _resolve_device_map(args.timestamp_device_map)
+    device_map = _resolve_device_map(
+        args.timestamp_device_map, cpu_mode=_cpu_mode(args)
+    )
     _ensure_cuda_requirement(
         args, component="forced-aligner backend", device=device_map
     )
@@ -2665,7 +2697,9 @@ def _prewarm_timestamp_runtime(actor: TimestampModelActor) -> None:
 def _cuda_graph_enabled(args: argparse.Namespace) -> bool:
     if args.cuda_graph is not None:
         return bool(args.cuda_graph)
-    return _uses_cuda_device(_resolve_device_map(getattr(args, "device_map", None)))
+    return _uses_cuda_device(
+        _resolve_device_map(getattr(args, "device_map", None), cpu_mode=_cpu_mode(args))
+    )
 
 
 def _prewarm_realtime_cuda_graph(model: Any, args: argparse.Namespace) -> bool:
