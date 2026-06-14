@@ -176,9 +176,10 @@ service.
 
 Funyi's original project code is licensed under the MIT License. See `LICENSE`.
 
-The files under `qwen3_asr_runtime/hf_qwen3_asr/` are copied from Qwen3-ASR /
-Hugging Face Transformers integration code and retain their upstream
-Apache-2.0 notices. See `THIRD_PARTY_NOTICES.md` and `LICENSES/Apache-2.0.txt`.
+Some vendored files and data assets (Qwen3-ASR / Hugging Face Transformers
+integration code and the FireRed Stream-VAD postprocessor) retain their upstream
+Apache-2.0 notices. See `THIRD_PARTY_NOTICES.md` for the full list and
+`LICENSES/Apache-2.0.txt`.
 
 Third-party dependencies, model weights, and external datasets remain under
 their own license terms.
