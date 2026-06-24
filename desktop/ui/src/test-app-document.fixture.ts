@@ -24,6 +24,7 @@ export function installFakeAppDocument({
     elements[id] ||= new FakeElement(elementTag(id), id);
     elements[id].setAttribute(RESIZE_DIRECTION_ATTRIBUTE, direction);
   }
+  elements["history-list"]?.setAttribute("data-overlay-drag-ignore", "");
 
   installFakeDocument(new FakeDocument(elements));
   if (installConstructors) {

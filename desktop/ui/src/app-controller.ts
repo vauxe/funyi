@@ -103,6 +103,8 @@ export class FunyiApp {
         onModeApplied: (mode) => {
           if (mode === "history") {
             this.captionView.scrollHistoryToLatest("auto");
+          } else {
+            this.captionView.releaseHistorySelection();
           }
         },
       },

@@ -65,6 +65,46 @@ test("window height switches history mode and inline settings drive start payloa
   assert.equal(payload.target_language, "Japanese");
 });
 
+test("compact overlay keeps selectable history virtualized", async () => {
+  const elements = installDocument();
+  const { windowRuntime } = await bootApp();
+  elements["transport-button"]!.click();
+  const socket = FakeWebSocket.instances[0];
+  assert.ok(socket);
+  socket.open();
+  socket.message({ type: "ready", sample_rate: 16000 });
+  socket.message(longTranscriptUpdateEvent(120));
+  await nextTick();
+
+  windowRuntime.setInnerHeight(320);
+  windowRuntime.dispatch("resize", {});
+  await nextTick();
+  assert.equal(elements["app-shell"]!.attributes.get("data-overlay-mode"), "history");
+  assert.ok(historyItemsIn(elements["history-list"]!).length < 40);
+  const visibleSource = historyItemsIn(elements["history-list"]!)[0]?.children[1];
+  assert.ok(visibleSource);
+
+  elements["history-list"]!.dispatch("pointerdown", { target: visibleSource });
+  socket.message(appendTranscriptLineEvent(121));
+  await nextTick();
+  assert.equal(elements["current-source"]!.textContent, "line 121");
+  assert.equal(historyItemsIn(elements["history-list"]!).at(-1)?.children[1]?.textContent, "line 120");
+  assert.ok(elements["history-list"]!.className.split(/\s+/).includes("is-virtualized"));
+  assert.ok(historyItemsIn(elements["history-list"]!).length < 40);
+
+  windowRuntime.setInnerHeight(240);
+  windowRuntime.dispatch("resize", {});
+  await nextTick();
+
+  assert.equal(elements["app-shell"]!.attributes.get("data-overlay-mode"), "compact");
+  assert.equal(historyItemsIn(elements["history-list"]!).at(-1)?.children[1]?.textContent, "line 120");
+  windowRuntime.dispatch("pointerup", {});
+  await nextMacrotask();
+  assert.equal(historyItemsIn(elements["history-list"]!).at(-1)?.children[1]?.textContent, "line 121");
+  assert.ok(elements["history-list"]!.className.split(/\s+/).includes("is-virtualized"));
+  assert.ok(historyItemsIn(elements["history-list"]!).length < 40);
+});
+
 test("overlay listener setup does not block app boot", async () => {
   const elements = installDocument();
   const overlay = createFakeOverlayHost();
@@ -686,6 +726,14 @@ function selectValues(element: FakeElement): string[] {
   return element.children.map((child) => child.value);
 }
 
+function historyItemsIn(historyList: FakeElement): FakeElement[] {
+  return historyList.children.filter((child) => child.className.split(/\s+/).includes("history-item"));
+}
+
+function nextMacrotask(): Promise<void> {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+}
+
 function emitAudioFrame(audio: ReturnType<typeof createFakeAudioAdapter>, dataBase64: string): void {
   const frameHandler = audio.frameHandler;
   assert.ok(frameHandler);
@@ -727,6 +775,46 @@ function transcriptUpdateEvent(): Record<string, unknown> {
         start_ms: 0,
         end_ms: 1200,
         text: "你好",
+        language: "Chinese",
+        timing_status: "aligned",
+      },
+    ],
+    partial: null,
+  };
+}
+
+function longTranscriptUpdateEvent(lineCount: number): Record<string, unknown> {
+  return {
+    type: "transcript_update",
+    revision: 1,
+    stable_base: 0,
+    stable_count: lineCount,
+    stable_appends: Array.from({ length: lineCount }, (_item, index) => ({
+      id: `seg_${String(index + 1).padStart(6, "0")}`,
+      index: index + 1,
+      start_ms: index * 1000,
+      end_ms: index * 1000 + 500,
+      text: `line ${index + 1}`,
+      language: "Chinese",
+      timing_status: "aligned",
+    })),
+    partial: null,
+  };
+}
+
+function appendTranscriptLineEvent(index: number): Record<string, unknown> {
+  return {
+    type: "transcript_update",
+    revision: 2,
+    stable_base: index - 1,
+    stable_count: index,
+    stable_appends: [
+      {
+        id: `seg_${String(index).padStart(6, "0")}`,
+        index,
+        start_ms: (index - 1) * 1000,
+        end_ms: (index - 1) * 1000 + 500,
+        text: `line ${index}`,
         language: "Chinese",
         timing_status: "aligned",
       },

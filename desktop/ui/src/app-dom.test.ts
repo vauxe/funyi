@@ -23,6 +23,7 @@ test("collects app elements and resize handles from stable selectors", () => {
   assert.equal(elements["app-shell"]!.tagName, "main");
   assert.equal(elements["caption-strip"]!.tagName, "section");
   assert.equal(elements["history-list"]!.tagName, "section");
+  assert.equal(elements["history-list"]!.attributes.get("data-overlay-drag-ignore"), "");
   assert.equal(dom.volumeIndicator, elements["volume-indicator"]);
   assert.equal(elements["volume-indicator"]!.tagName, "span");
   assert.equal(elements["resize-north"]!.tagName, "div");

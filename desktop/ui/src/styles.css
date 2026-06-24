@@ -908,6 +908,16 @@ select:disabled {
   display: none;
 }
 
+.history-list.is-virtualized {
+  gap: 0;
+}
+
+.history-spacer {
+  flex: 0 0 auto;
+  min-height: 0;
+  pointer-events: none;
+}
+
 .history-item {
   display: grid;
   flex: 0 0 auto;
@@ -929,6 +939,18 @@ select:disabled {
 
 .history-item:first-child {
   margin-top: auto;
+}
+
+.history-list.is-virtualized .history-item {
+  margin-bottom: 9px;
+}
+
+.history-list.is-virtualized .history-item:first-child {
+  margin-top: 0;
+}
+
+.history-list.is-virtualized .history-item:last-child {
+  margin-bottom: 0;
 }
 
 .history-item.is-latest {

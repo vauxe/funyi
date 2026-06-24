@@ -1678,6 +1678,25 @@ test("drag ignores pointerdowns inside the settings panel", async () => {
   assert.equal(harness.elements.root.className, "");
 });
 
+test("drag ignores pointerdowns inside selectable caption history", async () => {
+  const harness = createHarness();
+  await bindHarness(harness);
+  const historyList = new FakeElement("section", "history-list");
+  historyList.setAttribute("data-overlay-drag-ignore", "");
+  const historyItem = new FakeElement("article");
+  const historySource = new FakeElement("div");
+  historyItem.append(historySource);
+  historyList.append(historyItem);
+  harness.elements.dragSurface.append(historyList);
+
+  harness.elements.dragSurface.dispatch("pointerdown", pointerEvent({ pointerId: 7, target: historySource }));
+  await nextTick();
+
+  assert.deepEqual(harness.invocations, []);
+  assert.equal(harness.elements.root.className, "");
+  assert.equal(harness.elements.dragSurface.pointerCapture, null);
+});
+
 test("compact resize delegates window size changes to native resize commands", async () => {
   const harness = createHarness();
   await bindHarness(harness);

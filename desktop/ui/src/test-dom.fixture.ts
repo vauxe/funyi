@@ -6,6 +6,7 @@ export class FakeElement {
   checked = false;
   children: FakeElement[] = [];
   className = "";
+  clientHeight = 0;
   clicks = 0;
   dataset: Record<string, string> = {};
   disabled = false;
@@ -169,11 +170,29 @@ function dataAttributeKey(name: string): string | null {
 
 export class FakeDocument {
   activeElement: FakeElement | null = null;
+  listeners = new Map<string, Listener[]>();
+  selection: Selection | null = null;
 
   constructor(readonly elements: Record<string, FakeElement> = {}) {}
 
+  addEventListener(type: string, listener: Listener): void {
+    const listeners = this.listeners.get(type) || [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
   createElement(tagName: string): FakeElement {
     return new FakeElement(tagName);
+  }
+
+  dispatch(type: string, event: unknown): void {
+    for (const listener of this.listeners.get(type) || []) {
+      listener(event);
+    }
+  }
+
+  getSelection(): Selection | null {
+    return this.selection;
   }
 
   querySelector(selector: string): FakeElement | null {
@@ -186,6 +205,14 @@ export class FakeDocument {
       return [];
     }
     return Object.values(this.elements).filter((element) => datasetKey in element.dataset);
+  }
+
+  removeEventListener(type: string, listener: Listener): void {
+    const listeners = this.listeners.get(type) || [];
+    this.listeners.set(
+      type,
+      listeners.filter((item) => item !== listener),
+    );
   }
 }
 
