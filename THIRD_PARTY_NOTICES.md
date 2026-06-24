@@ -39,3 +39,19 @@ Upstream source:
 - FireRedTeam/FireRedVAD: https://github.com/FireRedTeam/FireRedVAD
   (`fireredvad/core/stream_vad_postprocessor.py`,
   commit c30ec49e8cc69642b0ee65362eba11b9d11c6e54)
+
+## FireRed Stream-VAD ONNX Assets
+
+The following runtime assets are vendored from FireRedVAD:
+
+- `third_party/firered-stream-vad-onnx/fireredvad_stream_vad_with_cache.onnx`
+- `third_party/firered-stream-vad-onnx/cmvn.ark`
+
+These assets are licensed under the Apache License, Version 2.0. See
+`LICENSES/Apache-2.0.txt`.
+
+Upstream source:
+
+- FireRedTeam/FireRedVAD: https://github.com/FireRedTeam/FireRedVAD
+  (`pretrained_models/onnx_models/`, commit
+  c30ec49e8cc69642b0ee65362eba11b9d11c6e54)

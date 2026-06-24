@@ -124,7 +124,9 @@ This command is the ASR+timestamp-only service gate. It intentionally disables
 translation so ASR, timestamp, throughput, and shutdown metrics stay comparable.
 Use the launcher path so the same FireRed VAD model-dir argument is passed as in
 normal service startup. Keep `FUNYI_ALLOW_DOWNLOADS=1` for a fresh host when the
-ASR/timestamp model caches are empty; FireRed VAD assets must already be local.
+ASR/timestamp model caches are empty. The default FireRed VAD ONNX assets are
+vendored under `third_party/firered-stream-vad-onnx`; only custom
+`FUNYI_FIRERED_VAD_MODEL_DIR` overrides must already exist locally.
 
 ```bash
 FUNYI_ALLOW_DOWNLOADS=1 FUNYI_TRANSLATION_MODEL= ./scripts/start_backend.sh

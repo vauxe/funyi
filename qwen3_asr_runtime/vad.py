@@ -11,7 +11,7 @@ from .audio_utils import normalize_pcm
 from .firered_stream_vad_postprocessor import StreamVadPostprocessor, VadState
 from .utils import SAMPLE_RATE
 
-DEFAULT_FIRERED_STREAM_VAD_MODEL_DIR = Path("local_data/models/firered-stream-vad-onnx")
+DEFAULT_FIRERED_STREAM_VAD_MODEL_DIR = Path("third_party/firered-stream-vad-onnx")
 VadMode = Literal["firered-stream-vad", "none"]
 FIRERED_STREAM_VAD_MODE: VadMode = "firered-stream-vad"
 PASSTHROUGH_VAD_MODE: VadMode = "none"

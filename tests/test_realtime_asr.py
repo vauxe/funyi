@@ -77,6 +77,7 @@ from qwen3_asr_runtime.streaming import RecognitionFrame, TailSelector, TextStab
 from qwen3_asr_runtime.transcript_store import TranscriptStore
 from qwen3_asr_runtime.utils import SUPPORTED_LANGUAGES
 from qwen3_asr_runtime.vad import (
+    DEFAULT_FIRERED_STREAM_VAD_MODEL_DIR,
     DEFAULT_VAD_MODE,
     FIRERED_STREAM_VAD_MODE,
     FireRedStreamVadAdapter,
@@ -679,7 +680,7 @@ class TestRealtimeServerCli:
         assert args.debug_audio_dir == "local_data/realtime_debug_audio"
         assert not args.no_vad
         assert args.vad_mode == "firered-stream-vad"
-        assert args.firered_vad_model_dir == "local_data/models/firered-stream-vad-onnx"
+        assert args.firered_vad_model_dir == "third_party/firered-stream-vad-onnx"
         assert args.firered_vad_onnx_threads == 4
 
     def test_no_vad_can_disable_vad(self) -> None:
@@ -2211,6 +2212,42 @@ class TestRealtimeServerTranslationOrdering:
         assert args[args.index("--firered-vad-model-dir") + 1] == str(model_dir)
         assert "--no-timestamp-local-files-only" in args
 
+    def test_launcher_defaults_to_vendored_firered_model_dir(
+        self, tmp_path: Path
+    ) -> None:
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        fake_uv = fake_bin / "uv"
+        fake_uv.write_text(
+            "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\"\n",
+            encoding="utf-8",
+        )
+        fake_uv.chmod(0o755)
+
+        env = {
+            **os.environ,
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+            "FUNYI_TRANSLATION_MODEL": "",
+        }
+        env.pop("FUNYI_FIRERED_VAD_MODEL_DIR", None)
+        result = subprocess.run(
+            ["bash", "scripts/start_backend.sh"],
+            cwd=Path(__file__).resolve().parents[1],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+
+        assert result.returncode == 0
+        args = result.stdout.splitlines()
+        assert "--firered-vad-model-dir" in args
+        assert (
+            args[args.index("--firered-vad-model-dir") + 1]
+            == "third_party/firered-stream-vad-onnx"
+        )
+
 
 class TestSpeechGate:
     def test_initial_silence_produces_no_speech_events(self) -> None:
@@ -3372,6 +3409,13 @@ class TestFireRedStreamVadAdapter:
         assert config.min_speech_ms == 80
         assert config.min_silence_ms == 200
         assert config.onnx_intra_op_num_threads == 4
+
+    def test_default_model_dir_uses_vendored_assets(self) -> None:
+        model_dir = Path(DEFAULT_FIRERED_STREAM_VAD_MODEL_DIR)
+
+        assert model_dir == Path("third_party/firered-stream-vad-onnx")
+        assert (model_dir / "fireredvad_stream_vad_with_cache.onnx").is_file()
+        assert (model_dir / "cmvn.ark").is_file()
 
     def test_config_rejects_threshold_out_of_range(self) -> None:
         with pytest.raises(ValueError):

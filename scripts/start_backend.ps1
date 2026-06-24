@@ -29,7 +29,7 @@ $translationModel = Get-EnvOrDefault "FUNYI_TRANSLATION_MODEL" "tencent/Hy-MT2-1
 $timestampModel = Get-EnvOrDefault "FUNYI_TIMESTAMP_MODEL" "Qwen/Qwen3-ForcedAligner-0.6B"
 $allowDownloads = Get-EnvOrDefault "FUNYI_ALLOW_DOWNLOADS" "0"
 $allowCpu = Get-EnvOrDefault "FUNYI_ALLOW_CPU" "0"
-$fireRedVadModelDir = Get-EnvOrDefault "FUNYI_FIRERED_VAD_MODEL_DIR" "local_data/models/firered-stream-vad-onnx"
+$fireRedVadModelDir = Get-EnvOrDefault "FUNYI_FIRERED_VAD_MODEL_DIR" "third_party/firered-stream-vad-onnx"
 
 function Resolve-RepoPath {
     Param([Parameter(Mandatory = $true)][string] $Path)
