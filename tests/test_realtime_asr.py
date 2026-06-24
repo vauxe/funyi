@@ -2248,6 +2248,16 @@ class TestRealtimeServerTranslationOrdering:
             == "third_party/firered-stream-vad-onnx"
         )
 
+    def test_windows_launcher_disables_torch_compile_by_default(self) -> None:
+        script = (
+            Path(__file__).resolve().parents[1] / "scripts" / "start_backend.ps1"
+        ).read_text(encoding="utf-8")
+
+        assert 'Set-EnvDefault "TORCHDYNAMO_DISABLE" "1"' in script
+        assert 'Set-EnvDefault "TORCH_COMPILE_DISABLE" "1"' in script
+        assert 'Set-EnvDefault "TORCH_COMPILE" ' not in script
+        assert "TorchInductor/Triton" in script
+
 
 class TestSpeechGate:
     def test_initial_silence_produces_no_speech_events(self) -> None:

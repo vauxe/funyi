@@ -134,7 +134,7 @@ test("reports audio health warnings while preserving level state", () => {
       },
       "running",
     ),
-    { text: "No mic audio", tone: "warn", level: "low", volume: 0.53 },
+    { text: "Microphone silent", tone: "warn", level: "low", volume: 0.53 },
   );
 
   assert.deepEqual(
@@ -145,7 +145,7 @@ test("reports audio health warnings while preserving level state", () => {
       },
       "running",
     ),
-    { text: "No system audio", tone: "warn", level: "silent", volume: 0 },
+    { text: "System audio silent", tone: "warn", level: "silent", volume: 0 },
   );
 
   assert.deepEqual(

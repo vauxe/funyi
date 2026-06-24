@@ -126,7 +126,7 @@ function isUserVisibleError(value: string): boolean {
 }
 
 function silentCaptureSummary(kind: AudioSourceKind): string {
-  return kind === "microphone" ? "No mic audio" : "No system audio";
+  return kind === "microphone" ? "Microphone silent" : "System audio silent";
 }
 
 function statusTextHasError(value: string): boolean {

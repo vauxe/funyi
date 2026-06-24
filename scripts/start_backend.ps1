@@ -19,8 +19,26 @@ function Get-EnvOrDefault {
     return $Default
 }
 
+function Set-EnvDefault {
+    Param(
+        [Parameter(Mandatory = $true)]
+        [string] $Name,
+        [Parameter(Mandatory = $true)]
+        [string] $Default
+    )
+
+    if (-not (Test-Path -LiteralPath "Env:$Name")) {
+        Set-Item -LiteralPath "Env:$Name" -Value $Default
+    }
+}
+
 $repoRoot = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")
 Set-Location -LiteralPath $repoRoot
+
+# Windows TorchInductor/Triton needs a separate Triton toolchain. Disable
+# automatic compile by default so HY-MT translation can start without it.
+Set-EnvDefault "TORCHDYNAMO_DISABLE" "1"
+Set-EnvDefault "TORCH_COMPILE_DISABLE" "1"
 
 $asrModel = Get-EnvOrDefault "FUNYI_ASR_MODEL" "Qwen/Qwen3-ASR-1.7B"
 $hostName = Get-EnvOrDefault "FUNYI_HOST" "127.0.0.1"
