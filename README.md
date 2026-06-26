@@ -1,5 +1,7 @@
 # Funyi
 
+[中文](README.zh-CN.md)
+
 Local speech-to-text and live captions app built on `Qwen/Qwen3-ASR-1.7B`.
 It runs a local realtime ASR WebSocket service and a Tauri desktop caption
 client. Funyi is for local, single-user use.
